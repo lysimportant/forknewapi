@@ -156,9 +156,9 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
         value: checked,
       })
       setIsEnabledDraft(checked)
-      toast.success(t('Setting saved'))
+      // Success toast is handled by useUpdateOption
     } catch {
-      toast.error(t('Failed to update setting'))
+      // Error toast is handled by useUpdateOption
     }
   }
 
@@ -245,8 +245,9 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
       if (result.success) {
         setDraftApiInfoList(null)
       }
+      // Success toast is handled by useUpdateOption
     } catch {
-      toast.error(t('Failed to save API info'))
+      // Error toast is handled by useUpdateOption
     }
   }
 

@@ -1,5 +1,5 @@
 /*
-Copyright (C) 2023-2026 QuantumNous
+Copyright (C) 2025 QuantumNous
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -16,51 +16,75 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
-
 import { updateSystemOption } from '../api'
-import type { UpdateOptionRequest } from '../types'
+import type { SystemOption } from '../types'
 
-// Configuration keys that require status refresh
-const STATUS_RELATED_KEYS = [
-  'HeaderNavModules',
-  'SidebarModulesAdmin',
-  'Notice',
-  'LogConsumeEnabled',
-  'QuotaPerUnit',
-  'USDExchangeRate',
-  'DisplayInCurrencyEnabled',
-  'DisplayTokenStatEnabled',
-  'general_setting.quota_display_type',
-  'general_setting.custom_currency_symbol',
-  'general_setting.custom_currency_exchange_rate',
-]
+/** Collapse rapid successive success toasts into one visible message. */
+const SETTING_UPDATED_TOAST_ID = 'system-setting-updated'
+
+// Status keys that affect the public /api/status endpoint.
+// When any of these change, invalidate the status query so header/footer
+// components refetch without a full page reload.
+const STATUS_RELATED_KEYS = new Set([
+  'system_name',
+  'logo',
+  'footer_html',
+  'quota_display_type',
+  'custom_currency_symbol',
+  'usd_exchange_rate',
+  'server_address',
+  'chats',
+  'console_setting.announcements',
+  'console_setting.faq',
+  'console_setting.api_info',
+  'console_setting.uptime_kuma_groups',
+  'console_setting.announcements_enabled',
+  'console_setting.faq_enabled',
+  'console_setting.api_info_enabled',
+  'console_setting.uptime_kuma_enabled',
+])
+
+export type UpdateOptionVariables = SystemOption & {
+  /**
+   * When true, skip the built-in success toast (for batch updates that show
+   * a single toast after all requests finish, or pages with their own toast).
+   */
+  silent?: boolean
+}
 
 export function useUpdateOption() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (request: UpdateOptionRequest) => updateSystemOption(request),
-    onSuccess: (data, variables) => {
-      if (data.success) {
-        // Always refresh system-options
+    mutationFn: async ({ silent: _silent, ...data }: UpdateOptionVariables) => {
+      // Convert boolean to string for API compatibility
+      const payload: SystemOption = {
+        ...data,
+        value:
+          typeof data.value === 'boolean' ? String(data.value) : data.value,
+      }
+      return updateSystemOption(payload)
+    },
+    onSuccess: (response, variables) => {
+      if (response.success) {
+        // Invalidate system options to refetch
         queryClient.invalidateQueries({ queryKey: ['system-options'] })
-
-        // If updating frontend-display-related config, also refresh status
-        if (STATUS_RELATED_KEYS.includes(variables.key)) {
+        // Also refresh public status when a status-related key changes
+        if (STATUS_RELATED_KEYS.has(variables.key)) {
           queryClient.invalidateQueries({ queryKey: ['status'] })
-          try {
-            window.localStorage.removeItem('status')
-          } catch {
-            /* empty */
-          }
         }
-
-        toast.success(i18next.t('Setting updated successfully'))
+        if (!variables.silent) {
+          toast.success(i18next.t('Setting updated successfully'), {
+            id: SETTING_UPDATED_TOAST_ID,
+          })
+        }
       } else {
-        toast.error(data.message || i18next.t('Failed to update setting'))
+        // API returned HTTP 200 but business-level failure
+        toast.error(response.message || i18next.t('Failed to update setting'))
       }
     },
     onError: (error: Error) => {

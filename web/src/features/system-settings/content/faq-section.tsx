@@ -128,9 +128,9 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
         value: checked,
       })
       setIsEnabled(checked)
-      toast.success(t('Setting saved'))
+      // Success toast is handled by useUpdateOption
     } catch {
-      toast.error(t('Failed to update setting'))
+      // Error toast is handled by useUpdateOption
     }
   }
 
@@ -210,11 +210,12 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
       await updateOption.mutateAsync({
         key: 'console_setting.faq',
         value: JSON.stringify(faqList),
+        silent: true,
       })
       setHasChanges(false)
       toast.success(t('FAQ saved successfully'))
     } catch {
-      toast.error(t('Failed to save FAQ'))
+      // Error toast is handled by useUpdateOption
     }
   }
 
