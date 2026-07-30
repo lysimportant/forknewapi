@@ -79,6 +79,10 @@ export type DataTableToolbarProps<TData> = {
    */
   additionalSearch?: ReactNode
   /**
+   * Content displayed immediately after column-level filter chips.
+   */
+  afterFilters?: ReactNode
+  /**
    * Whether non-table filters (e.g. `additionalSearch` or `expandable`
    * inputs) are currently active. Controls Reset button visibility
    * when no column filters are set.
@@ -348,6 +352,7 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
           {props.customSearch !== undefined ? props.customSearch : searchInput}
           {props.additionalSearch}
           {filterChips}
+          {props.afterFilters}
           <div className='ms-auto flex shrink-0 items-center gap-1.5 sm:gap-2'>
             {expandToggle}
           </div>
@@ -383,6 +388,7 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
       {props.customSearch !== undefined ? props.customSearch : searchInput}
       {props.additionalSearch}
       {filterChips}
+      {props.afterFilters}
       {expanded && hasExpandable && props.expandable}
 
       <div className='ms-auto flex shrink-0 items-center gap-1.5 sm:gap-2'>
