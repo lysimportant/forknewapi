@@ -66,7 +66,7 @@ const API_KEYS_MOBILE_SKELETON_IDS = Array.from(
   { length: 5 },
   (_, index) => `api-key-mobile-skeleton-${index + 1}`
 )
-const API_ENDPOINT_URL = 'https://api.lianghj.top'
+// const API_ENDPOINT_URL = 'https://api.lianghj.top'
 
 function isDisabledApiKeyRow(apiKey: ApiKey) {
   return apiKey.status !== API_KEY_STATUS.ENABLED
@@ -188,7 +188,7 @@ function ApiKeysMobileList({
   )
 }
 
-export function ApiKeysTable() {
+export function ApiKeysTable({ keys }: {keys: string}) {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const { copyToClipboard } = useCopyToClipboard({
@@ -333,11 +333,11 @@ export function ApiKeysTable() {
           <button
             type='button'
             className='text-muted-foreground hover:text-foreground h-8 max-w-full truncate text-sm underline-offset-4 transition-colors hover:underline'
-            onClick={() => copyToClipboard(API_ENDPOINT_URL)}
+            onClick={() => copyToClipboard(keys)}
             aria-label={t('Copy API endpoint URL')}
             title={t('Copy API endpoint URL')}
           >
-            {t('API endpoint URL: {{url}}', { url: API_ENDPOINT_URL })}
+            {t('API endpoint URL: {{url}}', { url: keys })}
           </button>
         ),
       }}
