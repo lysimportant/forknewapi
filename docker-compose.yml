@@ -16,7 +16,7 @@ services:
       REDIS_CONN_STRING: redis://:${REDIS_PASSWORD}@redis:6379/0
       SESSION_SECRET: ${SESSION_SECRET}
       SESSION_COOKIE_SECURE: "true"
-      SESSION_COOKIE_TRUSTED_URL: https://api.lianghj.top
+      SESSION_COOKIE_TRUSTED_URL: https://api.lianghj.top,https://lolicon.beer,https://api.lolicon.beer
       ERROR_LOG_ENABLED: "true"
       BATCH_UPDATE_ENABLED: "true"
       NODE_NAME: new-api-node-1
