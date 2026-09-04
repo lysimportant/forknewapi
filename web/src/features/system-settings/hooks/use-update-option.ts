@@ -21,15 +21,25 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 import { updateSystemOption } from '../api'
-import type { SystemOption } from '../types'
+import type { UpdateOptionRequest } from '../types'
 
-/** Collapse rapid successive success toasts into one visible message. */
+/** 合并连续的成功提示，避免批量保存时重复展示。 */
 const SETTING_UPDATED_TOAST_ID = 'system-setting-updated'
 
-// Status keys that affect the public /api/status endpoint.
-// When any of these change, invalidate the status query so header/footer
-// components refetch without a full page reload.
+/** 会影响公开状态接口缓存的配置项。 */
 const STATUS_RELATED_KEYS = new Set([
+  'HeaderNavModules',
+  'SidebarModulesAdmin',
+  'Notice',
+  'LogConsumeEnabled',
+  'QuotaPerUnit',
+  'USDExchangeRate',
+  'DisplayInCurrencyEnabled',
+  'DisplayTokenStatEnabled',
+  'general_setting.quota_display_type',
+  'general_setting.custom_currency_symbol',
+  'general_setting.custom_currency_exchange_rate',
+  'oidc.display_name',
   'system_name',
   'logo',
   'footer_html',
@@ -48,10 +58,9 @@ const STATUS_RELATED_KEYS = new Set([
   'console_setting.uptime_kuma_enabled',
 ])
 
-export type UpdateOptionVariables = SystemOption & {
+export type UpdateOptionVariables = UpdateOptionRequest & {
   /**
-   * When true, skip the built-in success toast (for batch updates that show
-   * a single toast after all requests finish, or pages with their own toast).
+   * 为 true 时跳过内置成功提示，用于批量保存或页面自行展示提示的场景。
    */
   silent?: boolean
 }
@@ -60,22 +69,20 @@ export function useUpdateOption() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ silent: _silent, ...data }: UpdateOptionVariables) => {
-      // Convert boolean to string for API compatibility
-      const payload: SystemOption = {
-        ...data,
-        value:
-          typeof data.value === 'boolean' ? String(data.value) : data.value,
-      }
-      return updateSystemOption(payload)
-    },
+    mutationFn: ({ silent: _silent, ...request }: UpdateOptionVariables) =>
+      updateSystemOption(request),
     onSuccess: (response, variables) => {
       if (response.success) {
-        // Invalidate system options to refetch
+        // 更新系统配置后刷新查询缓存。
         queryClient.invalidateQueries({ queryKey: ['system-options'] })
-        // Also refresh public status when a status-related key changes
+
         if (STATUS_RELATED_KEYS.has(variables.key)) {
           queryClient.invalidateQueries({ queryKey: ['status'] })
+          try {
+            window.localStorage.removeItem('status')
+          } catch {
+            // 本地存储不可用时，查询缓存失效仍可保证后续刷新。
+          }
         }
         if (!variables.silent) {
           toast.success(i18next.t('Setting updated successfully'), {
@@ -83,7 +90,7 @@ export function useUpdateOption() {
           })
         }
       } else {
-        // API returned HTTP 200 but business-level failure
+        // HTTP 成功不代表业务保存成功。
         toast.error(response.message || i18next.t('Failed to update setting'))
       }
     },

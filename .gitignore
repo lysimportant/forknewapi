@@ -1,4 +1,5 @@
 .idea
+.review
 .vscode
 .zed
 .history
@@ -7,9 +8,12 @@ upload
 *.db
 build
 *.db-journal
+*.db-shm
+*.db-wal
 logs
 web/dist
 web/node_modules
+node_modules
 .env
 one-api
 new-api
@@ -20,7 +24,7 @@ tiktoken_cache
 .gocache
 .gomodcache/
 .cache
-plans
+.plans
 .claude
 .cursor
 
@@ -42,5 +46,7 @@ web/package-lock.json
 
 # Local-only live probes and scratch test workspaces.
 .local-tests/
-service/relayconvert/chat_responses_live_local_test.go
+relaykit/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
+go.work
+go.work.sum
