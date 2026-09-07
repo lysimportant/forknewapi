@@ -23,6 +23,8 @@ type HasImage interface {
 	HasImage() bool
 }
 
+// GetFullRequestURL 按渠道拼接上游地址；OpenAI 与 DeepSeek 的 Responses 自动补齐并去重 /v1，保留前缀和请求查询串。
+// 其他协议及供应商专用路径沿用原规则，不修改渠道配置，也不探测重发请求。
 func GetFullRequestURL(baseURL string, requestURL string, channelType int) string {
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 
@@ -32,6 +34,21 @@ func GetFullRequestURL(baseURL string, requestURL string, channelType int) strin
 			fullRequestURL = fmt.Sprintf("%s%s", baseURL, strings.TrimPrefix(requestURL, "/v1"))
 		case constant.ChannelTypeAzure:
 			fullRequestURL = fmt.Sprintf("%s%s", baseURL, strings.TrimPrefix(requestURL, "/openai/deployments"))
+		}
+		return fullRequestURL
+	}
+
+	switch channelType {
+	case constant.ChannelTypeOpenAI, constant.ChannelTypeDeepSeek:
+		requestPath, _, _ := strings.Cut(requestURL, "?")
+		switch requestPath {
+		case "/responses", "/v1/responses", "/responses/compact", "/v1/responses/compact":
+			baseURL = strings.TrimRight(baseURL, "/")
+			requestURL = strings.TrimPrefix(requestURL, "/v1")
+			if !strings.HasSuffix(baseURL, "/v1") {
+				requestURL = "/v1" + requestURL
+			}
+			return baseURL + requestURL
 		}
 	}
 	return fullRequestURL

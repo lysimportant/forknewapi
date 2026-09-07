@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetRelayRouter 注册模型与中继入口；Responses 支持根路径及 /v1 路径，使用相同鉴权、限流和渠道分发。
 func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
@@ -67,10 +68,24 @@ func SetRelayRouter(router *gin.Engine) {
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
 	relayV1Router := router.Group("/v1")
-	relayV1Router.Use(middleware.RouteTag("relay"))
-	relayV1Router.Use(middleware.SystemPerformanceCheck())
-	relayV1Router.Use(middleware.TokenAuth())
-	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	// 版本化入口与根路径别名共用中间件，避免别名绕过访问和流量控制。
+	relayAccessHandlers := gin.HandlersChain{
+		middleware.RouteTag("relay"),
+		middleware.SystemPerformanceCheck(),
+		middleware.TokenAuth(),
+		middleware.ModelRequestRateLimit(),
+	}
+	relayV1Router.Use(relayAccessHandlers...)
+	responsesAliasRouter := router.Group("")
+	responsesAliasRouter.Use(normalizeResponsesAlias)
+	responsesAliasRouter.Use(relayAccessHandlers...)
+	responsesAliasRouter.Use(middleware.Distribute())
+	responsesAliasRouter.POST("/responses", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatOpenAIResponses)
+	})
+	responsesAliasRouter.POST("/responses/compact", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
+	})
 	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")
@@ -198,6 +213,16 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatGemini)
 		})
 	}
+}
+
+// normalizeResponsesAlias 在鉴权与分发之前规范化 Responses 路径，保留方法、请求体和查询串，不发起重定向。
+func normalizeResponsesAlias(c *gin.Context) {
+	c.Request.URL.Path = "/v1" + c.Request.URL.Path
+	if c.Request.URL.RawPath != "" {
+		c.Request.URL.RawPath = "/v1" + c.Request.URL.RawPath
+	}
+	c.Request.RequestURI = c.Request.URL.RequestURI()
+	c.Next()
 }
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
