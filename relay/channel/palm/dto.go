@@ -12,16 +12,20 @@ type PaLMFilter struct {
 	Message string `json:"message"`
 }
 
+// PaLMPrompt 表示 generateMessage 的文本上下文与按顺序排列的对话消息。
 type PaLMPrompt struct {
+	// Context 保存系统指令，多段指令按原始顺序拼接。
+	Context  string            `json:"context,omitempty"`
 	Messages []PaLMChatMessage `json:"messages"`
 }
 
+// PaLMChatRequest 使用 PaLM generateMessage 请求协议，可选标量保留显式零值。
 type PaLMChatRequest struct {
 	Prompt         PaLMPrompt `json:"prompt"`
 	Temperature    *float64   `json:"temperature,omitempty"`
-	CandidateCount int        `json:"candidateCount,omitempty"`
-	TopP           float64    `json:"topP,omitempty"`
-	TopK           uint       `json:"topK,omitempty"`
+	CandidateCount *int       `json:"candidateCount,omitempty"`
+	TopP           *float64   `json:"topP,omitempty"`
+	TopK           *int       `json:"topK,omitempty"`
 }
 
 type PaLMError struct {

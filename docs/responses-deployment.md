@@ -2,10 +2,12 @@
 
 ## 修复范围
 
+- Responses 作为全部文本渠道的统一入口：保留 12 个原生/专用实现，补齐其余 19 个文本适配器的公共请求与响应转换；非文本渠道明确返回 400。各渠道能力与验证边界见 [协议兼容矩阵](responses-protocol-compatibility.md)。
 - DeepSeek 渠道（类型 43）现在执行原生 Responses 转发，不再在请求转换阶段返回 `not implemented`；保留 DeepSeek V4 的 `reasoning.effort=max` 和现有思考后缀语义。
 - 客户端可使用 `POST /responses` 或 `POST /v1/responses`；compact 也提供根路径别名。别名内部规范化后复用既有鉴权、限流与分发，不重定向 POST、不落入前端 HTML。
 - OpenAI 与 DeepSeek 的标准 Responses 上游可填根域名或带 `/v1` 的 Base URL，自动补齐或去重 `/v1`，保留子路径前缀。其他供应商专用路径与其他协议沿用原契约。
-- `VERSION` 设置为 `v1.0.0-rc.33.responses.2`；本地 Compose 构建通过原 Dockerfile 注入二进制，状态接口和版本响应头不再为空。
+- `VERSION` 设置为 `v1.0.0-rc.33.responses.3`，构建注入二进制，状态接口和版本响应头可用于核对实际运行版本。本轮本地容器使用缓存基础镜像运行源码编译的完整应用；原 Dockerfile 在线拉取受到 Docker Hub 网络故障阻断，详细结果见 [Responses Docker 验收](responses-docker-acceptance.md)。
+- 流式失败、未完成、截断、未知原生事件、短写和推理用量明细已补充处理；公共转换保留工具往返与实际消费用量，不能表示的输入在出站前明确拒绝。
 - 本次 main 回补不包含功能分支的其他新渠道、数据库、依赖或 relaykit 迁移，无数据库迁移。
 
 ## 已确认的线上失败原因
@@ -26,7 +28,7 @@ git pull --ff-only origin main
 cat VERSION
 ```
 
-`VERSION` 必须输出 `v1.0.0-rc.33.responses.2`。确认后重建应用服务：
+`VERSION` 必须输出 `v1.0.0-rc.33.responses.3`。确认后重建应用服务：
 
 ```sh
 docker compose up -d --build --no-deps new-api
@@ -40,7 +42,7 @@ curl -sS https://api.lolicon.beer/api/status
 
 ## 验收边界与回滚
 
-本地已从本次 main 回补源码编译完整 `new-api` 可执行程序，使用隔离 SQLite、正常登录/令牌鉴权、DeepSeek 类型 43 渠道完成实际 HTTP 冒烟。上游使用用户提供的 Sub2 服务，真实 Key 只在回环代理进程内存中使用，未写入测试数据库。模型为 `deepseek-v4-flash-vision-exp`：
+上一版 `v1.0.0-rc.33.responses.2` 已从 main 回补源码编译完整 `new-api` 可执行程序，使用隔离 SQLite、正常登录/令牌鉴权、DeepSeek 类型 43 渠道完成实际 HTTP 冒烟。上游使用用户提供的 Sub2 服务，真实 Key 只在回环代理进程内存中使用，未写入测试数据库。模型为 `deepseek-v4-flash-vision-exp`：
 
 | 请求 | 结果 | 输入 / 输出 token |
 | --- | --- | --- |

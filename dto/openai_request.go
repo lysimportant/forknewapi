@@ -243,11 +243,14 @@ type ToolCallRequest struct {
 	Custom   json.RawMessage `json:"custom,omitempty"`
 }
 
+// FunctionRequest 表示函数工具定义或调用参数；可选配置仅在客户端明确提供时发送。
 type FunctionRequest struct {
 	Description string `json:"description,omitempty"`
 	Name        string `json:"name"`
 	Parameters  any    `json:"parameters,omitempty"`
 	Arguments   string `json:"arguments,omitempty"`
+	// Strict 表示是否严格遵循参数 Schema；nil 省略，显式 false 必须保留。
+	Strict *bool `json:"strict,omitempty"`
 }
 
 type StreamOptions struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -52,11 +53,26 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	return nil
 }
 
+// ConvertOpenAIRequest 将文本对话编码为 generateMessage 的 prompt；该旧协议不能表达工具或媒体。
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	return request, nil
+	converted := &PaLMChatRequest{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK, CandidateCount: request.N}
+	var instructions []string
+	for _, message := range request.Messages {
+		if message.Role == "system" || message.Role == "developer" {
+			instructions = append(instructions, message.StringContent())
+			continue
+		}
+		author := "0"
+		if message.Role == "assistant" {
+			author = "1"
+		}
+		converted.Prompt.Messages = append(converted.Prompt.Messages, PaLMChatMessage{Author: author, Content: message.StringContent()})
+	}
+	converted.Prompt.Context = strings.Join(instructions, "\n\n")
+	return converted, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {

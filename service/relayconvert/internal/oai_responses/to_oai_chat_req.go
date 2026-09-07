@@ -24,6 +24,8 @@ const (
 	ResponsesInputTypeCustomToolOutput   = responsesInputTypeCustomToolOutput
 )
 
+// ResponsesRequestToChatCompletionsRequest 将无状态 Responses 请求转换为 Chat 请求。
+// 不可表达的输入项目、密文及无效工具结果关联返回错误；不修改原请求，不替上游执行或补全工具调用。
 func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
 	if req == nil {
 		return nil, errors.New("request is nil")
@@ -121,6 +123,7 @@ func ValidateRequestChatUnsupportedFields(req *dto.OpenAIResponsesRequest) error
 	return validateResponsesRequestChatUnsupportedFields(req)
 }
 
+// responsesRequestMessagesToChat 转换指令与输入历史，并在返回前校验当前请求内的工具调用结果关联。
 func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Message, error) {
 	messages := make([]dto.Message, 0)
 	if rawJSONPresent(req.Instructions) {
@@ -157,15 +160,53 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 			}
 			messages = nextMessages
 		}
+		if err := validateResponsesChatToolHistory(messages); err != nil {
+			return nil, err
+		}
 		return messages, nil
 	default:
 		return nil, fmt.Errorf("unsupported responses input type %q", common.GetJsonType(req.Input))
 	}
 }
 
+// responsesInputItemToChatMessages 保留已有消息与工具调用顺序；不支持的项目类型或密文返回明确错误。
 func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message) ([]dto.Message, error) {
 	itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+	if item["encrypted_content"] != nil {
+		return nil, fmt.Errorf("responses to chat conversion does not support encrypted_content in input item %q", itemType)
+	}
 	switch itemType {
+	case "reasoning":
+		if item["content"] != nil {
+			return nil, errors.New("responses to chat conversion does not support reasoning content outside summary")
+		}
+		summary, ok := item["summary"].([]any)
+		if !ok {
+			return nil, errors.New("reasoning summary must be an array of summary_text items")
+		}
+		texts := make([]string, 0, len(summary))
+		for _, rawPart := range summary {
+			part, ok := rawPart.(map[string]any)
+			if !ok || part["type"] != "summary_text" {
+				return nil, errors.New("reasoning summary supports only summary_text items")
+			}
+			text, ok := part["text"].(string)
+			if !ok {
+				return nil, errors.New("reasoning summary_text must contain string text")
+			}
+			texts = append(texts, text)
+		}
+		if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+			messages = append(messages, dto.Message{Role: "assistant"})
+		}
+		// 摘要与该轮随后出现的文本及工具调用属于同一条 assistant 消息。
+		last := &messages[len(messages)-1]
+		summaryText := strings.Join(texts, "\n\n")
+		if previous := last.GetReasoningContent(); previous != "" {
+			summaryText = previous + "\n\n" + summaryText
+		}
+		last.ReasoningContent = &summaryText
+		return messages, nil
 	case responsesInputTypeFunctionCall:
 		toolCall, err := responsesFunctionCallItemToChatToolCall(item)
 		if err != nil {
@@ -180,8 +221,15 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 		return appendToolCallToLastAssistant(messages, toolCall), nil
 	case responsesInputTypeFunctionCallOutput:
 		callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+		if callID == "" {
+			return nil, errors.New("function_call_output item is missing call_id")
+		}
 		content := responseToolOutputToChatContent(item["output"])
 		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
+	case "", "message":
+		// 简写消息可省略 type；其他项目不能作为普通消息丢失协议语义。
+	default:
+		return nil, fmt.Errorf("responses to chat conversion does not support input item type %q", itemType)
 	}
 
 	role := strings.TrimSpace(common.Interface2String(item["role"]))
@@ -192,7 +240,40 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 	if err != nil {
 		return nil, err
 	}
+	if role == "assistant" && len(messages) > 0 {
+		last := &messages[len(messages)-1]
+		if last.Role == "assistant" && last.ReasoningContent != nil && last.Content == nil {
+			last.Content = content
+			return messages, nil
+		}
+	}
 	return append(messages, dto.Message{Role: role, Content: content}), nil
+}
+
+// validateResponsesChatToolHistory 校验调用标识唯一且结果对应已出现的调用；允许并行结果乱序与末尾尚未返回的调用。
+func validateResponsesChatToolHistory(messages []dto.Message) error {
+	// answered 记录已出现的调用及其是否已有结果，仅在当前请求历史内使用。
+	answered := make(map[string]bool)
+	for _, message := range messages {
+		for _, call := range message.ParseToolCalls() {
+			if _, exists := answered[call.ID]; exists {
+				return errors.New("responses input contains duplicate function call_id")
+			}
+			answered[call.ID] = false
+		}
+		if message.Role != "tool" {
+			continue
+		}
+		alreadyAnswered, exists := answered[message.ToolCallId]
+		if !exists {
+			return errors.New("function_call_output call_id has no matching earlier call")
+		}
+		if alreadyAnswered {
+			return errors.New("responses input contains duplicate function_call_output call_id")
+		}
+		answered[message.ToolCallId] = true
+	}
+	return nil
 }
 
 func responsesInputContentToChatContent(content any) (any, error) {
@@ -274,13 +355,18 @@ func responsesContentPartsToChatContent(parts []any) (any, error) {
 	return chatParts, nil
 }
 
+// responsesFunctionCallItemToChatToolCall 将函数历史转换为 Chat 工具调用；call_id 与 name 不能为空，项目 id 不能替代 call_id。
 func responsesFunctionCallItemToChatToolCall(item map[string]any) (dto.ToolCallRequest, error) {
 	name := strings.TrimSpace(common.Interface2String(item["name"]))
 	if name == "" {
 		return dto.ToolCallRequest{}, errors.New("function_call item is missing name")
 	}
+	callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+	if callID == "" {
+		return dto.ToolCallRequest{}, errors.New("function_call item is missing call_id")
+	}
 	return dto.ToolCallRequest{
-		ID:   responsesCallID(item),
+		ID:   callID,
 		Type: "function",
 		Function: dto.FunctionRequest{
 			Name:      name,
@@ -318,6 +404,7 @@ func appendToolCallToLastAssistant(messages []dto.Message, toolCall dto.ToolCall
 	return messages
 }
 
+// responsesRequestToolsToChat 转换工具定义，保留函数 strict 的缺省与显式布尔值；类型错误返回错误。
 func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, error) {
 	if !rawJSONPresent(raw) {
 		return nil, nil
@@ -332,12 +419,21 @@ func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, er
 	for _, tool := range tools {
 		toolType := strings.TrimSpace(common.Interface2String(tool["type"]))
 		if toolType == "function" {
+			var strict *bool
+			if value, exists := tool["strict"]; exists && value != nil {
+				boolean, ok := value.(bool)
+				if !ok {
+					return nil, errors.New("function tool strict must be a boolean")
+				}
+				strict = &boolean
+			}
 			out = append(out, dto.ToolCallRequest{
 				Type: "function",
 				Function: dto.FunctionRequest{
 					Name:        strings.TrimSpace(common.Interface2String(tool["name"])),
 					Description: common.Interface2String(tool["description"]),
 					Parameters:  tool["parameters"],
+					Strict:      strict,
 				},
 			})
 			continue
@@ -423,9 +519,24 @@ func RequestTextToChatResponseFormat(raw json.RawMessage) (*dto.ResponseFormat, 
 	return responsesRequestTextToChatResponseFormat(raw)
 }
 
+// responsesImagePartToChatImageURL 将图片地址规范为 Chat 图片对象，保留同层 detail 且不修改输入对象。
 func responsesImagePartToChatImageURL(part map[string]any) any {
 	if imageURL, ok := part["image_url"]; ok {
-		return imageURL
+		imageObject := make(map[string]any)
+		switch value := imageURL.(type) {
+		case string:
+			imageObject["url"] = value
+		case map[string]any:
+			for key, entry := range value {
+				imageObject[key] = entry
+			}
+		default:
+			return imageURL
+		}
+		if detail, exists := part["detail"]; exists {
+			imageObject["detail"] = detail
+		}
+		return imageObject
 	}
 	imageURL := map[string]any{}
 	for _, key := range []string{"url", "file_id", "detail"} {
