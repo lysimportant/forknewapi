@@ -829,6 +829,40 @@ func TestAdaptorConvertsGeminiRequestToOpenAIChatUpstream(t *testing.T) {
 	assert.Equal(t, "user", chatReq.Messages[0].Role)
 }
 
+// TestAdaptorNativeResponsesPreservesDeepSeekRequest 验证原生 Responses 路由保留 DeepSeek 的 max 和 Codex 工具调用上下文。
+func TestAdaptorNativeResponsesPreservesDeepSeekRequest(t *testing.T) {
+	const body = `{
+		"model":"deepseek-v4-pro",
+		"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}],
+		"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],
+		"reasoning":{"effort":"max","summary":"auto"},
+		"store":false,
+		"stream":true
+	}`
+	var request dto.OpenAIResponsesRequest
+	require.NoError(t, common.Unmarshal([]byte(body), &request))
+	info := advancedCustomRelayInfo(&dto.AdvancedCustomConfig{
+		Routes: []dto.AdvancedCustomRoute{{
+			IncomingPath: "/v1/responses",
+			UpstreamPath: "/v1/responses",
+			Converter:    relayconvert.ConverterNone,
+		}},
+	})
+	info.OriginModelName = request.Model
+	info.UpstreamModelName = request.Model
+	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.RelayMode = relayconstant.RelayModeResponses
+	info.RequestURLPath = "/v1/responses"
+
+	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(advancedCustomGinContext("/v1/responses"), info, request)
+
+	require.NoError(t, err)
+	encoded, err := common.Marshal(converted)
+	require.NoError(t, err)
+	assert.JSONEq(t, body, string(encoded))
+	assert.Equal(t, constant.ChannelTypeAdvancedCustom, info.ChannelType)
+}
+
 func advancedCustomRelayInfo(config *dto.AdvancedCustomConfig) *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
 		RelayFormat:     types.RelayFormatOpenAI,

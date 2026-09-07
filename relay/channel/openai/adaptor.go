@@ -659,6 +659,7 @@ func detectImageMimeType(filename string) string {
 	}
 }
 
+// ConvertOpenAIResponsesRequest 合并模型推理修饰符并返回 Responses 上游请求；原生 DeepSeek V4 保留 max，其余请求沿用 OpenAI 推理力度投影，冲突或无效力度返回客户端错误。
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)
@@ -700,7 +701,14 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			info.UpstreamModelName = originModel
 		}
 	}
-	if canonicalEffort := kitreasoning.OpenAIEffort(kitreasoning.EffectiveEffort(currentIntent)); canonicalEffort != "" {
+	// 按最终出站模型识别提供商，支持模型映射和带命名空间的模型标识。
+	upstreamModel := request.Model[strings.LastIndex(request.Model, "/")+1:]
+	canonicalEffort := kitreasoning.EffectiveEffort(currentIntent)
+	// DeepSeek V4 原生 Responses 使用 max；跨协议转换继续遵循既有 OpenAI 投影。
+	if info == nil || info.RelayFormat != types.RelayFormatOpenAIResponses || !strings.HasPrefix(upstreamModel, "deepseek-v4-") {
+		canonicalEffort = kitreasoning.OpenAIEffort(canonicalEffort)
+	}
+	if canonicalEffort != "" {
 		if request.Reasoning == nil {
 			request.Reasoning = &dto.Reasoning{}
 		}

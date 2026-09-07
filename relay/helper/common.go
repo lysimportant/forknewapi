@@ -3,7 +3,9 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -84,13 +86,25 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 	_ = FlushWriter(c)
 }
 
+// ResponseChunkData 写入并刷新一个 Responses SSE 事件，保留原始 JSON 和既有回车转义。
+// 调用方须串行写入；上下文取消、写失败、短写或刷新失败时返回错误。
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) error {
+	if c == nil || c.Writer == nil {
+		return errors.New("context or writer is nil")
+	}
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
+	common.CustomEvent{}.WriteContentType(c.Writer)
+	frame := strings.ReplaceAll(fmt.Sprintf("event: %s\ndata: %s\n\n", resp.Type, data), "\r", "\\r")
+	written, err := io.WriteString(c.Writer, frame)
+	if err != nil {
+		return fmt.Errorf("write Responses stream event: %w", err)
+	}
+	if written != len(frame) {
+		return io.ErrShortWrite
+	}
 	return FlushWriter(c)
 }
 

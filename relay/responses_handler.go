@@ -19,6 +19,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ResponsesHelper 根据渠道原生能力或已确认的 Chat 转换路径处理 Responses 请求并结算用量。
+// 不支持的转换在请求上游前失败；已开流错误由响应处理器记录，避免重复请求。
 func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact &&
@@ -74,9 +76,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return newConvertRequestFailedError(c, info, err)
 	}
 
-	adaptor := GetAdaptor(info.ApiType)
-	if adaptor == nil {
-		return types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
+	adaptor, adaptorErr := newResponsesAdaptor(info)
+	if adaptorErr != nil {
+		return adaptorErr
 	}
 	adaptor.Init(info)
 	var requestBody io.Reader

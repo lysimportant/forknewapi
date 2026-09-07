@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,4 +84,34 @@ func TestConvertClaudeRequestPreservesAdaptiveThinkingForCompatibleModel(t *test
 	assert.Same(t, &topP, request.TopP)
 	assert.Equal(t, "xhigh", info.ReasoningEffort)
 	assert.Equal(t, "gpt-5.6-sol", info.UpstreamModelName)
+}
+
+// TestConvertOpenAIResponsesRequestPreservesDeepSeekRequest 保护 Sub2API 原生 Responses 的参数保真，避免引入 OpenAI 专属推理力度投影。
+func TestConvertOpenAIResponsesRequestPreservesDeepSeekRequest(t *testing.T) {
+	const body = `{
+		"model":"deepseek-v4-flash",
+		"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}],
+		"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],
+		"reasoning":{"effort":"max","summary":"auto"},
+		"store":false,
+		"stream":true
+	}`
+	var request dto.OpenAIResponsesRequest
+	require.NoError(t, common.Unmarshal([]byte(body), &request))
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAIResponses,
+		RelayMode:       relayconstant.RelayModeResponses,
+		OriginModelName: request.Model,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeSub2API,
+			UpstreamModelName: request.Model,
+		},
+	}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, request)
+
+	require.NoError(t, err)
+	encoded, err := common.Marshal(converted)
+	require.NoError(t, err)
+	assert.JSONEq(t, body, string(encoded))
 }
