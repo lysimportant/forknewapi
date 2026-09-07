@@ -1,6 +1,6 @@
 # Responses 渠道兼容与验收
 
-客户端使用 `POST /v1/responses`。渠道选择优先保留上游原生 Responses；只有已确认支持 Chat Completions 的渠道才自动进行协议转换，不在上游失败后重发请求探测协议。
+客户端可使用 `POST /responses` 或 `POST /v1/responses`；根路径在内部规范化后复用原鉴权、限流、插件与中继链，不重定向 POST。`/responses/compact` 和已有 retrieve 路径也提供相同别名。渠道选择优先保留上游原生 Responses；只有已确认支持 Chat Completions 的渠道才自动进行协议转换，不在上游失败后重发请求探测协议。
 
 ## 渠道选择
 
@@ -17,7 +17,7 @@
 ## Sub2 与 DeepSeek V4 推荐配置
 
 - 对提供标准 `/v1/responses` 的 Sub2 上游，优先选择 Sub2API 或 OpenAI 渠道，Base URL 填上游根地址，模型使用上游目录中的精确 ID，例如 `deepseek-v4-flash-vision-exp`。
-- DeepSeek 专用渠道原生 Responses 地址为 `Base URL + /responses`。如该上游要求 `/v1/responses`，该渠道 Base URL 应包含 `/v1`；请同时检查其他端点是否适合该配置。聚合上游优先使用上述 Sub2API/OpenAI 渠道。
+- OpenAI、NewAPI、Sub2API、DeepSeek 的标准 Responses 上游可填写根域名或带 `/v1` 的地址，自动补齐或去重后发送 `/v1/responses`；保留自定义路径前缀。其他协议仍遵循各渠道规则，非标准上游可用高级自定义显式设置路径。
 - 原生 DeepSeek V4 保留 `reasoning.effort=max`；GPT 模型和跨协议转换维持原有 OpenAI 推理参数映射。
 - Chat 桥接渠道须关闭全局和渠道请求体透传；冲突返回 400，避免把 Responses 请求体发到 Chat 端点。
 - Chat 桥接请求的参数覆盖在转换后执行，应使用 Chat 字段，例如 `max_tokens`；原生渠道仍使用 Responses 字段。
@@ -35,4 +35,6 @@
 
 2026-09-07 对照中，线上 new-api 返回 HTTP 500 / `convert_request_failed: not implemented`，Sub2 相同请求成功。修改版适配器通过真实 Sub2 完成两轮工具往返，最终 `OK`。这证明修改版原生转发可工作，不代表线上 new-api 已部署修复，也不能确定其实际命中的渠道类型。
 
-部署需要更新运行服务到本次修复版本并核对模型路由，随后在 Codex 验证文本、工具调用、工具结果回传和消费日志。尚未取得生产部署连接信息；当前未修改线上配置或服务。无数据库迁移，回滚使用此前服务版本及本次提交的 revert。
+后续复核已确认失败来自渠道 37 / DeepSeek（类型 43），fork 默认 main 的该转换函数仍是 `not implemented`，修复此前只在功能分支。main 落后功能分支 145 个提交，因此单独回补 DeepSeek 原生支持、根路径与 URL 规范化，不整体引入数据库和依赖变更。本文六渠道桥接等内容描述功能分支；main 的本轮补丁范围以其 `docs/responses-deployment.md` 为准。main 发布版本为 `v1.0.0-rc.33.responses.2`，功能分支同步版本为 `v1.0.0-rc.33.responses.2-preview`。
+
+尚未取得生产部署连接信息；当前未修改线上配置或服务。无数据库迁移，回滚使用此前服务版本及对应提交的 revert。

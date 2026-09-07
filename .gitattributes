@@ -1,6 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 
+# Docker 构建读取版本时必须使用 LF，避免将回车注入二进制版本。
+VERSION text eol=lf
+
 # Go files
 *.go text eol=lf
 

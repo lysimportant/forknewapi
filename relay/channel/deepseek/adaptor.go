@@ -56,6 +56,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
+// GetRequestURL 根据请求协议生成 DeepSeek 上游地址；Responses 接受根域名或带 /v1 的地址，其他协议保持专用路径。
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	fimBaseUrl := info.ChannelBaseUrl
 	switch info.RelayFormat {
@@ -69,7 +70,7 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		case constant.RelayModeCompletions:
 			return fmt.Sprintf("%s/completions", fimBaseUrl), nil
 		case constant.RelayModeResponses:
-			return fmt.Sprintf("%s/responses", info.ChannelBaseUrl), nil
+			return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, "/v1/responses", info.ChannelType), nil
 		default:
 			return fmt.Sprintf("%s/v1/chat/completions", info.ChannelBaseUrl), nil
 		}

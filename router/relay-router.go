@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetRelayRouter 注册模型与中继入口；Responses 压缩同时支持根路径及 /v1 路径。
 func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
@@ -99,11 +100,6 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatOpenAI)
 		})
 
-		// response related routes
-		httpRouter.POST("/responses/compact", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
-		})
-
 		// alpha search related routes (Codex standalone web search)
 		httpRouter.POST("/alpha/search", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIAlphaSearch)
@@ -168,6 +164,13 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.GET("/fine-tunes/:id/events", controller.RelayNotImplemented)
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
+
+	// 压缩请求与原有 /v1 HTTP 路由使用相同保护链，根路径别名复用整条链。
+	registerResponsesRoute(router, "POST", "/v1/responses/compact",
+		middleware.RouteTag("relay"), middleware.SystemPerformanceCheck(), middleware.TokenAuth(),
+		middleware.ModelRequestRateLimit(), middleware.Distribute(),
+		func(c *gin.Context) { controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction) },
+	)
 
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))

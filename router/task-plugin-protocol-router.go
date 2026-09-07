@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetTaskPluginProtocolRouter 按宿主协议注册共享入口，并为 Responses 注册复用相同处理链的根路径别名。
 func SetTaskPluginProtocolRouter(router *gin.Engine) {
 	for _, protocol := range pluginruntime.HostProtocols() {
 		for _, operation := range protocol.Operations {
@@ -18,7 +19,11 @@ func SetTaskPluginProtocolRouter(router *gin.Engine) {
 				if err != nil {
 					panic(err)
 				}
-				router.Handle(method, operation.Path, handlers...)
+				if protocol.Name == "openai_responses" {
+					registerResponsesRoute(router, method, operation.Path, handlers...)
+				} else {
+					router.Handle(method, operation.Path, handlers...)
+				}
 			}
 		}
 	}
