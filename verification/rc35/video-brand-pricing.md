@@ -1,8 +1,35 @@
+# 视频清晰度配置补齐（custom.4）
+
+版本：v1.0.0-rc.35.custom.4；基线：75615a080。日期：2026-09-09。
+
+按用户最新要求，视频型号主入口补齐1080p；没有720p且没有768p时补720p。有768p的型号保留768p，不额外加入720p。仍保留品牌低档、高档、原始大小写和所有旧价格；最多五个主入口，超出部分继续可编辑。补充的是定价配置，不承诺型号或动作支持该生成规格，实际接受范围由上游决定。已有协议校验保持有效：H3的1080P请求仍被拒绝（该型号原生仅768P/2K），Vidu Q1的请求仍归一到1080p；新增价格入口不伪造能力或绕过校验。
+
+- 通义万相、豆包、Google、Vertex AI、Grok、海螺、Vidu：沿用插件已有resolution价格行，在型号主入口补齐。H3主列768P/1080P/2K；Q1主列720p/1080p。未核实型号使用已有插件配置值，不再隐藏全部主档。
+- Sora：插件1.0.2在size枚举末尾增加1920x1080、1080x1920；提交及完成用量均保留真实尺寸，既有720与1024短边尺寸不删除。主入口保留两个1080尺寸；1024x1792在其他规格继续编辑。
+- 可灵：插件1.0.2新增720P/1080P价格分档，依据实际请求std/pro模式提取resolution，继续按Units计价；原单价表达式在两档使用相同单价。v2-master仍拒绝std。即梦：现有720/1080的product分别定价，保留两种1080产品的独立价格。
+- Suno是音乐插件，不添加视频规格。
+
+旧Sora分档表达式可继续在矩阵打开：新增组合继承原表达式的fallback常数与单价，不自动设免费，不保存时不改配置。原条件及原大小写保持不变。自定义复杂表达式仍按原限制保留原始编辑方式。内置插件随应用升级；手动安装的Sora/可灵插件需自行更新至1.0.2。
+
+无数据库、依赖或数据迁移；Responses与Sub2耗时颜色代码不变。升级前保留现有价格表达式备份；可回退custom.3应用版本，新增尺寸表达式在旧编辑器可能显示原始模式，勿重置已有价格。
+
+验证（Windows，Go1.26.0、Node24.12.0、Bun1.4.2；无新增依赖）：
+
+- `web: bun run test src/features/pricing src/features/system-settings/models src/features/task-plugins --maxWorkers=2`：21文件251项通过；最终可灵界面变更后定向video-resolution组件13项再通过。
+- `web: bun run typecheck`、`bun run build`：通过。5个TS/TSX文件定向oxlint无错误，task-expr有既有import顺序warning；保护版权头format通过。
+- `go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin -count=1 -timeout=180s`：三包最终通过。Sora六尺寸本地模拟HTTP转发、预扣及完成用量；可灵std/pro/metadata/默认模式、Units费率、master拒std及完成仅覆盖Units均通过。
+- `go test -mod=readonly ./service -run '^TestSettle_TieredUsageFactsMergeCompletionOverSubmission$' -count=1 -timeout=180s`：通过。`go test -mod=readonly . -run '^$' -timeout=180s`：主程序编译通过。
+- 两插件JS lint无错误，各有一处既有preserve-caught-error warning；oxfmt、Go格式及diff检查通过。
+- Chromium运行真实模型定价页，读取全部11个内置插件真实schema，以模拟API逐一点击全部主档并确认原单价保留：11/11通过。即梦保持product价格，Suno保持音乐价格。无新增页面错误，既有Combobox nativeButton警告仍存在。
+
+本轮不调用付费供应商接口。以下custom.3记录保留作官方能力依据；其中旧版主入口限制已由上述用户配置规则覆盖。
+
+---
 # 按品牌与官方文档展示视频规格
 
 版本：v1.0.0-rc.35.custom.3；基线：c069d5aa2。核对日期：2026-09-08。
 
-## 最终行为
+## custom.3行为记录
 
 主界面读取插件自己的resolution/size，按清晰度从低到高展示，最多五档，不凑数。已获得明确官方依据的型号进一步按型号筛选；供应商默认及超出主列的原配置在独立区域保留，保存仍使用原始枚举、大小写和价格索引。插件详情展示品牌并集，模型定价按具体型号展示。未验证的旧型号只保留原配置，不推断能力。
 

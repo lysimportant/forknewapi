@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+
 import { describe, test } from 'vitest'
 
 import { parseTaskTiersFromExpr } from '../lib/billing-expr'
@@ -175,6 +176,102 @@ describe('non-uniform task matrix conversion', () => {
 })
 
 describe('task matrix round trips', () => {
+  test('opens a legacy two-dimensional video matrix after size expansion without changing charges on save', () => {
+    /** 旧视频价格覆盖两个模式和两个尺寸，最后一个组合使用兜底价。 */
+    const legacySchema: BillingUsageSchema = {
+      seconds: { type: 'number', unit: 'second' },
+      mode: { enum: ['std', 'pro'] },
+      size: { enum: ['720p', '1080p'] },
+    }
+    /** 扩展尺寸后，两个模式下的新组合都必须继承原兜底价。 */
+    const expandedSchema: BillingUsageSchema = {
+      ...legacySchema,
+      size: { enum: ['720p', '1080p', '4k'] },
+    }
+    const expression =
+      'u("size") == "720p" && u("mode") == "pro" ? tier("pro-small", 0.3 + u("seconds") * 0.4) : u("mode") == "std" && u("size") == "1080p" ? tier("std-large", 0.2 + u("seconds") * 0.3) : u("mode") == "std" && u("size") == "720p" ? tier("std-small", 0.1 + u("seconds") * 0.2) : tier("fallback", 0.4 + u("seconds") * 0.5)'
+    const legacyTiers = parseTaskTiersFromExpr(expression, legacySchema)
+    assert.equal(legacyTiers.length, 4)
+    const matrix = tryParseTaskMatrixConfig(expression, expandedSchema)
+    assert.ok(matrix)
+    assert.deepEqual(matrix.rows, [
+      {
+        combination: { mode: 'std', size: '720p' },
+        constant: 0.1,
+        unitPrices: { seconds: 0.2 },
+      },
+      {
+        combination: { mode: 'std', size: '1080p' },
+        constant: 0.2,
+        unitPrices: { seconds: 0.3 },
+      },
+      {
+        combination: { mode: 'std', size: '4k' },
+        constant: 0.4,
+        unitPrices: { seconds: 0.5 },
+      },
+      {
+        combination: { mode: 'pro', size: '720p' },
+        constant: 0.3,
+        unitPrices: { seconds: 0.4 },
+      },
+      {
+        combination: { mode: 'pro', size: '1080p' },
+        constant: 0.4,
+        unitPrices: { seconds: 0.5 },
+      },
+      {
+        combination: { mode: 'pro', size: '4k' },
+        constant: 0.4,
+        unitPrices: { seconds: 0.5 },
+      },
+    ])
+    const savedExpression = generateTaskExprFromConfig(
+      { tiers: taskMatrixToTiers(matrix, expandedSchema) },
+      expandedSchema
+    )
+    assert.deepEqual(
+      tryParseTaskMatrixConfig(savedExpression, expandedSchema),
+      matrix
+    )
+    const savedTiers = parseTaskTiersFromExpr(savedExpression, expandedSchema)
+    assert.equal(savedTiers.length, 6)
+    for (const row of matrix.rows) {
+      for (const seconds of [0, 3, 3600]) {
+        const sample = { ...row.combination, seconds }
+        const original = evaluateTaskVisualConfig(
+          { tiers: legacyTiers },
+          sample
+        )
+        const saved = evaluateTaskVisualConfig({ tiers: savedTiers }, sample)
+        assert.ok(original)
+        assert.ok(saved)
+        assert.equal(saved.total, original.total)
+        assert.equal(
+          saved.total,
+          row.constant + seconds * row.unitPrices.seconds
+        )
+      }
+    }
+    // schema 外的尺寸仍进入旧兜底，保存不能将它改成某个显式组合的价格。
+    for (const mode of ['std', 'pro']) {
+      for (const size of ['unknown-size', '']) {
+        for (const seconds of [0, 3, 3600]) {
+          const sample = { mode, size, seconds }
+          const original = evaluateTaskVisualConfig(
+            { tiers: legacyTiers },
+            sample
+          )
+          const saved = evaluateTaskVisualConfig({ tiers: savedTiers }, sample)
+          assert.ok(original)
+          assert.ok(saved)
+          assert.equal(original.total, 0.4 + seconds * 0.5)
+          assert.equal(saved.total, original.total)
+        }
+      }
+    }
+  })
+
   test('preserves a uniform matrix through expression generation and recognition', () => {
     const config: TaskMatrixConfig = {
       rows: getTaskEnumCombinations(doubleEnumSchema).map((combination) => ({
@@ -284,6 +381,32 @@ describe('flat task expression recognition', () => {
 })
 
 describe('task matrix recognition rejection matrix', () => {
+  test.each([
+    ['partial conditions', 'u("mode") == "std"'],
+    ['duplicate fields', 'u("mode") == "std" && u("mode") == "pro"'],
+    ['unknown fields', 'u("unknown") == "std" && u("size") == "720p"'],
+    ['unknown values', 'u("mode") == "std" && u("size") == "unknown"'],
+    ['non-equality conditions', 'u("mode") != "std" && u("size") == "720p"'],
+    ['alternative conditions', 'u("mode") == "std" || u("size") == "720p"'],
+  ])(
+    'rejects %s even when multiple combinations could use fallback',
+    (_name, condition) => {
+      /** 稀疏二维 schema 确保无效结构不会仅因档位数量被拒绝。 */
+      const schema: BillingUsageSchema = {
+        seconds: { type: 'number', unit: 'second' },
+        mode: { enum: ['std', 'pro'] },
+        size: { enum: ['720p', '1080p', '4k'] },
+      }
+      assert.equal(
+        tryParseTaskMatrixConfig(
+          `${condition} ? tier("explicit", u("seconds") * 0.2) : tier("fallback", u("seconds") * 0.5)`,
+          schema
+        ),
+        null
+      )
+    }
+  )
+
   test('rejects expressions outside the task tier grammar', () => {
     assert.equal(
       tryParseTaskMatrixConfig('u("seconds") * 0.4', singleEnumSchema),
@@ -349,7 +472,7 @@ describe('task matrix recognition rejection matrix', () => {
   test('rejects duplicate combinations across tiers', () => {
     const schema: BillingUsageSchema = {
       seconds: { type: 'number', unit: 'second' },
-      mode: { enum: ['std', 'pro', 'ultra'] },
+      mode: { enum: ['std', 'pro', 'ultra', 'new'] },
     }
     const expression =
       'u("mode") == "std" ? tier("one", u("seconds") * 0.4) : u("mode") == "std" ? tier("two", u("seconds") * 0.6) : tier("base", u("seconds") * 0.8)'
@@ -357,7 +480,7 @@ describe('task matrix recognition rejection matrix', () => {
     assert.equal(tryParseTaskMatrixConfig(expression, schema), null)
   })
 
-  test('rejects tier counts below or above the combination count', () => {
+  test('assigns uncovered enum values the fallback price and rejects an unreachable fallback', () => {
     const threeValueSchema: BillingUsageSchema = {
       seconds: { type: 'number', unit: 'second' },
       mode: { enum: ['std', 'pro', 'ultra'] },
@@ -367,9 +490,27 @@ describe('task matrix recognition rejection matrix', () => {
     const excessExpression =
       'u("mode") == "std" ? tier("std", u("seconds") * 0.4) : u("mode") == "pro" ? tier("pro", u("seconds") * 0.6) : tier("extra", u("seconds") * 0.8)'
 
-    assert.equal(
+    assert.deepEqual(
       tryParseTaskMatrixConfig(partialExpression, threeValueSchema),
-      null
+      {
+        rows: [
+          {
+            combination: { mode: 'std' },
+            constant: 0,
+            unitPrices: { seconds: 0.4 },
+          },
+          {
+            combination: { mode: 'pro' },
+            constant: 0,
+            unitPrices: { seconds: 0.8 },
+          },
+          {
+            combination: { mode: 'ultra' },
+            constant: 0,
+            unitPrices: { seconds: 0.8 },
+          },
+        ],
+      }
     )
     assert.equal(
       tryParseTaskMatrixConfig(excessExpression, singleEnumSchema),

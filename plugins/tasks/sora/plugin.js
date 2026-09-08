@@ -4,10 +4,10 @@ export const meta = {
   name: "Sora",
   icon: "Sora.Color",
   description: {
-    en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
-    zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
+    en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix). Configured output sizes depend on upstream model and channel support.",
+    zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）。配置尺寸是否可用由上游模型与渠道支持决定。",
   },
-  version: "1.0.1",
+  version: "1.0.2",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -19,8 +19,11 @@ export const meta = {
       description: { en: "Requested video duration in seconds.", zh: "请求的视频时长，单位为秒。" },
     },
     size: {
-      enum: ["720x1280", "1280x720", "1792x1024", "1024x1792"],
-      description: { en: "Requested output video dimensions.", zh: "请求的输出视频尺寸。" },
+      enum: ["720x1280", "1280x720", "1792x1024", "1024x1792", "1920x1080", "1080x1920"],
+      description: {
+        en: "Requested output video dimensions; availability depends on upstream model and channel support.",
+        zh: "请求的输出视频尺寸；是否可用由上游模型与渠道支持决定。",
+      },
     },
   },
   protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
@@ -122,12 +125,13 @@ export function extractUsage(ctx) {
   return { seconds: Math.min(seconds, 3600), size: req.size || "720x1280" };
 }
 
+/** 提取完成响应中的有效秒数和配置尺寸；缺失或未声明的字段不覆盖预扣用量。 */
 export function extractUsageOnComplete(task, taskResult, body) {
   const facts = {};
   const seconds = Number((body || {}).seconds || (body || {}).duration || 0);
   if (Number.isFinite(seconds) && seconds > 0) facts.seconds = Math.min(seconds, 3600);
   const size = trimmed((body || {}).size);
-  if (["720x1280", "1280x720", "1792x1024", "1024x1792"].includes(size)) facts.size = size;
+  if (["720x1280", "1280x720", "1792x1024", "1024x1792", "1920x1080", "1080x1920"].includes(size)) facts.size = size;
   return facts;
 }
 

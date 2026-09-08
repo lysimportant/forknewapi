@@ -34,10 +34,12 @@ describe('供应商原生清晰度展示', () => {
     ])
     expect(getPrimaryVideoResolutions(schema, 'wan2.2-i2v-plus')).toEqual([
       '480P',
+      '720P',
       '1080P',
     ])
     expect(getPrimaryVideoResolutions(schema, 'wanx2.1-i2v-plus')).toEqual([
       '720P',
+      '1080P',
     ])
     expect(getVideoResolutions(schema)).toEqual(['480P', '720P', '1080P'])
     expect(getPrimaryVideoResolutions(schema, '__proto__')).toEqual([
@@ -50,7 +52,30 @@ describe('供应商原生清晰度展示', () => {
         { resolution: { enum: ['480p', '720p', '1080p', '4k'] } },
         'doubao-seedance-2-0-mini-260615'
       )
-    ).toEqual(['480p', '720p'])
+    ).toEqual(['480p', '720p', '1080p'])
+  })
+  test('海螺H3补1080P但有768P不补720P，原schema价格档位不删除', () => {
+    const values = ['512P', '768P', '720P', '1080P', '2K']
+    expect(
+      getPrimaryVideoResolutions({ resolution: { enum: values } }, 'MiniMax-H3')
+    ).toEqual(['768P', '1080P', '2K'])
+    expect(values).toEqual(['512P', '768P', '720P', '1080P', '2K'])
+  })
+  test('1080尺寸不会被五项上限挤出，保留横竖尺寸原值', () => {
+    expect(
+      getPrimaryVideoResolutions({
+        size: {
+          enum: [
+            '720x1280',
+            '1280x720',
+            '1792x1024',
+            '1024x1792',
+            '1920x1080',
+            '1080x1920',
+          ],
+        },
+      })
+    ).toEqual(['720x1280', '1280x720', '1792x1024', '1920x1080', '1080x1920'])
   })
   test('排序返回副本并保留非标准短边、大小写、未知规格与同短边尺寸顺序', () => {
     const values = [

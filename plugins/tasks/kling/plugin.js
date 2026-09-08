@@ -7,12 +7,19 @@ export const meta = {
     en: "Kuaishou Kling video generation (text-to-video and image-to-video)",
     zh: "快手可灵视频生成（文生视频、图生视频）",
   },
-  version: "1.0.1",
+  version: "1.0.2",
   author: { name: "QuantumNous" },
   channelTypes: [50],
   models: ["kling-v1", "kling-v1-6", "kling-v2-master"],
   fetchMode: "per_task",
   usageSchema: {
+    resolution: {
+      enum: ["720P", "1080P"],
+      description: {
+        en: "Requested mode: std corresponds to 720P, pro to 1080P. Model mode restrictions still apply.",
+        zh: "请求模式对应清晰度：std为720P，pro为1080P；仍受型号支持的模式限制。",
+      },
+    },
     units: {
       type: "number",
       unit: "credit",
@@ -23,11 +30,11 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "v1 std 5s", facts: { units: 1 } },
-    { label: "v1 pro 5s", facts: { units: 3.5 } },
-    { label: "v1-6 std 5s", facts: { units: 2 } },
-    { label: "v1-6 pro 10s", facts: { units: 7 } },
-    { label: "v2-master pro 5s", facts: { units: 10 } },
+    { label: "v1 std 5s", facts: { units: 1, resolution: "720P" } },
+    { label: "v1 pro 5s", facts: { units: 3.5, resolution: "1080P" } },
+    { label: "v1-6 std 5s", facts: { units: 2, resolution: "720P" } },
+    { label: "v1-6 pro 10s", facts: { units: 7, resolution: "1080P" } },
+    { label: "v2-master pro 5s", facts: { units: 10, resolution: "1080P" } },
   ],
   protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
   routes: [
@@ -265,13 +272,14 @@ export function parseSubmitResponse(ctx, resp) {
   return { taskId: result.data.task_id, taskData: result };
 }
 
+/** 提取预估Units及请求模式对应的清晰度；旧倍率计费不新增倍率，非法模式仍报错。 */
 export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
   const req = ctx.requestBody || {};
   const model = submitModel(ctx, req);
   const duration = outboundDuration(req);
   const mode = outboundMode(req, model);
-  return { units: estimateUnits(model, mode, duration) };
+  return { units: estimateUnits(model, mode, duration), resolution: mode === "pro" ? "1080P" : "720P" };
 }
 
 export function buildQueryRequest(ctx) {
@@ -321,6 +329,7 @@ export function buildContentRequest(ctx) {
   return { url: url, method: ctx.clientRequest.method, credentialless: true };
 }
 
+/** 完成用量仅覆盖上游实际Units；宿主按键合并并保留预扣时的模式清晰度，不从Units反推。 */
 export function extractUsageOnComplete(_task, _taskResult, body) {
   const data = (body && body.data) || {};
   if (

@@ -37,28 +37,100 @@ const schema: BillingUsageSchema = {
 }
 
 describe('视频清晰度浏览与原始计费隔离', () => {
-  test('可灵显示官方模式对应说明，同时保持原生Units定价', () => {
+  test.each([
+    {
+      model: 'MiniMax-H3',
+      values: ['512P', '768P', '720P', '1080P', '2K'],
+      expected: ['768P', '1080P', '2K'],
+    },
+    {
+      model: 'viduq1',
+      values: ['360p', '540p', '720p', '1080p'],
+      expected: ['720p', '1080p'],
+    },
+    {
+      model: 'wanx2.1-i2v-plus',
+      values: ['480P', '720P', '1080P'],
+      expected: ['720P', '1080P'],
+    },
+  ])(
+    '$model补齐入口可编辑且保留每个原始档位价格',
+    async ({ model, values, expected }) => {
+      const pricingSchema = {
+        seconds: { type: 'number' as const, unit: 'second' as const },
+        resolution: { enum: values },
+      }
+      const rows = createDefaultTaskMatrixConfig(pricingSchema).rows.map(
+        (row, index) => ({ ...row, unitPrices: { seconds: index + 1 } })
+      )
+      const onChange = vi.fn()
+      render(
+        <TaskUsagePricingEditor
+          isVideo
+          modelName={model}
+          billingExpr={generateTaskExprFromConfig(
+            { tiers: taskMatrixToTiers({ rows }, pricingSchema) },
+            pricingSchema
+          )}
+          requestRuleExpr=''
+          usageSchema={pricingSchema}
+          onBillingExprChange={onChange}
+          onRequestRuleExprChange={vi.fn()}
+        />
+      )
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(
+        expected
+      )
+      const fullHd = values.find((value) => value.toLowerCase() === '1080p')
+      if (!fullHd) throw new Error('测试配置缺少1080p')
+      await userEvent.click(screen.getByRole('tab', { name: fullHd }))
+      const input = screen.getByRole('spinbutton', {
+        name: `seconds: ${fullHd}`,
+      })
+      expect(input).toHaveValue(values.indexOf(fullHd) + 1)
+      expect(onChange).not.toHaveBeenCalled()
+      fireEvent.change(input, { target: { value: '9' } })
+      expect(
+        tryParseTaskMatrixConfig(onChange.mock.lastCall?.[0], pricingSchema)
+          ?.rows
+      ).toEqual(
+        rows.map((row) =>
+          row.combination.resolution === fullHd
+            ? { ...row, unitPrices: { seconds: 9 } }
+            : row
+        )
+      )
+    }
+  )
+  test('可灵补720P与1080P分档时原生Units单价保持不变', async () => {
     render(
       <TaskUsagePricingEditor
         isVideo
         modelName='kling-v1'
         billingExpr='tier("base", u("units") * 0.14)'
         requestRuleExpr=''
-        usageSchema={{ units: { type: 'number', unit: 'credit' } }}
+        usageSchema={{
+          units: { type: 'number', unit: 'credit' },
+          resolution: { enum: ['720P', '1080P'] },
+        }}
         onBillingExprChange={vi.fn()}
         onRequestRuleExprChange={vi.fn()}
       />
     )
     expect(screen.getByText('std → 720P; pro → 1080P')).toBeInTheDocument()
-    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
-    expect(
-      screen
-        .getAllByRole('spinbutton')
-        .some((input) => (input as HTMLInputElement).value === '0.14')
-    ).toBe(true)
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      '720P',
+      '1080P',
+    ])
+    for (const value of ['720P', '1080P']) {
+      await userEvent.click(screen.getByRole('tab', { name: value }))
+      expect(
+        screen.getByRole('spinbutton', { name: `units: ${value}` })
+      ).toHaveValue(0.14)
+    }
   })
 
-  test('未确认型号不猜分辨率，已有价格仍可在其他规格中编辑', async () => {
+  test('未确认型号使用插件配置档位，720和1080价格均可编辑', async () => {
     render(
       <TaskUsagePricingEditor
         isVideo
@@ -67,20 +139,26 @@ describe('视频清晰度浏览与原始计费隔离', () => {
         requestRuleExpr=''
         usageSchema={{
           seconds: { type: 'number', unit: 'second' },
-          resolution: { enum: ['360p', '720p'] },
+          resolution: { enum: ['360p', '720p', '1080p'] },
         }}
         onBillingExprChange={vi.fn()}
         onRequestRuleExprChange={vi.fn()}
       />
     )
-    expect(screen.getByText('Video resolution: Unknown')).toBeInTheDocument()
-    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Additional provider specifications' })
-    )
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      '360p',
+      '720p',
+      '1080p',
+    ])
     expect(
       screen.getByRole('spinbutton', { name: 'seconds: 360p' })
     ).toHaveValue(0.4)
+    for (const value of ['720p', '1080p']) {
+      await userEvent.click(screen.getByRole('tab', { name: value }))
+      expect(
+        screen.getByRole('spinbutton', { name: `seconds: ${value}` })
+      ).toHaveValue(0.4)
+    }
   })
 
   test('Grok只主列官方三档，旧4K独立编辑且默认价格保留', async () => {

@@ -194,6 +194,12 @@ export function taskMatrixToTiers(
   }))
 }
 
+/**
+ * 将完整枚举条件和最终兜底价解析为当前 schema 的价格矩阵。
+ * @param expression 原任务计费表达式；空值或不支持的结构返回 null。
+ * @param schema 当前用量字段定义；枚举新增组合继承原表达式的兜底常数和单价。
+ * @returns 按 schema 排序的矩阵；条件不完整、重复、未知或兜底不可达时返回 null。
+ */
 export function tryParseTaskMatrixConfig(
   expression: string | null | undefined,
   schema: BillingUsageSchema
@@ -221,7 +227,7 @@ export function tryParseTaskMatrixConfig(
     }
   }
 
-  if (tiers.length !== combinations.length) return null
+  if (tiers.length > combinations.length) return null
   const fallbackTier = tiers.at(-1)
   if (!fallbackTier || fallbackTier.conditions.length !== 0) return null
 
@@ -254,11 +260,14 @@ export function tryParseTaskMatrixConfig(
     (combination) =>
       !tiersByCombination.has(taskMatrixCombinationKey(combination, enumFields))
   )
-  if (missingCombinations.length !== 1) return null
-  tiersByCombination.set(
-    taskMatrixCombinationKey(missingCombinations[0], enumFields),
-    fallbackTier
-  )
+  if (missingCombinations.length === 0) return null
+  // 枚举扩展不会改变原表达式：所有未命中显式条件的组合仍使用同一个兜底价。
+  for (const combination of missingCombinations) {
+    tiersByCombination.set(
+      taskMatrixCombinationKey(combination, enumFields),
+      fallbackTier
+    )
+  }
 
   const rows: TaskMatrixRow[] = []
   for (const combination of combinations) {

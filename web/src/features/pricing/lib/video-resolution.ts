@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { BillingUsageSchema, PricingModel } from '../types'
 
-/** 官方文档已明确的型号规格；仅约束主展示入口，不删除旧价格。来源与型号差异见 verification/rc35/video-brand-pricing.md。 */
+/** 官方文档已明确的型号规格；作为主入口基础，另按配置需求补齐720/1080档，不删除旧价格。来源见 verification/rc35/video-brand-pricing.md。 */
 const documentedModelResolutions: Record<string, readonly string[]> = {
   'grok-imagine-video-1.5': ['480p', '720p', '1080p'],
   'wan2.7-t2v': ['720P', '1080P'],
@@ -48,7 +48,7 @@ const documentedModelResolutions: Record<string, readonly string[]> = {
   viduq1: ['1080p'],
   viduq2: ['540p', '720p', '1080p'],
   'vidu2.0': ['360p', '720p', '1080p'],
-  // 当前文档未验证这些旧型号的输出规格，原 schema 全部保留在其他规格区。
+  // 未验证旧型号使用插件schema的配置档位，不将其声明为官方生成能力。
   'vidu1.5': [],
   'S2V-01': [],
   'doubao-seedance-1-0-lite-t2v': [],
@@ -94,7 +94,7 @@ export function getVideoResolutions(schema: BillingUsageSchema): string[] {
     )
 }
 
-/** 主入口最多展示五项；已核对型号只主列文档确认档位，其余已有规格保留在原 schema 与独立编辑区。 */
+/** 主入口优先保留1080档及720/768档，最多五项；仅选择实际schema价格行，配置入口不代表上游支持。 */
 export function getPrimaryVideoResolutions(
   schema: BillingUsageSchema,
   modelName?: string
@@ -104,10 +104,16 @@ export function getPrimaryVideoResolutions(
     modelName && Object.hasOwn(documentedModelResolutions, modelName)
       ? documentedModelResolutions[modelName]
       : undefined
-  if (documented) {
-    return resolutions.filter((value) => documented.includes(value)).slice(0, 5)
-  }
-  return resolutions.slice(0, 5)
+  const base = documented?.length
+    ? resolutions.filter((value) => documented.includes(value))
+    : resolutions
+  const has768 = base.some((value) => resolutionShortEdge(value) === 768)
+  const required = resolutions.filter((value) => {
+    const edge = resolutionShortEdge(value)
+    return edge === 1080 || (edge === 720 && !has768)
+  })
+  const selected = new Set([...new Set([...required, ...base])].slice(0, 5))
+  return resolutions.filter((value) => selected.has(value))
 }
 
 /** 只识别原生清晰度/尺寸字段；产品分级和 units 不推断清晰度。 */
