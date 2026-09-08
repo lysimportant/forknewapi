@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -32,7 +33,7 @@ func newResponsesAdaptor(info *relaycommon.RelayInfo) (channel.Adaptor, *types.N
 	switch info.ApiType {
 	case constant.APITypeJina, constant.APITypeMokaAI, constant.APITypeJimeng, constant.APITypeReplicate:
 		return nil, responsesChatRequestError(fmt.Errorf("channel %s does not support text Responses", adaptor.GetChannelName()))
-	case constant.APITypeOpenAI, constant.APITypeAli, constant.APITypeGemini, constant.APITypePerplexity,
+	case constant.APITypeSub2API, constant.APITypeNewAPI, constant.APITypeOpenAI, constant.APITypeAli, constant.APITypeGemini, constant.APITypePerplexity,
 		constant.APITypeCloudflare, constant.APITypeDeepSeek, constant.APITypeVolcEngine,
 		constant.APITypeOpenRouter, constant.APITypeXinference, constant.APITypeXai,
 		constant.APITypeCodex, constant.APITypeAdvancedCustom:
@@ -110,6 +111,20 @@ func (a *responsesChatAdaptor) GetRequestURL(info *relaycommon.RelayInfo) (strin
 func (a *responsesChatAdaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	if info.ApiType == constant.APITypePaLM && request.MaxOutputTokens != nil {
 		return nil, responsesChatRequestError(fmt.Errorf("PaLM generateMessage cannot enforce max_output_tokens"))
+	}
+	// rc35 转换器允许以诊断方式丢弃托管工具；通用桥接必须在转换前拒绝，不能向用户返回语义不完整的成功响应。
+	if len(request.Tools) > 0 && string(request.Tools) != "null" {
+		var tools []struct {
+			Type string `json:"type"`
+		}
+		if err := common.Unmarshal(request.Tools, &tools); err != nil {
+			return nil, responsesChatRequestError(fmt.Errorf("invalid Responses tools: %w", err))
+		}
+		for _, tool := range tools {
+			if tool.Type != "function" {
+				return nil, responsesChatRequestError(fmt.Errorf("Responses Chat conversion cannot preserve tool type %q", tool.Type))
+			}
+		}
 	}
 	info.InitRequestConversionChain()
 	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, &request)

@@ -10,12 +10,12 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/relayconvert"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -67,7 +67,7 @@ func newResponsesChatWriter(c *gin.Context, info *relaycommon.RelayInfo) (*respo
 	}
 	w := &responsesChatWriter{ResponseWriter: c.Writer, client: c, info: info, header: c.Writer.Header().Clone(), status: http.StatusOK, size: -1, stream: info.IsStream, items: make(map[string]map[string]any), toolIDs: make(map[int]string), toolNames: make(map[int]string)}
 	if info.IsStream {
-		state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, relayconvert.ResponseStreamOptions{ID: helper.GetResponseID(c), Model: info.UpstreamModelName})
+		state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, relayconvert.ResponseStreamOptions{ID: helper.GetResponseID(c), Model: info.UpstreamModelName, AllowCumulativeToolNames: true})
 		if err != nil {
 			return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponse, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 		}
@@ -341,7 +341,9 @@ func (w *responsesChatWriter) sendResults(results []relayconvert.ResponseResult)
 				return err
 			}
 			if item["type"] == "reasoning" {
-				item["summary"] = item["content"]
+				if _, exists := item["summary"]; !exists {
+					item["summary"] = item["content"]
+				}
 				delete(item, "content")
 			}
 			w.items[event.Payload.Item.ID] = item
@@ -361,7 +363,9 @@ func (w *responsesChatWriter) sendResults(results []relayconvert.ResponseResult)
 			return err
 		}
 		if item, ok := payload["item"].(map[string]any); ok && item["type"] == "reasoning" {
-			item["summary"] = item["content"]
+			if _, exists := item["summary"]; !exists {
+				item["summary"] = item["content"]
+			}
 			delete(item, "content")
 		}
 		switch event.Type {
@@ -483,7 +487,9 @@ func normalizeResponsesChatOutput(response map[string]any) {
 	if output, ok := response["output"].([]any); ok {
 		for _, rawItem := range output {
 			if item, ok := rawItem.(map[string]any); ok && item["type"] == "reasoning" {
-				item["summary"] = item["content"]
+				if _, exists := item["summary"]; !exists {
+					item["summary"] = item["content"]
+				}
 				delete(item, "content")
 			}
 		}
@@ -682,7 +688,10 @@ func (w *responsesChatWriter) Finish(usage *dto.Usage, upstreamErr *types.NewAPI
 		}
 		if w.err == nil {
 			if usage != nil {
-				w.state.SetUsage(responsesClientUsage(usage))
+				// 转换器拥有自己的用量副本，避免 rc35 快照规范化回写原渠道结算对象。
+				clientUsage := *responsesClientUsage(usage)
+				clientUsage.BillingUsage = dto.CloneBillingUsage(clientUsage.BillingUsage)
+				w.state.SetUsage(&clientUsage)
 			}
 			results, err := relayconvert.FinalizeStreamResponse(w.client, w.info, w.state)
 			if err == nil {

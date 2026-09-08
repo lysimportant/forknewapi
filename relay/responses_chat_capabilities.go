@@ -7,7 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
 // validateResponsesChatCapabilities 在发送请求前拒绝现有渠道适配器必然丢失的工具与媒体字段。

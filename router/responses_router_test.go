@@ -20,6 +20,8 @@ func TestResponsesRoutesRequireAuthentication(t *testing.T) {
 	t.Cleanup(func() { gin.SetMode(previousMode) })
 	engine := gin.New()
 	SetRelayRouter(engine)
+	// 与生产 SetRouter 一致，rc35 的版本化 Responses 入口由插件协议路由器注册。
+	SetTaskPluginProtocolRouter(engine)
 	engine.NoRoute(func(c *gin.Context) { c.Data(http.StatusOK, "text/html", []byte("dashboard")) })
 	for _, path := range []string{"/responses", "/v1/responses", "/responses/compact", "/v1/responses/compact"} {
 		t.Run(path, func(t *testing.T) {

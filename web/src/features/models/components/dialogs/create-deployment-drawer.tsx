@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Combobox } from '@/components/ui/combobox'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo } from 'react'
@@ -31,6 +32,7 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { JsonCodeEditor } from '@/components/json-code-editor'
 import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import {
@@ -42,14 +44,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Sheet,
   SheetClose,
@@ -59,7 +54,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
-import { Textarea } from '@/components/ui/textarea'
 
 import {
   checkClusterNameAvailability,
@@ -459,32 +453,19 @@ export function CreateDeploymentDrawer({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>{t('Hardware type')}</FormLabel>
-                      <Select
-                        items={[
+                      <FormControl><Combobox
+options={[
                           ...hardwareOptions.map((opt) => ({
                             value: opt.value,
                             label: opt.label,
                           })),
                         ]}
-                        value={field.value}
-                        onValueChange={(v) => field.onChange(v)}
-                        disabled={isLoadingHardware}
-                      >
-                        <FormControl>
-                          <SelectTrigger className='w-full'>
-                            <SelectValue placeholder={t('Select')} />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent alignItemWithTrigger={false}>
-                          <SelectGroup>
-                            {hardwareOptions.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
+value={field.value}
+onValueChange={(v) => field.onChange(v)}
+disabled={isLoadingHardware}
+className='w-full'
+placeholder={t('Select')}
+/></FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -702,10 +683,14 @@ export function CreateDeploymentDrawer({
                     <FormItem>
                       <FormLabel>{t('Environment variables (JSON)')}</FormLabel>
                       <FormControl>
-                        <Textarea
-                          className='min-h-24 font-mono text-xs'
+                        <JsonCodeEditor
+                          value={field.value || ''}
+                          onChange={field.onChange}
+                          name={field.name}
+                          onBlur={field.onBlur}
+                          textareaRef={field.ref}
                           placeholder='{"KEY":"VALUE"}'
-                          {...field}
+                          heightClassName='h-40 min-h-40 max-h-40'
                         />
                       </FormControl>
                       <FormMessage />
@@ -722,10 +707,14 @@ export function CreateDeploymentDrawer({
                         {t('Secret environment variables (JSON)')}
                       </FormLabel>
                       <FormControl>
-                        <Textarea
-                          className='min-h-24 font-mono text-xs'
+                        <JsonCodeEditor
+                          value={field.value || ''}
+                          onChange={field.onChange}
+                          name={field.name}
+                          onBlur={field.onBlur}
+                          textareaRef={field.ref}
                           placeholder='{"SECRET":"VALUE"}'
-                          {...field}
+                          heightClassName='h-40 min-h-40 max-h-40'
                         />
                       </FormControl>
                       <FormMessage />

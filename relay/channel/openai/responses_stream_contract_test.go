@@ -13,10 +13,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,7 +94,7 @@ func TestResponsesStreamContractTerminalFailure(t *testing.T) {
 			assert.Equal(t, 4, usage.PromptTokensDetails.CachedTokens)
 
 			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1)
-			streamLog, ok := other["stream_status"].(map[string]interface{})
+			streamLog, ok := other.Snapshot()["stream_status"].(map[string]interface{})
 			require.True(t, ok, "消费日志必须包含流状态")
 			assert.Equal(t, "error", streamLog["status"], "失败或未完成终态不能在消费日志中显示为成功")
 		})
@@ -161,7 +161,7 @@ func TestResponsesStreamContractMissingTerminal(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(recorder.Body.String(), "event: error\n"), "截断只补发一个流内错误")
 	assert.NotContains(t, recorder.Body.String(), "event: response.completed")
 	other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1)
-	streamLog, ok := other["stream_status"].(map[string]interface{})
+	streamLog, ok := other.Snapshot()["stream_status"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "error", streamLog["status"], "截断的回复不能显示为正常结束")
 }
@@ -290,4 +290,23 @@ func TestResponsesStreamContractCompletedClosesUpstream(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "data: "+terminal+"\n\n")
 	require.NotNil(t, info.StreamStatus)
 	assert.False(t, info.StreamStatus.HasErrors())
+}
+
+// TestResponsesStreamContractUsageMetadata 保护 rc35 用量来源、成本与多模态缓存明细，同时保留原生用量不创建转换快照的契约。
+func TestResponsesStreamContractUsageMetadata(t *testing.T) {
+	const event = `{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":20,"output_tokens":7,"usage_semantic":"openai","usage_source":"upstream","cost":0.25,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":2,"cached_creation_tokens":3,"text_tokens":10,"image_tokens":6,"audio_tokens":4},"output_tokens_details":{"reasoning_tokens":5}}}}`
+	c, recorder, response, info := newResponsesStreamContractFixture(t, "data: "+event+"\n\n", true)
+	usage, apiErr := OaiResponsesStreamHandler(c, info, response)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), event)
+	assert.Equal(t, "openai", usage.UsageSemantic)
+	assert.Equal(t, "upstream", usage.UsageSource)
+	assert.Equal(t, 0.25, usage.Cost)
+	assert.Nil(t, usage.BillingUsage)
+	assert.Equal(t, 20, usage.InputTokens)
+	assert.Equal(t, 7, usage.OutputTokens)
+	assert.Equal(t, dto.InputTokenDetails{CachedTokens: 4, CacheWriteTokens: 2, CachedCreationTokens: 3, TextTokens: 10, ImageTokens: 6, AudioTokens: 4}, usage.PromptTokensDetails)
+	assert.Equal(t, 5, usage.CompletionTokenDetails.ReasoningTokens)
+	assert.Equal(t, 27, usage.TotalTokens)
 }

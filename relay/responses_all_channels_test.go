@@ -12,11 +12,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -143,6 +143,8 @@ func TestResponsesAllAPITypeRequestConversion(t *testing.T) {
 		constant.APITypeSiliconFlow:    {"SiliconFlow", constant.ChannelTypeSiliconFlow, "test-model", "messages.0.content", "hello", false},
 		constant.APITypeVertexAi:       {"Vertex Gemini", constant.ChannelTypeVertexAi, "gemini-2.5-flash", "contents.0.parts.0.text", "hello", false},
 		constant.APITypeMistral:        {"Mistral", constant.ChannelTypeMistral, "mistral-small-latest", "messages.0.content.0.text", "hello", false},
+		constant.APITypeSub2API:        {"Sub2API", constant.ChannelTypeSub2API, "test-model", "input", "hello", false},
+		constant.APITypeNewAPI:         {"NewAPI", constant.ChannelTypeNewAPI, "test-model", "input", "hello", false},
 		constant.APITypeDeepSeek:       {"DeepSeek", constant.ChannelTypeDeepSeek, "deepseek-v4-flash-vision-exp", "input", "hello", false},
 		constant.APITypeMokaAI:         {"MokaAI", constant.ChannelTypeMokaAI, "moka-ai/m3e-base", "", "", true},
 		constant.APITypeVolcEngine:     {"VolcEngine", constant.ChannelTypeVolcEngine, "doubao-test", "input", "hello", false},

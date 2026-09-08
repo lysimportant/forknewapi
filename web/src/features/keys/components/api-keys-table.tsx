@@ -188,7 +188,7 @@ function ApiKeysMobileList({
   )
 }
 
-export function ApiKeysTable({ keys, keys2 }: {keys: string, keys2: string}) {
+export function ApiKeysTable({ keys, keys2 }: { keys: string; keys2: string }) {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const { copyToClipboard } = useCopyToClipboard({
@@ -312,6 +312,7 @@ export function ApiKeysTable({ keys, keys2 }: {keys: string, keys2: string}) {
       applyHeaderSize
       toolbarProps={{
         searchPlaceholder: t('Filter by name...'),
+        searchDebounceMs: 500,
         additionalSearch: (
           <Input
             placeholder={t('Filter by API key...')}
@@ -329,27 +330,29 @@ export function ApiKeysTable({ keys, keys2 }: {keys: string, keys2: string}) {
             singleSelect: true,
           },
         ],
-        afterFilters: (<>
-          <button
-            type='button'
-            className='text-muted-foreground hover:text-foreground h-8 max-w-full truncate text-sm underline-offset-4 transition-colors hover:underline'
-            onClick={() => copyToClipboard(keys)}
-            aria-label={t('Copy API endpoint URL')}
-            title={t('Copy API endpoint URL')}
-          >
-            {t('API endpoint URL: {{url}}', { url: keys })}
-          </button>
-          <div className='px-2 py-1'></div>
-          <button
-            type='button'
-            className='text-muted-foreground hover:text-foreground h-8 max-w-full truncate text-sm underline-offset-4 transition-colors hover:underline'
-            onClick={() => copyToClipboard(keys2)}
-            aria-label={t('Copy API endpoint URL')}
-            title={t('Copy API endpoint URL')}
-          >
-            {t('API endpoint URL: {{url}}', { url: keys2 })}
-          </button>
-        </>)
+        afterFilters: (
+          <>
+            <button
+              type='button'
+              className='text-muted-foreground hover:text-foreground h-8 max-w-full truncate text-sm underline-offset-4 transition-colors hover:underline'
+              onClick={() => copyToClipboard(keys)}
+              aria-label={t('Copy API endpoint URL')}
+              title={t('Copy API endpoint URL')}
+            >
+              {t('API endpoint URL: {{url}}', { url: keys })}
+            </button>
+            <div className='px-2 py-1' />
+            <button
+              type='button'
+              className='text-muted-foreground hover:text-foreground h-8 max-w-full truncate text-sm underline-offset-4 transition-colors hover:underline'
+              onClick={() => copyToClipboard(keys2)}
+              aria-label={t('Copy API endpoint URL')}
+              title={t('Copy API endpoint URL')}
+            >
+              {t('API endpoint URL: {{url}}', { url: keys2 })}
+            </button>
+          </>
+        ),
       }}
       mobile={<ApiKeysMobileList table={table} isLoading={isLoading} />}
       getRowClassName={(row) =>

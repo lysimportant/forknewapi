@@ -10,3 +10,19 @@ docs
 /web/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md
+
+# 本地验证数据、生产挂载数据及凭据不能进入 Docker 构建上下文。
+.local-tests
+/data
+/logs
+.env
+.env.*
+!.env.example
+*.exe
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+**/.local-tests

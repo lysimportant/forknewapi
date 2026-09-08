@@ -36,8 +36,16 @@ export async function getSystemOptions() {
   return res.data
 }
 
+/**
+ * 保存单项配置，保留服务端响应协议，传输失败仍抛出 Axios 错误。
+ * 关闭公共拦截器提示，由唯一生产调用方 useUpdateOption 负责业务失败拒绝与错误提示。
+ * 新增直接调用方时必须自行处理业务失败和传输错误，避免静默失败。
+ */
 export async function updateSystemOption(request: UpdateOptionRequest) {
-  const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  const res = await api.put<UpdateOptionResponse>('/api/option/', request, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
   return res.data
 }
 

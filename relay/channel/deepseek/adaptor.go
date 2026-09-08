@@ -8,14 +8,15 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -99,6 +100,9 @@ func applyDeepSeekV4OpenAIThinkingSuffix(info *relaycommon.RelayInfo, request *d
 	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
 		modelName = info.UpstreamModelName
 	}
+	if model_setting.ShouldPreserveThinkingSuffix(modelName) || info != nil && model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName) {
+		return nil
+	}
 	baseModel, thinkingType, effort, ok := reasoning.ParseDeepSeekV4ThinkingSuffix(modelName)
 	if !ok {
 		return nil
@@ -116,7 +120,7 @@ func applyDeepSeekV4OpenAIThinkingSuffix(info *relaycommon.RelayInfo, request *d
 		if info.ChannelMeta != nil {
 			info.UpstreamModelName = baseModel
 		}
-		info.ReasoningEffort = effort
+		info.SetReasoningEffort(effort)
 	}
 	return nil
 }
@@ -125,6 +129,9 @@ func applyDeepSeekV4ClaudeThinkingSuffix(info *relaycommon.RelayInfo, request *d
 	modelName := request.Model
 	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
 		modelName = info.UpstreamModelName
+	}
+	if model_setting.ShouldPreserveThinkingSuffix(modelName) || info != nil && model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName) {
+		return nil
 	}
 	baseModel, thinkingType, effort, ok := reasoning.ParseDeepSeekV4ThinkingSuffix(modelName)
 	if !ok {
@@ -147,7 +154,7 @@ func applyDeepSeekV4ClaudeThinkingSuffix(info *relaycommon.RelayInfo, request *d
 		if info.ChannelMeta != nil {
 			info.UpstreamModelName = baseModel
 		}
-		info.ReasoningEffort = effort
+		info.SetReasoningEffort(effort)
 	}
 	return nil
 }
@@ -161,11 +168,20 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 	return nil, errors.New("not implemented")
 }
 
-// ConvertOpenAIResponsesRequest 原生转发 Responses，保留工具历史及 max；V4 的 -max/-none 后缀投影为 reasoning.effort 并同步用量上下文。
+// ConvertOpenAIResponsesRequest 原生转发 Responses，保留工具历史与显式推理参数，并应用可配置的 V4 后缀规则。
 func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	applyDeepSeekV4ResponsesThinkingSuffix(info, &request)
+	return request, nil
+}
+
+// applyDeepSeekV4ResponsesThinkingSuffix 将未被保留规则排除的 V4 后缀映射为推理参数，并同步中继用量上下文。
+func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
 	modelName := request.Model
 	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
 		modelName = info.UpstreamModelName
+	}
+	if model_setting.ShouldPreserveThinkingSuffix(modelName) || info != nil && model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName) {
+		return
 	}
 	baseModel, thinkingType, effort, ok := reasoning.ParseDeepSeekV4ThinkingSuffix(modelName)
 	if ok {
@@ -182,9 +198,8 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommo
 		}
 	}
 	if info != nil && request.Reasoning != nil {
-		info.ReasoningEffort = request.Reasoning.Effort
+		info.SetReasoningEffort(request.Reasoning.Effort)
 	}
-	return request, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

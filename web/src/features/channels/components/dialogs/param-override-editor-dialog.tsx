@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Combobox } from '@/components/ui/combobox'
 import {
   ChevronDown,
   ChevronUp,
@@ -37,6 +38,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
+import { JsonCodeEditor } from '@/components/json-code-editor'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -46,14 +48,7 @@ import {
 } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -1656,17 +1651,6 @@ export function ParamOverrideEditorDialog(
     [t]
   )
 
-  const formatJson = useCallback(() => {
-    const trimmed = jsonText.trim()
-    if (!trimmed) return
-    if (!verifyJSON(trimmed)) {
-      toast.error(t('Parameter override must be valid JSON format'))
-      return
-    }
-    setJsonText(JSON.stringify(JSON.parse(trimmed), null, 2))
-    setJsonError('')
-  }, [jsonText, t])
-
   const visualValidationError = useMemo(() => {
     if (editMode !== 'visual') return ''
     try {
@@ -1773,31 +1757,19 @@ export function ParamOverrideEditorDialog(
           <span className='text-muted-foreground text-xs font-medium'>
             {t('Template')}
           </span>
-          <Select
-            items={[
+          <Combobox
+options={[
               ...templatePresetOptions.map((o) => ({
                 value: o.value,
                 label: t(o.label),
               })),
             ]}
-            value={templatePresetKey}
-            onValueChange={(v) =>
+value={templatePresetKey}
+onValueChange={(v) =>
               setTemplatePresetKey(v || 'operations_default')
             }
-          >
-            <SelectTrigger className='h-8 w-[220px]'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent alignItemWithTrigger={false}>
-              <SelectGroup>
-                {templatePresetOptions.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {t(o.label)}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+className='h-8 w-[220px]'
+/>
           <Button
             type='button'
             variant='outline'
@@ -1832,12 +1804,12 @@ export function ParamOverrideEditorDialog(
               <p className='text-muted-foreground mb-2 text-sm'>
                 {t('Legacy Format (JSON Object)')}
               </p>
-              <Textarea
+              <JsonCodeEditor
                 value={legacyValue}
-                onChange={(e) => setLegacyValue(e.target.value)}
+                onChange={setLegacyValue}
                 placeholder={JSON.stringify(LEGACY_TEMPLATE, null, 2)}
-                rows={14}
-                className='font-mono text-xs'
+                heightClassName='h-72 min-h-72 max-h-72'
+                ariaLabel={t('Legacy Format (JSON Object)')}
               />
               <p className='text-muted-foreground mt-2 text-xs'>
                 {t(
@@ -2044,24 +2016,17 @@ export function ParamOverrideEditorDialog(
           /* JSON mode */
           <div className='p-4'>
             <div className='mb-2 flex items-center gap-2'>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                onClick={formatJson}
-              >
-                {t('Format')}
-              </Button>
               <span className='text-muted-foreground text-xs'>
                 {t('Advanced text editing')}
               </span>
             </div>
-            <Textarea
+            <JsonCodeEditor
               value={jsonText}
-              onChange={(e) => handleJsonChange(e.target.value)}
+              onChange={handleJsonChange}
               placeholder={JSON.stringify(OPERATION_TEMPLATE, null, 2)}
-              rows={20}
-              className='font-mono text-xs'
+              heightClassName='h-[420px] min-h-[420px] max-h-[420px]'
+              aria-invalid={Boolean(jsonError)}
+              ariaLabel={t('Advanced text editing')}
             />
             <p className='text-muted-foreground mt-2 text-xs'>
               {t('Edit JSON text directly. Format will be validated on save.')}
@@ -2176,34 +2141,22 @@ function RuleEditor(ruleEditorProps: RuleEditorProps) {
         <div className='grid gap-3 sm:grid-cols-2'>
           <div className='space-y-1.5'>
             <label className='text-xs font-medium'>{t('Operation Type')}</label>
-            <Select
-              items={[
+            <Combobox
+options={[
                 ...OPERATION_MODE_OPTIONS.map((o) => ({
                   value: o.value,
                   label: t(o.label),
                 })),
               ]}
-              value={mode}
-              onValueChange={(nextMode) =>
+value={mode}
+onValueChange={(nextMode) =>
                 nextMode !== null &&
                 ruleEditorProps.updateOperation(operation.id, {
                   mode: nextMode,
                 })
               }
-            >
-              <SelectTrigger className='h-9'>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent alignItemWithTrigger={false}>
-                <SelectGroup>
-                  {OPERATION_MODE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {t(o.label)}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+className='h-9'
+/>
           </div>
           {(meta.path || meta.pathOptional) && (
             <div className='space-y-1.5'>
@@ -2565,15 +2518,15 @@ function ConditionEditor(conditionEditorProps: ConditionEditorProps) {
                 <label className='text-[10px] font-medium'>
                   {t('Match Mode')}
                 </label>
-                <Select
-                  items={[
+                <Combobox
+options={[
                     ...CONDITION_MODE_OPTIONS.map((o) => ({
                       value: o.value,
                       label: t(o.label),
                     })),
                   ]}
-                  value={condition.mode}
-                  onValueChange={(v) =>
+value={condition.mode}
+onValueChange={(v) =>
                     v !== null &&
                     conditionEditorProps.updateCondition(
                       conditionEditorProps.operationId,
@@ -2581,20 +2534,8 @@ function ConditionEditor(conditionEditorProps: ConditionEditorProps) {
                       { mode: v }
                     )
                   }
-                >
-                  <SelectTrigger className='h-8 text-xs'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent alignItemWithTrigger={false}>
-                    <SelectGroup>
-                      {CONDITION_MODE_OPTIONS.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>
-                          {t(o.label)}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+className='h-8 text-xs'
+/>
               </div>
               <div className='space-y-1'>
                 <label className='text-[10px] font-medium'>
@@ -3085,15 +3026,15 @@ function PruneObjectsEditor(pruneObjectsEditorProps: PruneObjectsEditorProps) {
                         <label className='text-[10px] font-medium'>
                           {t('Match Mode')}
                         </label>
-                        <Select
-                          items={[
+                        <Combobox
+options={[
                             ...CONDITION_MODE_OPTIONS.map((o) => ({
                               value: o.value,
                               label: t(o.label),
                             })),
                           ]}
-                          value={rule.mode}
-                          onValueChange={(v) =>
+value={rule.mode}
+onValueChange={(v) =>
                             v !== null &&
                             pruneObjectsEditorProps.updateRule(
                               pruneObjectsEditorProps.operationId,
@@ -3101,20 +3042,8 @@ function PruneObjectsEditor(pruneObjectsEditorProps: PruneObjectsEditorProps) {
                               { mode: v }
                             )
                           }
-                        >
-                          <SelectTrigger className='h-7 text-xs'>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent alignItemWithTrigger={false}>
-                            <SelectGroup>
-                              {CONDITION_MODE_OPTIONS.map((o) => (
-                                <SelectItem key={o.value} value={o.value}>
-                                  {t(o.label)}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
+className='h-7 text-xs'
+/>
                       </div>
                       <div className='space-y-0.5'>
                         <label className='text-[10px] font-medium'>

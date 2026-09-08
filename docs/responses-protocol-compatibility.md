@@ -50,6 +50,8 @@ OpenAI、DeepSeek 的标准 Responses 上游地址支持根域名或带 `/v1` �
 | 33 Replicate | 56 | 明确 400 | 当前适配器仅图像预测 |
 | 34 Codex | 57 | 原生 | 原渠道不支持 Chat，不能改走 Chat 桥接 |
 | 35 AdvancedCustom | 58 | 显式配置 | 保留原生、Responses→Chat 或 Responses→Gemini 路由 |
+| 36 Sub2API | 59 | 原生 | 保留上游 Responses 协议 |
+| 37 NewAPI | 60 | 原生 | 保留上游 Responses 协议 |
 
 Azure 以及旧 OpenAI 兼容渠道继续使用既有 OpenAI 适配器。Midjourney、MidjourneyPlus、SunoAPI、Kling、Vidu、DoubaoVideo、Sora 等非文本任务渠道不能因默认 APIType 回落到 OpenAI 而发送 Responses 请求；这类请求在出站前明确拒绝。
 
@@ -69,7 +71,7 @@ Azure 以及旧 OpenAI 兼容渠道继续使用既有 OpenAI 适配器。Midjour
 
 ## 验证范围与证据
 
-`relay/responses_all_channels_test.go` 包含全部 36 个 APIType 的真实请求转换用例：31 个原生/专用或桥接分支断言上游协议内实际用户文本，5 个非文本/缺失适配器断言 400；另覆盖 7 个任务渠道默认回落拒绝。转换用例只运行本地适配器，不访问外网。
+`relay/responses_all_channels_test.go` 包含全部 38 个 APIType 的真实请求转换用例：31 个原生/专用或桥接分支断言上游协议内实际用户文本，5 个非文本/缺失适配器断言 400；另覆盖 7 个任务渠道默认回落拒绝。转换用例只运行本地适配器，不访问外网。
 
 代表性本地 HTTP 回归覆盖 Claude 文本、工具及缓存计费元数据，Cohere 原生逐行流，Ollama 原生逐行流及工具结果名称，PaLM 专用 JSON，Dify 应用 JSON，Mistral 工具历史标识和 Chat SSE。用例检查最终 Responses 文本、终态、工具和用量，以及原始请求、writer、RelayInfo 恢复；每例仅一次生成请求，包装器不调用计费会话的预扣、结算或退款方法。Claude 返回原始非缓存计费用量，同时客户端输入总数包含缓存读取与创建。该层证据保护不会产生第二次结算，完整账户结算仍由应用验收覆盖。
 
@@ -83,6 +85,10 @@ go vet -unreachable=false ./relay
 git diff --check -- relay/responses_all_channels_test.go docs/responses-protocol-compatibility.md
 ```
 
-`go test ./relay` 包含以上 36 个 APIType、7 个任务渠道、6 个本地 HTTP 场景及 PaLM 不支持输出上限时的 400 回归。定向 vet 排除了未修改旧渠道的既有不可达代码检查项，不能写成全量默认 vet 已通过。
+`go test ./relay` 包含以上 38 个 APIType、7 个任务渠道、6 个本地 HTTP 场景及 PaLM 不支持输出上限时的 400 回归。定向 vet 排除了未修改旧渠道的既有不可达代码检查项，不能写成全量默认 vet 已通过。
 
 部署和真实容器请求结果以 [部署核对](responses-deployment.md) 和 [Docker 验收](responses-docker-acceptance.md) 为准；不要将主分支本地成功直接表述为线上已经升级。
+
+## rc.35 集成验收
+
+上述矩阵已随 rc.35 更新。旧版定向 vet 记录只描述旧基线；本次根模块全量测试和默认 go vet ./... 均通过，独立 relaykit 构建与测试通过。最终升级范围、三库及 HTTP 验证见 [rc.35 升级记录](../verification/rc35/upgrade-rc35.md)。

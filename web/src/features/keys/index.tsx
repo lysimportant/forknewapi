@@ -35,7 +35,10 @@ export function ApiKeys() {
           <ApiKeysPrimaryButtons />
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
-          <ApiKeysTable keys={"https://api.lianghj.top"} keys2={"https://api.lolicon.beer"} />
+          <ApiKeysTable
+            keys='https://api.lianghj.top'
+            keys2='https://api.lolicon.beer'
+          />
         </SectionPageLayout.Content>
       </SectionPageLayout>
       <ApiKeysDialogs />
