@@ -17,8 +17,13 @@ func TestGrokVideoContracts(t *testing.T) {
 	registry := jsplugin.NewRegistry()
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-	_, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", "grok-imagine-video-1.5")
-	require.True(t, found, "模型必须能从公共视频接口找到插件")
+	for _, modelName := range []string{"grok-imagine-video-1.5", "grok-imagine-video"} {
+		for _, endpoint := range []string{"/v1/videos", "/v1/responses"} {
+			binding, found := registry.Generation().LookupEndpoint("POST", endpoint, modelName)
+			require.True(t, found, "%s 必须能从 %s 找到插件", modelName, endpoint)
+			assert.Same(t, plugin, binding.Plugin)
+		}
+	}
 
 	// 测试表的期望值独立描述上游线协议及计费契约，不复制生产转换逻辑。
 	tests := []struct {

@@ -20,6 +20,8 @@ import type { BillingUsageSchema, PricingModel } from '../types'
 
 /** 官方文档已明确的型号规格；作为主入口基础，另按配置需求补齐720/1080档，不删除旧价格。来源见 verification/rc35/video-brand-pricing.md。 */
 const documentedModelResolutions: Record<string, readonly string[]> = {
+  // 无版本模型沿用Grok插件的配置入口，不推断它与1.5的上游能力相同。
+  'grok-imagine-video': ['480p', '720p', '1080p'],
   'grok-imagine-video-1.5': ['480p', '720p', '1080p'],
   'wan2.7-t2v': ['720P', '1080P'],
   'wan2.7-i2v': ['720P', '1080P'],

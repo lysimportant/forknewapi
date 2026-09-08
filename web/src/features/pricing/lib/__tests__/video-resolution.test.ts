@@ -26,6 +26,16 @@ import {
 } from '../video-resolution'
 
 describe('供应商原生清晰度展示', () => {
+  test('新增Grok无版本模型沿用三档配置并将历史4k留在其他规格', () => {
+    expect(
+      getPrimaryVideoResolutions(
+        {
+          resolution: { enum: ['unspecified', '480p', '720p', '1080p', '4k'] },
+        },
+        'grok-imagine-video'
+      )
+    ).toEqual(['480p', '720p', '1080p'])
+  })
   test('按已核对型号过滤主入口，额外原值保留供旧价格编辑', () => {
     const schema = { resolution: { enum: ['480P', '720P', '1080P'] } }
     expect(getPrimaryVideoResolutions(schema, 'wan2.7-t2v')).toEqual([

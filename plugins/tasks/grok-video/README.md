@@ -1,6 +1,8 @@
 # Grok 视频：第三方 OpenAI 兼容插件
 
-本插件面向第三方提供的 OpenAI 视频兼容接口，不适用于 xAI 官方 `/v1/videos/generations`。模型 API 名为 `grok-imagine-video-1.5`；“（按次）”是计费说明，不属于模型名。插件版本 `1.1.0`。
+本插件面向第三方提供的 OpenAI 视频兼容接口，不适用于 xAI 官方 `/v1/videos/generations`。支持模型 API 名 `grok-imagine-video-1.5` 和 `grok-imagine-video`；“（按次）”是计费说明，不属于模型名。插件版本 `1.1.1`。
+
+两个模型分别匹配渠道和价格配置，共享按次计费用量及480p/720p/1080p配置入口，不自动互相改名或复制商业价格。上游须支持你选择的模型与清晰度。内置插件随镜像更新；手动上传的旧插件需更新到1.1.1，并在渠道模型列表添加`grok-imagine-video`后配置该模型价格。
 
 ## 安装与入口
 
@@ -64,3 +66,7 @@ node web/node_modules/oxfmt/bin/oxfmt -c plugins/.oxfmtrc.json --check plugins/t
 模型任务定价和插件详情改为按品牌原生规格排序，主入口最多五档、不凑数；有官方型号限制时按型号筛选，额外规格与默认价格独立保留。可灵、即梦显示官方模式/产品的清晰度对应，计费仍使用原生 Units / product。
 
 Grok 本版主列官方三档，保留旧4K兼容，不增加2K。已有表达式和金额不自动迁移。手动上传过1.0.0的实例需上传1.1.0更新说明；内置版本随镜像更新。完整的11插件范围、官方来源、未知项和验收见[品牌视频规格记录](../../../verification/rc35/video-brand-pricing.md)。
+
+## 1.1.1
+
+新增grok-imagine-video模型匹配，原1.5模型保留；两个模型的公开视频与Responses路由均经真实插件注册表验证。Go插件三包回归、前端清晰度7项测试、typecheck、生产build、插件宿主lint及定向lint/format通过。未调用付费上游。
