@@ -26,6 +26,7 @@ import {
 
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
+import type { LatencyVariant } from './latency-health'
 
 export { normalizeTierLabel }
 
@@ -186,26 +187,20 @@ export function getReasoningEffortVariant(
   }
 }
 
-/**
- * Get time color based on duration (in seconds)
- */
-export function getTimeColor(
-  seconds: number
-): 'success' | 'warning' | 'danger' {
-  if (seconds < 10) return 'success'
-  if (seconds < 30) return 'warning'
-  return 'danger'
+/** 总耗时按秒分档：小于 60 绿、60 至 180 黄、180 至 300 橙、300 起红。 */
+export function getTimeColor(seconds: number): LatencyVariant {
+  if (seconds >= 300) return 'danger'
+  if (seconds >= 180) return 'orange'
+  if (seconds >= 60) return 'warning'
+  return 'success'
 }
 
-/**
- * Get first-response-token color based on latency (in seconds)
- */
-export function getFirstResponseTimeColor(
-  seconds: number
-): 'success' | 'warning' | 'danger' {
-  if (seconds < 5) return 'success'
-  if (seconds < 10) return 'warning'
-  return 'danger'
+/** 首字延迟按秒分档：小于 10 绿、10 至 30 黄、30 至 60 橙、60 起红。 */
+export function getFirstResponseTimeColor(seconds: number): LatencyVariant {
+  if (seconds >= 60) return 'danger'
+  if (seconds >= 30) return 'orange'
+  if (seconds >= 10) return 'warning'
+  return 'success'
 }
 
 /**
@@ -219,15 +214,9 @@ export function getThroughputColor(
   return 'danger'
 }
 
-/**
- * Get response color using throughput only when enough output tokens exist.
- */
-export function getResponseTimeColor(
-  seconds: number,
-  completionTokens: number
-): 'success' | 'warning' | 'danger' {
-  if (completionTokens < 100 || seconds <= 0) return getTimeColor(seconds)
-  return getThroughputColor(completionTokens / seconds)
+/** 总耗时颜色仅取决于秒数，不受输出 token 数或吞吐量影响。 */
+export function getResponseTimeColor(seconds: number): LatencyVariant {
+  return getTimeColor(seconds)
 }
 
 /**
