@@ -39,6 +39,10 @@ const documentedModelResolutions: Record<string, readonly string[]> = {
   'veo-3.1-generate-preview': ['720p', '1080p'],
   'veo-3.1-fast-generate-preview': ['720p', '1080p'],
   'MiniMax-H3': ['768P', '2K'],
+  // 用户指定的H3型号共享品牌配置档位；具体上游协议与生成能力由渠道决定。
+  'minimax_h3-1080p': ['768P', '1080P', '2K'],
+  'minimax_h3-2K': ['768P', '1080P', '2K'],
+  'minimax_h3-768p': ['768P', '1080P', '2K'],
   'MiniMax-Hailuo-2.3': ['768P', '1080P'],
   'MiniMax-Hailuo-2.3-Fast': ['768P', '1080P'],
   'MiniMax-Hailuo-02': ['512P', '768P', '1080P'],
@@ -134,7 +138,7 @@ export function isVideoPricingModel(model: Partial<PricingModel>): boolean {
     model.supported_endpoint_types?.some((endpoint) =>
       /video/i.test(endpoint)
     ) ||
-    /^(grok.*video|sora|veo|kling|jimeng|vidu|hailuo|minimax-(?:h3|hailuo)|[tis]2v-01|wan[\d.-]|doubao-seedance|seedance)/i.test(
+    /^(grok.*video|sora|veo|kling|jimeng|vidu|hailuo|minimax(?:-hailuo|[-_]h3)|[tis]2v-01|wan[\d.-]|doubao-seedance|seedance)/i.test(
       model.model_name ?? ''
     )
   )

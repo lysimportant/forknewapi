@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "jimeng", "kling", "minimax-h3-video", "sora", "sunoapi", "vertex-ai", "vidu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -125,7 +125,9 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 }
 
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
-	bodyOverrides := map[string]map[string]any{}
+	bodyOverrides := map[string]map[string]any{
+		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
+	}
 	for _, key := range expectedKeys {
 		t.Run(key, func(t *testing.T) {
 			source, sourceErr := Source(key)

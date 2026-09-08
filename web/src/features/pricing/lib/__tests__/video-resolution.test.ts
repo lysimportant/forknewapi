@@ -26,6 +26,18 @@ import {
 } from '../video-resolution'
 
 describe('供应商原生清晰度展示', () => {
+  test.each(['minimax_h3-1080p', 'minimax_h3-2K', 'minimax_h3-768p'])(
+    '%s识别为视频并保留768P/1080P/2K配置，不补720P',
+    (modelName) => {
+      expect(isVideoPricingModel({ model_name: modelName })).toBe(true)
+      expect(
+        getPrimaryVideoResolutions(
+          { resolution: { enum: ['512P', '768P', '720P', '1080P', '2K'] } },
+          modelName
+        )
+      ).toEqual(['768P', '1080P', '2K'])
+    }
+  )
   test('新增Grok无版本模型沿用三档配置并将历史4k留在其他规格', () => {
     expect(
       getPrimaryVideoResolutions(
