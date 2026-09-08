@@ -76,6 +76,7 @@ import {
   getResponseTimeColor,
   renderAuditContent,
 } from '../../lib/format'
+import { latencyTextColors } from '../../lib/latency-health'
 import {
   getLogTypeConfig,
   isPerCallBilling,
@@ -92,14 +93,6 @@ const CHANNEL_FIELD_LABELS: Record<string, string> = {
   type: 'Type',
   base_url: 'Base URL',
   key: 'Key',
-}
-
-function timingTextColorClass(
-  variant: 'success' | 'warning' | 'danger'
-): string {
-  if (variant === 'success') return 'text-emerald-600'
-  if (variant === 'warning') return 'text-amber-600'
-  return 'text-rose-600'
 }
 
 function DetailRow(props: {
@@ -710,24 +703,19 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 <span
                   className={cn(
                     'font-medium',
-                    timingTextColorClass(
-                      getResponseTimeColor(
-                        props.log.use_time,
-                        props.log.completion_tokens
-                      )
-                    )
+                    latencyTextColors[getResponseTimeColor(props.log.use_time)]
                   )}
                 >
                   {formatUseTime(props.log.use_time)}
                   {props.log.is_stream &&
                     other?.frt != null &&
-                    other.frt > 0 && (
+                    other.frt >= 0 && (
                       <span
                         className={cn(
                           'font-normal',
-                          timingTextColorClass(
+                          latencyTextColors[
                             getFirstResponseTimeColor(other.frt / 1000)
-                          )
+                          ]
                         )}
                       >
                         {' '}
