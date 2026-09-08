@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
 
 import type { BillingUsageSchema } from '@/features/pricing/types'
@@ -79,4 +79,46 @@ describe('UsageSchemaTable layout', () => {
     expect(resolutionRow).not.toBeNull()
     expect(resolutionRow?.textContent).toContain('—')
   })
+})
+
+test('视频详情按品牌原生顺序展示，供应商默认值独立折叠且不裸露unspecified', () => {
+  render(
+    <UsageSchemaTable
+      isVideo
+      schema={{
+        resolution: {
+          enum: ['unspecified', '512P', '768P', '720P', '1080P', '2K'],
+        },
+      }}
+    />
+  )
+  expect(screen.getByText('512P, 720P, 768P, 1080P, 2K')).toBeInTheDocument()
+  expect(
+    screen.queryByText('Provider default (not specified)')
+  ).not.toBeInTheDocument()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Provider default specifications' })
+  )
+  expect(
+    screen.getByText('Provider default (not specified)')
+  ).toBeInTheDocument()
+  expect(screen.queryByText(/unspecified/)).not.toBeInTheDocument()
+})
+
+test('Grok详情主列官方三档，旧4K仅保留为额外规格', () => {
+  render(
+    <UsageSchemaTable
+      isVideo
+      modelName='grok-imagine-video-1.5'
+      schema={{
+        resolution: { enum: ['unspecified', '480p', '720p', '1080p', '4k'] },
+      }}
+    />
+  )
+  expect(screen.getByText('480p, 720p, 1080p')).toBeInTheDocument()
+  expect(screen.queryByText('4k', { exact: true })).not.toBeInTheDocument()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Additional provider specifications' })
+  )
+  expect(screen.getByText('4k', { exact: true })).toBeInTheDocument()
 })

@@ -67,6 +67,7 @@ import {
   createDefaultTaskVisualConfig,
   generateTaskExprFromConfig,
 } from '@/features/pricing/lib/task-expr'
+import { isVideoPricingModel } from '@/features/pricing/lib/video-resolution'
 import type { BillingUsageSchema } from '@/features/pricing/types'
 import { cn } from '@/lib/utils'
 
@@ -784,7 +785,14 @@ export const ModelPricingEditorPanel = forwardRef<
                         <TaskUsagePricingEditor
                           key={`${editorReloadToken}:${watchedValues.name}`}
                           billingExpr={resolvedBillingExpr}
+                          modelName={watchedValues.name.trim()}
                           requestRuleExpr={requestRuleExpr}
+                          isVideo={isVideoPricingModel(
+                            pricingModels.find(
+                              (model) =>
+                                model.model_name === watchedValues.name.trim()
+                            ) ?? { model_name: watchedValues.name.trim() }
+                          )}
                           usageSchema={taskUsageSchema}
                           usageExamples={taskUsageExamples}
                           onBillingExprChange={setBillingExpr}

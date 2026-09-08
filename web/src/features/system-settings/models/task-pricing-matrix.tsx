@@ -44,6 +44,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
   Tooltip,
   TooltipContent,
@@ -57,6 +58,11 @@ import {
   taskMatrixRowLabel,
   type TaskMatrixRow,
 } from '@/features/pricing/lib/task-expr'
+import {
+  getPrimaryVideoResolutions,
+  getVideoResolutionField,
+  formatTaskSpecificationLabel,
+} from '@/features/pricing/lib/video-resolution'
 import type {
   BillingUsageFieldSchema,
   BillingUsageSchema,
@@ -65,7 +71,10 @@ import { cn } from '@/lib/utils'
 
 const TASK_MATRIX_GROUP_THRESHOLD = 24
 
+/** 矩阵保留原始行索引；视频模式只过滤可见行，不改变保存顺序。 */
 type TaskPricingMatrixProps = {
+  isVideo?: boolean
+  modelName?: string
   rows: TaskMatrixRow[]
   usageSchema: BillingUsageSchema
   matchedRowIndex: number | null
@@ -228,7 +237,10 @@ function TaskMatrixTable(props: TaskMatrixTableProps) {
             props.numberFields.every(
               ([field]) => !(entry.row.unitPrices[field] > 0)
             )
-          const rowLabel = taskMatrixRowLabel(entry.row.combination)
+          const rowLabel = formatTaskSpecificationLabel(
+            taskMatrixRowLabel(entry.row.combination),
+            t
+          )
           return (
             <TableRow
               key={`${rowLabel}:${entry.index}`}
@@ -239,7 +251,12 @@ function TaskMatrixTable(props: TaskMatrixTableProps) {
             >
               {visibleEnumFields.map(([field]) => (
                 <TableCell key={field}>
-                  <code>{entry.row.combination[field]}</code>
+                  <code>
+                    {formatTaskSpecificationLabel(
+                      entry.row.combination[field],
+                      t
+                    )}
+                  </code>
                 </TableCell>
               ))}
               {props.numberFields.map(([field]) => (
@@ -363,7 +380,7 @@ function TaskMatrixGroup(props: TaskMatrixGroupProps) {
         }
       >
         <span className='flex min-w-0 items-center gap-2'>
-          <code>{props.groupValue}</code>
+          <code>{formatTaskSpecificationLabel(props.groupValue, t)}</code>
           <span className='text-muted-foreground text-xs'>
             {t('{{count}} combinations', { count: props.entries.length })}
           </span>
@@ -403,6 +420,30 @@ export function TaskPricingMatrix(props: TaskPricingMatrixProps) {
   const enumFields = getTaskEnumFields(props.usageSchema)
   const numberFields = getTaskNumberFields(props.usageSchema)
   const entries = props.rows.map((row, index) => ({ row, index }))
+  const resolutionField = getVideoResolutionField(props.usageSchema)
+  /** 浏览状态与原始价格数据隔离，不发布任何价格更改。 */
+  const [selectedResolution, setSelectedResolution] = useState<string | null>(
+    null
+  )
+  const resolutions = getPrimaryVideoResolutions(
+    props.usageSchema,
+    props.modelName
+  )
+  const resolution =
+    selectedResolution && resolutions.includes(selectedResolution)
+      ? selectedResolution
+      : resolutions[0]
+  const defaultEntries = entries.filter(
+    (entry) =>
+      resolutionField &&
+      entry.row.combination[resolutionField] === 'unspecified'
+  )
+  const additionalEntries = entries.filter(
+    (entry) =>
+      resolutionField &&
+      entry.row.combination[resolutionField] !== 'unspecified' &&
+      !resolutions.includes(entry.row.combination[resolutionField])
+  )
   const firstRow = props.rows[0]
   const allRowsFree = props.rows.every(
     (row) =>
@@ -422,6 +463,18 @@ export function TaskPricingMatrix(props: TaskPricingMatrixProps) {
     rowIndex: number,
     priceKey: string
   ) => {
+    if (props.isVideo && resolutionField) {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      const inputs = [
+        ...(containerRef.current?.querySelectorAll<HTMLInputElement>(
+          `input[data-matrix-col="${CSS.escape(priceKey)}"]`
+        ) ?? []),
+      ].filter((input) => !input.closest('[hidden]'))
+      const current = inputs.indexOf(event.currentTarget)
+      inputs[current + 1]?.focus()
+      return
+    }
     if (event.key !== 'Enter' || rowIndex >= props.rows.length - 1) return
     event.preventDefault()
     const selector = `input[data-matrix-col="${CSS.escape(priceKey)}"][data-matrix-row="${rowIndex + 1}"]`
@@ -446,6 +499,54 @@ export function TaskPricingMatrix(props: TaskPricingMatrixProps) {
 
   if (!firstRow) return null
 
+  /** 非视频清晰度矩阵沿用原有分组和单位编辑行为。 */
+  const standardMatrix =
+    shouldGroup && firstEnumField ? (
+      <div className='flex flex-col gap-2'>
+        {(firstEnumField[1].enum ?? []).map((groupValue) => (
+          <TaskMatrixGroup
+            key={groupValue}
+            entries={entries.filter(
+              (entry) => entry.row.combination[firstEnumField[0]] === groupValue
+            )}
+            enumFields={enumFields}
+            numberFields={numberFields}
+            groupField={firstEnumField[0]}
+            groupValue={groupValue}
+            open={openGroups.includes(groupValue)}
+            onOpenChange={(nextOpen) =>
+              setOpenGroups((current) => {
+                if (nextOpen) {
+                  return current.includes(groupValue)
+                    ? current
+                    : [...current, groupValue]
+                }
+                return current.filter((value) => value !== groupValue)
+              })
+            }
+            firstRow={firstRow}
+            allRowsFree={allRowsFree}
+            matchedRowIndex={props.matchedRowIndex}
+            onRowChange={props.onRowChange}
+            onFillColumn={props.onFillColumn}
+            onPriceKeyDown={handlePriceKeyDown}
+          />
+        ))}
+      </div>
+    ) : (
+      <TaskMatrixTable
+        entries={entries}
+        enumFields={enumFields}
+        numberFields={numberFields}
+        firstRow={firstRow}
+        allRowsFree={allRowsFree}
+        matchedRowIndex={props.matchedRowIndex}
+        onRowChange={props.onRowChange}
+        onFillColumn={props.onFillColumn}
+        onPriceKeyDown={handlePriceKeyDown}
+      />
+    )
+
   return (
     <TooltipProvider>
       <div ref={containerRef} className='flex flex-col gap-3'>
@@ -459,51 +560,87 @@ export function TaskPricingMatrix(props: TaskPricingMatrixProps) {
             </AlertDescription>
           </Alert>
         ) : null}
-        {shouldGroup && firstEnumField ? (
-          <div className='flex flex-col gap-2'>
-            {(firstEnumField[1].enum ?? []).map((groupValue) => (
-              <TaskMatrixGroup
-                key={groupValue}
-                entries={entries.filter(
-                  (entry) =>
-                    entry.row.combination[firstEnumField[0]] === groupValue
-                )}
-                enumFields={enumFields}
-                numberFields={numberFields}
-                groupField={firstEnumField[0]}
-                groupValue={groupValue}
-                open={openGroups.includes(groupValue)}
-                onOpenChange={(nextOpen) =>
-                  setOpenGroups((current) => {
-                    if (nextOpen) {
-                      return current.includes(groupValue)
-                        ? current
-                        : [...current, groupValue]
-                    }
-                    return current.filter((value) => value !== groupValue)
-                  })
-                }
-                firstRow={firstRow}
-                allRowsFree={allRowsFree}
-                matchedRowIndex={props.matchedRowIndex}
-                onRowChange={props.onRowChange}
-                onFillColumn={props.onFillColumn}
-                onPriceKeyDown={handlePriceKeyDown}
-              />
-            ))}
-          </div>
+        {props.isVideo && resolutionField ? (
+          <>
+            {resolutions.length === 0 && (
+              <p className='text-muted-foreground text-sm'>
+                {t('Video resolution')}: {t('Unknown')}
+              </p>
+            )}
+            {resolutions.length > 0 && (
+              <Tabs
+                value={resolution}
+                onValueChange={(value) => setSelectedResolution(String(value))}
+              >
+                <TabsList aria-label={t('Video resolution')}>
+                  {resolutions.map((tier) => (
+                    <TabsTrigger key={tier} value={tier}>
+                      {tier}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                {resolutions.map((tier) => {
+                  const mappedEntries = entries.filter(
+                    (entry) => entry.row.combination[resolutionField] === tier
+                  )
+                  return (
+                    <TabsContent key={tier} value={tier}>
+                      {mappedEntries.length > 0 && (
+                        <TaskMatrixTable
+                          entries={mappedEntries}
+                          enumFields={enumFields}
+                          numberFields={numberFields}
+                          firstRow={mappedEntries[0].row}
+                          allRowsFree={allRowsFree}
+                          matchedRowIndex={props.matchedRowIndex}
+                          onRowChange={props.onRowChange}
+                          onFillColumn={props.onFillColumn}
+                          onPriceKeyDown={handlePriceKeyDown}
+                        />
+                      )}
+                    </TabsContent>
+                  )
+                })}
+              </Tabs>
+            )}
+            {[
+              {
+                label: t('Provider default specifications'),
+                rows: defaultEntries,
+              },
+              {
+                label: t('Additional provider specifications'),
+                rows: additionalEntries,
+              },
+            ].map(
+              (group) =>
+                group.rows.length > 0 && (
+                  <Collapsible key={group.label}>
+                    <CollapsibleTrigger
+                      render={<Button type='button' variant='outline' />}
+                    >
+                      {group.label}
+                      <ChevronDown aria-hidden='true' />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className='mt-2'>
+                      <TaskMatrixTable
+                        entries={group.rows}
+                        enumFields={enumFields}
+                        numberFields={numberFields}
+                        firstRow={group.rows[0].row}
+                        allRowsFree={allRowsFree}
+                        matchedRowIndex={props.matchedRowIndex}
+                        onRowChange={props.onRowChange}
+                        onFillColumn={props.onFillColumn}
+                        onPriceKeyDown={handlePriceKeyDown}
+                      />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )
+            )}
+          </>
         ) : (
-          <TaskMatrixTable
-            entries={entries}
-            enumFields={enumFields}
-            numberFields={numberFields}
-            firstRow={firstRow}
-            allRowsFree={allRowsFree}
-            matchedRowIndex={props.matchedRowIndex}
-            onRowChange={props.onRowChange}
-            onFillColumn={props.onFillColumn}
-            onPriceKeyDown={handlePriceKeyDown}
-          />
+          standardMatrix
         )}
       </div>
     </TooltipProvider>

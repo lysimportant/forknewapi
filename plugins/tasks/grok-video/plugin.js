@@ -8,7 +8,7 @@ export const meta = {
     en: "Third-party OpenAI-compatible Grok video generation, billed per request. Resolution support depends on the provider; not the native xAI API.",
     zh: "第三方 OpenAI 视频兼容 Grok，按次计费。清晰度需上游支持；不是 xAI 官方原生接口。",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   models: ["grok-imagine-video-1.5"],
   fetchMode: "per_task",
@@ -22,8 +22,8 @@ export const meta = {
     resolution: {
       enum: ["unspecified", "480p", "720p", "1080p", "4k"],
       description: {
-        en: "Requested resolution; unspecified preserves the provider default. 4k requires provider support.",
-        zh: "请求清晰度；unspecified 保留上游默认值，4k 需供应商支持。",
+        en: "xAI documents 480p, 720p and 1080p for this model. unspecified preserves the provider default; 4k is retained only for existing third-party configurations, not documented xAI support.",
+        zh: "xAI 文档支持本模型 480p、720p、1080p。unspecified 保留上游默认；4k 仅兼容既有第三方配置，不表示 xAI 官方支持。",
       },
     },
   },
@@ -58,7 +58,7 @@ function validateRequest(req) {
     if (req[key] !== undefined && ![1, "1"].includes(req[key])) throw new Error("only one video per request is supported");
   }
   if (req.resolution !== undefined && (typeof req.resolution !== "string" || !meta.usageSchema.resolution.enum.slice(1).includes(req.resolution.toLowerCase())))
-    throw new Error("resolution must be 480p, 720p, 1080p or 4k");
+    throw new Error("resolution must be 480p, 720p or 1080p; 4k is accepted only for legacy third-party compatibility");
   resolutionFact(req);
 }
 

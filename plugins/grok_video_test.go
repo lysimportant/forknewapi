@@ -37,6 +37,7 @@ func TestGrokVideoContracts(t *testing.T) {
 		{name: "未识别包装不能伪造任务ID", hook: "parseSubmitResponse", args: []any{nil, map[string]any{"body": map[string]any{"data": map[string]any{"id": "nested"}}}}, wantError: "id is missing"},
 		{name: "十秒四K只报告一次", hook: "extractUsage", args: []any{map[string]any{"usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "seconds": 10, "resolution": "4K"}}}, want: `{"count":1,"resolution":"4k"}`},
 		{name: "像素尺寸与清晰度一致可正确计档", hook: "extractUsage", args: []any{map[string]any{"usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "size": "3840x2160", "resolution": "4k"}}}, want: `{"count":1,"resolution":"4k"}`},
+		{name: "不猜测未列于官方文档的2K档", hook: "buildSubmitRequest", args: []any{map[string]any{"requestBody": map[string]any{"prompt": "ocean", "resolution": "2k"}}}, wantError: "resolution must be"},
 		{name: "竖屏像素尺寸不按缺省档收费", hook: "extractUsage", args: []any{map[string]any{"usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "size": "720x1280"}}}, want: `{"count":1,"resolution":"720p"}`},
 		{name: "默认规格不猜测供应商清晰度", hook: "extractUsage", args: []any{map[string]any{"usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"count":1,"resolution":"unspecified"}`},
 		{name: "旧倍率分支不得重复乘价", hook: "extractUsage", args: []any{map[string]any{"usagePurpose": "billing_ratios", "requestBody": map[string]any{"prompt": "ocean", "seconds": 10, "resolution": "1080p"}}}, want: `{}`},

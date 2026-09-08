@@ -16,17 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Combobox } from '@/components/ui/combobox'
 import { AlertTriangle } from 'lucide-react'
 import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Combobox } from '@/components/ui/combobox'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   combineBillingExpr,
@@ -50,6 +57,13 @@ import {
   type TaskMatrixRow,
   type TaskVisualConfig,
 } from '@/features/pricing/lib/task-expr'
+import {
+  formatTaskSpecificationLabel,
+  getVideoResolutionField,
+  getVideoResolutions,
+  getPrimaryVideoResolutions,
+  getVideoModeResolutionNote,
+} from '@/features/pricing/lib/video-resolution'
 import type {
   BillingUsageExample,
   BillingUsageSchema,
@@ -59,7 +73,10 @@ import { resolveLocalizedText } from '@/lib/localized-text'
 import { formatPricingNumber } from './pricing-format'
 import { TaskPricingMatrix } from './task-pricing-matrix'
 
+/** 视频模式只改变浏览入口，价格仍按原始 usage schema 保存。 */
 type TaskUsagePricingEditorProps = {
+  isVideo?: boolean
+  modelName?: string
   billingExpr: string
   requestRuleExpr: string
   usageSchema: BillingUsageSchema
@@ -70,7 +87,10 @@ type TaskUsagePricingEditorProps = {
 
 type EditorMode = 'visual' | 'raw'
 
+/** 预览样本独立于定价草稿，不触发表达式写回。 */
 type TaskBillingPreviewProps = {
+  isVideo?: boolean
+  modelName?: string
   config: TaskVisualConfig | null
   matchedRowLabel: string | null
   requestRuleExpr: string
@@ -83,15 +103,18 @@ type TaskBillingPreviewProps = {
 
 function TaskBillingPreview(props: TaskBillingPreviewProps) {
   const { t } = useTranslation()
+  const resolutionField = props.isVideo
+    ? getVideoResolutionField(props.usageSchema)
+    : undefined
+  const primaryResolutions = getPrimaryVideoResolutions(
+    props.usageSchema,
+    props.modelName
+  )
   const enumFields = getTaskEnumFields(props.usageSchema)
   const numberFields = getTaskNumberFields(props.usageSchema)
-    const result = props.config
-      ? evaluateTaskVisualConfig(
-          props.config,
-          props.sample,
-          props.usageSchema
-        )
-      : null
+  const result = props.config
+    ? evaluateTaskVisualConfig(props.config, props.sample, props.usageSchema)
+    : null
 
   if (!result) {
     return (
@@ -136,34 +159,48 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
         <Field className='gap-1.5'>
           <FieldLabel>{t('Example spec')}</FieldLabel>
           <Combobox
-options={props.usageExamples.map((example) => ({
+            options={props.usageExamples.map((example) => ({
               value: example.label,
-              label: example.label,
+              label: formatTaskSpecificationLabel(example.label, t),
             }))}
-value={
+            value={
               props.usageExamples.find((example) =>
                 Object.entries(example.facts).every(
                   ([field, value]) => props.sample[field] === value
                 )
               )?.label ?? null
             }
-onValueChange={(label) => {
+            onValueChange={(label) => {
               const example = props.usageExamples?.find(
                 (item) => item.label === label
               )
               if (example) props.onSampleReplace({ ...example.facts })
             }}
-className='w-full'
-placeholder={t('Example spec')}
-/>
+            className='w-full'
+            placeholder={t('Example spec')}
+          />
         </Field>
       ) : null}
       {enumFields.length + numberFields.length > 0 ? (
         <div className='grid gap-3 sm:grid-cols-2'>
           {enumFields.map(([field, definition]) => {
-            const items = (definition.enum ?? []).map((value) => ({
+            const values =
+              field === resolutionField
+                ? [
+                    ...getVideoResolutions(props.usageSchema),
+                    ...(definition.enum?.includes('unspecified')
+                      ? ['unspecified']
+                      : []),
+                  ]
+                : (definition.enum ?? [])
+            const items = values.map((value) => ({
               value,
-              label: value,
+              label:
+                field === resolutionField &&
+                value !== 'unspecified' &&
+                !primaryResolutions.includes(value)
+                  ? `${value} · ${t('Additional provider specifications')}`
+                  : formatTaskSpecificationLabel(value, t),
             }))
             return (
               <Field key={field} className='gap-1.5'>
@@ -171,13 +208,14 @@ placeholder={t('Example spec')}
                   <code>{field}</code>
                 </FieldLabel>
                 <Combobox
-options={items}
-value={String(props.sample[field] ?? '')}
-onValueChange={(value) =>
+                  aria-label={field}
+                  options={items}
+                  value={String(props.sample[field] ?? '')}
+                  onValueChange={(value) =>
                     value !== null && props.onSampleChange(field, value)
                   }
-className='w-full'
-/>
+                  className='w-full'
+                />
               </Field>
             )
           })}
@@ -211,7 +249,11 @@ className='w-full'
       ) : null}
       <div className='border-primary/50 bg-primary/10 flex flex-col gap-2 rounded-md border p-3 text-sm'>
         <Badge variant='outline' className='text-xs'>
-          {t('Hit tier')}: {props.matchedRowLabel ?? result.tier.label}
+          {t('Hit tier')}:{' '}
+          {formatTaskSpecificationLabel(
+            props.matchedRowLabel ?? result.tier.label,
+            t
+          )}
         </Badge>
         <code className='font-mono text-xs break-words'>{formula}</code>
       </div>
@@ -367,9 +409,17 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
     enumFields.length > 0 &&
     !tryParseTaskMatrixConfig(props.billingExpr, props.usageSchema)
   )
+  const modeResolutionNote = props.isVideo
+    ? getVideoModeResolutionNote(props.modelName)
+    : undefined
 
   return (
     <div className='space-y-5'>
+      {modeResolutionNote && (
+        <p className='text-muted-foreground text-sm'>
+          {t('Video resolution')}: <code>{modeResolutionNote}</code>
+        </p>
+      )}
       <div className='grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end'>
         <Field className='gap-2'>
           <FieldLabel>{t('Editor mode')}</FieldLabel>
@@ -415,6 +465,8 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
                   })}
                 </p>
                 <TaskPricingMatrix
+                  isVideo={props.isVideo}
+                  modelName={props.modelName}
                   rows={matrixRows}
                   usageSchema={props.usageSchema}
                   matchedRowIndex={matchedRowIndex}
@@ -477,7 +529,10 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
                                 className='font-mono'
                               />
                               <span className='text-muted-foreground shrink-0 text-xs'>
-                                $/{t(getTaskUsagePriceUnitLabelKey(definition.unit))}
+                                $/
+                                {t(
+                                  getTaskUsagePriceUnitLabelKey(definition.unit)
+                                )}
                               </span>
                             </div>
                             {description ? (
@@ -523,6 +578,8 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
             )}
 
             <TaskBillingPreview
+              isVideo={props.isVideo}
+              modelName={props.modelName}
               config={previewConfig}
               matchedRowLabel={matchedRowLabel}
               requestRuleExpr={previewRequestRuleExpr}
@@ -585,6 +642,8 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
               spellCheck={false}
             />
             <TaskBillingPreview
+              isVideo={props.isVideo}
+              modelName={props.modelName}
               config={previewConfig}
               matchedRowLabel={matchedRowLabel}
               requestRuleExpr={previewRequestRuleExpr}
