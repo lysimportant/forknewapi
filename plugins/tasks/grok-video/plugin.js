@@ -88,7 +88,7 @@ export function buildSubmitRequest(ctx) {
   validateRequest(req);
   const body = Object.assign({}, req, { model: ctx.upstreamModel });
   const headers = { Authorization: "Bearer " + ctx.apiKey };
-  const descriptor = { url: apiBase(ctx) + "/videos", method: "POST", headers };
+  const descriptor = { url: apiBase(ctx) + "/videos/generations", method: "POST", headers };
   if ((ctx.files || []).length) {
     const parts = [];
     for (const key of Object.keys(body)) {
@@ -109,7 +109,7 @@ export function buildSubmitRequest(ctx) {
 export function parseSubmitResponse(_ctx, resp) {
   const body = resp.body || {};
   if (body.error) throw new Error("upstream rejected video creation");
-  const taskId = body.id || body.task_id;
+  const taskId = body.request_id || body.id || body.task_id;
   if (typeof taskId !== "string" || !taskId.trim()) throw new Error("upstream video id is missing");
   return { taskId, taskData: body };
 }
@@ -140,6 +140,7 @@ export function parseTaskResult(_ctx, body) {
     processing: "IN_PROGRESS",
     in_progress: "IN_PROGRESS",
     completed: "SUCCESS",
+    done: "SUCCESS",
     failed: "FAILURE",
     cancelled: "FAILURE",
     canceled: "FAILURE",
@@ -165,7 +166,7 @@ export function buildContentRequest(ctx) {
   if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
   let data = ctx.data || {};
   if (data.data && data.data.task_id && data.data.data) data = data.data.data;
-  const url = data.video_url || data.url || (data.video && data.video.url);
+  const url = data.video_url || data.url || (data.video && data.video.url) || (data.data && data.data.video && data.data.video.url);
   if (url !== undefined) {
     if (typeof url !== "string" || !/^https?:\/\//.test(url)) throw new Error("invalid video artifact URL");
     return { url, method: ctx.clientRequest.method, credentialless: true };
@@ -271,3 +272,4 @@ export const protocols = {
     },
   },
 };
+

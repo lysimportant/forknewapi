@@ -27,7 +27,7 @@
 
 ## 本版接口契约
 
-客户端通过 `POST /v1/videos` 提交 JSON 或 multipart，必填 `model`、`prompt`；支持单个 `input_reference` 文件。JSON 无文件请求发 JSON，有文件发 multipart。可传时长、清晰度等供应商参数，但供应商须支持对应字段。
+客户端通过 `POST /v1/videos/generations` 提交 JSON 或 multipart，必填 `model`、`prompt`；支持单个 `input_reference` 文件。JSON 无文件请求发 JSON，有文件发 multipart。可传时长、清晰度等供应商参数，但供应商须支持对应字段。
 
 ```json
 {
@@ -37,10 +37,10 @@
 }
 ```
 
-- 上游创建：`POST /v1/videos`，Bearer 渠道密钥；响应顶层 `id` 或 `task_id`。
+- 上游创建：`POST /v1/videos/generations`，Bearer 渠道密钥；xAI 响应使用顶层 `request_id`，兼容代理同时接受 `id` 或 `task_id`。
 - 上游查询：`GET /v1/videos/{上游ID}`；支持 `queued/pending/processing/in_progress/completed/failed/cancelled/canceled/expired`，未知状态返回 UNKNOWN。
 - 视频下载：优先使用顶层 `video_url`、`url` 或 `video.url` 提供的公开 CDN 地址，经宿主无凭据代理；没有 URL 时使用鉴权 `GET/HEAD /v1/videos/{上游ID}/content`。私有 CDN 签名/鉴权差异、特殊 JSON 包装或强制 multipart 创建需要按供应商文档适配。
-- 可经 `/v1/responses`（本 fork 也支持 `/responses`）用纯字符串 `input` 发起文生视频，支持宿主的同步、流式和 background。本版不接受 Responses 数组历史、工具、图片或会话恢复，显式报错；图生视频使用 `/v1/videos`。
+- 可经 `/v1/responses`（本 fork 也支持 `/responses`）用纯字符串 `input` 发起文生视频，支持宿主的同步、流式和 background。本版不接受 Responses 数组历史、工具、图片或会话恢复，显式报错；图生视频使用 `/v1/videos/generations`。
 - 每请求只允许一个视频，拒绝 `n/count/batch_size` 非 1；显式时长必须大于 0 且不超过宿主 3600 秒安全边界。此边界不表示供应商支持 3600 秒；未指定时长则不填默认值。
 
 ## 验证和范围
@@ -70,3 +70,4 @@ Grok 本版主列官方三档，保留旧4K兼容，不增加2K。已有表达�
 ## 1.1.1
 
 新增grok-imagine-video模型匹配，原1.5模型保留；两个模型的公开视频与Responses路由均经真实插件注册表验证。Go插件三包回归、前端清晰度7项测试、typecheck、生产build、插件宿主lint及定向lint/format通过。未调用付费上游。
+
