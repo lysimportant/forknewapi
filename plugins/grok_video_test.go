@@ -25,6 +25,15 @@ func TestGrokVideoContracts(t *testing.T) {
 		}
 	}
 
+	t.Run("按次模型精确注册", func(t *testing.T) {
+		for _, endpoint := range []string{"/v1/videos", "/v1/responses"} {
+			binding, found := registry.Generation().LookupEndpoint("POST", endpoint, "grok-imagine-video-1.5（按次）")
+			if assert.True(t, found, "按次模型必须能从 %s 找到插件", endpoint) {
+				assert.Same(t, plugin, binding.Plugin)
+			}
+		}
+	})
+
 	// 测试表的期望值独立描述上游线协议及计费契约，不复制生产转换逻辑。
 	tests := []struct {
 		name      string
@@ -34,6 +43,11 @@ func TestGrokVideoContracts(t *testing.T) {
 		want      string
 		wantError string
 	}{
+		{name: "完整视频地址创建请求不重复路径", hook: "buildSubmitRequest", args: []any{map[string]any{"baseUrl": "https://upstream.example/v1/videos", "apiKey": "fixture-only", "upstreamModel": "grok-imagine-video-1.5", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"url":"https://upstream.example/v1/videos","method":"POST","headers":{"Authorization":"Bearer fixture-only","Content-Type":"application/json"},"body":{"model":"grok-imagine-video-1.5","prompt":"ocean"}}`},
+		{name: "完整视频地址末尾斜杠不重复路径", hook: "buildSubmitRequest", args: []any{map[string]any{"baseUrl": "https://upstream.example/v1/videos/", "apiKey": "fixture-only", "upstreamModel": "grok-imagine-video-1.5", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"url":"https://upstream.example/v1/videos","method":"POST","headers":{"Authorization":"Bearer fixture-only","Content-Type":"application/json"},"body":{"model":"grok-imagine-video-1.5","prompt":"ocean"}}`},
+		{name: "按次上游模型字符串原样保留", hook: "buildSubmitRequest", args: []any{map[string]any{"baseUrl": "https://upstream.example", "apiKey": "fixture-only", "upstreamModel": "grok-imagine-video-1.5（按次）", "requestBody": map[string]any{"model": "client-alias", "prompt": "ocean"}}}, want: `{"url":"https://upstream.example/v1/videos","method":"POST","headers":{"Authorization":"Bearer fixture-only","Content-Type":"application/json"},"body":{"model":"grok-imagine-video-1.5（按次）","prompt":"ocean"}}`},
+		{name: "真实提交响应原样保留任务数据", hook: "parseSubmitResponse", args: []any{nil, map[string]any{"body": map[string]any{"id": "task_fixture", "task_id": "task_fixture", "object": "video", "model": "grok-imagine-video-1.5", "status": "queued", "progress": 0, "created_at": 1788926514, "seconds": "10"}}}, want: `{"taskId":"task_fixture","taskData":{"id":"task_fixture","task_id":"task_fixture","object":"video","model":"grok-imagine-video-1.5","status":"queued","progress":0,"created_at":1788926514,"seconds":"10"}}`},
+		{name: "拒绝HTML字符串提交响应", hook: "parseSubmitResponse", args: []any{nil, map[string]any{"body": "<!DOCTYPE html><html><body>Bad Gateway</body></html>"}}, wantError: "JSON object"},
 		{name: "视频解码保留清晰度及别名", hook: "protocols", path: []string{"openai_video", "decodeRequest"}, args: []any{map[string]any{"model": "my-grok", "body": map[string]any{"kind": "json", "value": map[string]any{"prompt": "ocean", "resolution": "4k", "seconds": 10}}}}, want: `{"kind":"submit","model":"my-grok","action":"text_to_video","requestBody":{"model":"my-grok","prompt":"ocean","resolution":"4k","seconds":10}}`},
 		{name: "根地址创建请求使用渠道映射模型", hook: "buildSubmitRequest", args: []any{map[string]any{"baseUrl": "https://upstream.example", "apiKey": "fixture-only", "upstreamModel": "grok-imagine-video-1.5", "requestBody": map[string]any{"prompt": "ocean", "resolution": "720p"}}}, want: `{"url":"https://upstream.example/v1/videos","method":"POST","headers":{"Authorization":"Bearer fixture-only","Content-Type":"application/json"},"body":{"model":"grok-imagine-video-1.5","prompt":"ocean","resolution":"720p"}}`},
 		{name: "版本路径查询不会重复且编码任务ID", hook: "buildQueryRequest", args: []any{map[string]any{"baseUrl": "https://upstream.example/proxy/v1/", "apiKey": "fixture-only", "taskId": "id/with?path"}}, want: `{"url":"https://upstream.example/proxy/v1/videos/id%2Fwith%3Fpath","method":"GET","headers":{"Authorization":"Bearer fixture-only"}}`},
@@ -49,6 +63,8 @@ func TestGrokVideoContracts(t *testing.T) {
 		{name: "完成时忽略上游任意时长计数", hook: "extractUsageOnComplete", args: []any{nil, map[string]any{"status": "SUCCESS"}, map[string]any{"seconds": 99999999, "count": 99999999}}, want: `{"count":1}`},
 		{name: "失败没有成功用量", hook: "extractUsageOnComplete", args: []any{nil, map[string]any{"status": "FAILURE"}}, want: `null`},
 		{name: "处理状态保留有效进度", hook: "parseTaskResult", args: []any{nil, map[string]any{"status": "in_progress", "progress": 40}}, want: `{"status":"IN_PROGRESS","progress":"40%"}`},
+		{name: "真实done响应明确成功及完整进度", hook: "parseTaskResult", args: []any{nil, map[string]any{"status": "done", "video": map[string]any{"url": "/v1/videos/task_fixture/content"}}}, want: `{"status":"SUCCESS","progress":"100%"}`},
+		{name: "当前任务相对内容地址使用渠道鉴权", hook: "buildContentRequest", args: []any{map[string]any{"artifactKey": "video", "baseUrl": "https://upstream.example/v1/videos", "apiKey": "fixture-only", "upstreamTaskId": "task_fixture", "data": map[string]any{"status": "done", "video": map[string]any{"url": "/v1/videos/task_fixture/content"}}, "clientRequest": map[string]any{"method": "GET"}}}, want: `{"url":"https://upstream.example/v1/videos/task_fixture/content","method":"GET","headers":{"Authorization":"Bearer fixture-only"}}`},
 		{name: "成功明确终态", hook: "parseTaskResult", args: []any{nil, map[string]any{"status": "completed"}}, want: `{"status":"SUCCESS","progress":"100%"}`},
 		{name: "过期进入失败退款路径", hook: "parseTaskResult", args: []any{nil, map[string]any{"status": "expired"}}, want: `{"status":"FAILURE","reason":"upstream video generation failed"}`},
 		{name: "未知状态不无限处理中", hook: "parseTaskResult", args: []any{nil, map[string]any{"status": "unexpected"}}, want: `{"status":"UNKNOWN","reason":"unrecognized video status"}`},
@@ -81,6 +97,21 @@ func TestGrokVideoContracts(t *testing.T) {
 		})
 	}
 
+	// 只接受当前任务的标准内容路径，其他相对地址不能携带渠道凭据。
+	for _, artifactURL := range []string{"/video.mp4", "video.mp4", "../content", "//cdn.example/video.mp4", "/v1/videos/other_task/content", "/v1/videos/task_fixture/content?download=1", "/v1/videos/task_fixture/content/../other"} {
+		t.Run("拒绝非当前任务标准内容相对地址_"+artifactURL, func(t *testing.T) {
+			_, callErr := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
+				"artifactKey":    "video",
+				"baseUrl":        "https://upstream.example/v1/videos",
+				"apiKey":         "fixture-only",
+				"upstreamTaskId": "task_fixture",
+				"data":           map[string]any{"video": map[string]any{"url": artifactURL}},
+				"clientRequest":  map[string]any{"method": "GET"},
+			})
+			require.ErrorContains(t, callErr, "invalid video artifact URL")
+		})
+	}
+
 	for _, resolution := range []string{"480p", "720p", "1080p", "4k"} {
 		t.Run("声明并接受清晰度_"+resolution, func(t *testing.T) {
 			assert.Contains(t, plugin.Meta.UsageSchema["resolution"].Enum, resolution)
@@ -104,4 +135,3 @@ func TestGrokVideoContracts(t *testing.T) {
 		})
 	}
 }
-

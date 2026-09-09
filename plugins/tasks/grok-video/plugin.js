@@ -8,9 +8,9 @@ export const meta = {
     en: "Third-party OpenAI-compatible Grok video generation, billed per request. Resolution support depends on the provider; not the native xAI API.",
     zh: "第三方 OpenAI 视频兼容 Grok，按次计费。清晰度需上游支持；不是 xAI 官方原生接口。",
   },
-  version: "1.1.1",
+  version: "1.1.2",
   author: { name: "lysimportant/forknewapi" },
-  models: ["grok-imagine-video-1.5", "grok-imagine-video-1.5.1", "grok-imagine-video"],
+  models: ["grok-imagine-video-1.5", "grok-imagine-video-1.5（按次）", "grok-imagine-video-1.5.1", "grok-imagine-video"],
   fetchMode: "per_task",
   protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }],
   usageSchema: {
@@ -29,10 +29,11 @@ export const meta = {
   },
 };
 
-/** 规范化根地址或 /v1 地址；不改变供应商自定义路径前缀。 */
+/** 规范化根地址、/v1 地址或完整 /v1/videos 提交地址；不改变供应商自定义路径前缀。 */
 function apiBase(ctx) {
-  const base = String(ctx.baseUrl || "").replace(/\/+$/, "");
+  let base = String(ctx.baseUrl || "").replace(/\/+$/, "");
   if (!/^https?:\/\/[^/?#]+(?:\/[^?#]*)?$/.test(base)) throw new Error("channel base URL must be an HTTP(S) API base without query or fragment");
+  if (base.endsWith("/v1/videos")) base = base.slice(0, -7);
   return /\/v1$/.test(base) ? base : base + "/v1";
 }
 
@@ -107,9 +108,12 @@ export function buildSubmitRequest(ctx) {
 
 /** 提取标准顶层任务 ID；不把错误响应或不明包装格式视为提交成功。 */
 export function parseSubmitResponse(_ctx, resp) {
-  const body = resp.body || {};
+  const body = resp.body;
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new Error("upstream video response must be a JSON object; check channel base URL and gateway response");
+  if (resp.statusCode !== undefined && (resp.statusCode < 200 || resp.statusCode >= 300)) throw new Error("upstream video HTTP status " + resp.statusCode);
   if (body.error) throw new Error("upstream rejected video creation");
-  const taskId = body.request_id || body.id || body.task_id;
+  const taskId = body.id || body.task_id || body.request_id;
   if (typeof taskId !== "string" || !taskId.trim()) throw new Error("upstream video id is missing");
   return { taskId, taskData: body };
 }
@@ -167,12 +171,15 @@ export function buildContentRequest(ctx) {
   let data = ctx.data || {};
   if (data.data && data.data.task_id && data.data.data) data = data.data.data;
   const url = data.video_url || data.url || (data.video && data.video.url) || (data.data && data.data.video && data.data.video.url);
-  if (url !== undefined) {
+  const contentPath = "/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content";
+  // 只接受已知任务的标准相对内容路径，鉴权请求仍固定在渠道地址，避免任意路径携带密钥。
+  const isTaskContent = typeof url === "string" && url === "/v1" + contentPath;
+  if (url !== undefined && !isTaskContent) {
     if (typeof url !== "string" || !/^https?:\/\//.test(url)) throw new Error("invalid video artifact URL");
     return { url, method: ctx.clientRequest.method, credentialless: true };
   }
   return {
-    url: apiBase(ctx) + "/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content",
+    url: apiBase(ctx) + contentPath,
     method: ctx.clientRequest.method,
     headers: { Authorization: "Bearer " + ctx.apiKey },
   };
@@ -272,4 +279,3 @@ export const protocols = {
     },
   },
 };
-
