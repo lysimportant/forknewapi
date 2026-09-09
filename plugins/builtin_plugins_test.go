@@ -126,6 +126,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 	bodyOverrides := map[string]map[string]any{
+		"grok-video":       {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 	}
 	for _, key := range expectedKeys {

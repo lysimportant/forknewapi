@@ -5,19 +5,22 @@ export const meta = {
   name: "Grok Video (OpenAI compatible)",
   icon: "Grok.Color",
   description: {
-    en: "Third-party OpenAI-compatible Grok video generation, billed per request. Resolution support depends on the provider; not the native xAI API.",
-    zh: "第三方 OpenAI 视频兼容 Grok，按次计费。清晰度需上游支持；不是 xAI 官方原生接口。",
+    en: "Third-party OpenAI-compatible Grok video generation, billed by seconds and resolution. Resolution support depends on the provider; not the native xAI API.",
+    zh: "第三方 OpenAI 视频兼容 Grok，按秒和清晰度计费。清晰度需上游支持；不是 xAI 官方原生接口。",
   },
-  version: "1.1.2",
+  version: "2.0.0",
   author: { name: "lysimportant/forknewapi" },
   models: ["grok-imagine-video-1.5", "grok-imagine-video-1.5（按次）", "grok-imagine-video-1.5.1", "grok-imagine-video"],
   fetchMode: "per_task",
   protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }],
   usageSchema: {
-    count: {
+    seconds: {
       type: "number",
-      unit: "count",
-      description: { en: "One video generation request, independent of duration.", zh: "每次视频生成计为一次，不按时长相乘。" },
+      unit: "second",
+      description: {
+        en: "Video duration in seconds; seconds or duration is required, greater than zero and at most 3600.",
+        zh: "视频时长（秒）；请求必须提供seconds或duration，大于0且不超过3600。",
+      },
     },
     resolution: {
       enum: ["unspecified", "480p", "720p", "1080p", "4k"],
@@ -41,6 +44,7 @@ function apiBase(ctx) {
 function validateRequest(req) {
   if (!req || typeof req !== "object" || Array.isArray(req)) throw new Error("request body must be an object");
   if (typeof req.prompt !== "string" || !req.prompt.trim()) throw new Error("prompt is required");
+  if (req.seconds === undefined && req.duration === undefined) throw new Error("seconds or duration is required for per-second billing");
   for (const key of ["seconds", "duration"]) {
     if (req[key] !== undefined) {
       const value = req[key];
@@ -60,6 +64,17 @@ function validateRequest(req) {
   }
   if (req.resolution !== undefined && (typeof req.resolution !== "string" || !meta.usageSchema.resolution.enum.slice(1).includes(req.resolution.toLowerCase())))
     throw new Error("resolution must be 480p, 720p or 1080p; 4k is accepted only for legacy third-party compatibility");
+  // 计费参数只接受顶层值，防止透传对象另带时长、批量或清晰度绕过预扣校验。
+  for (const container of ["metadata", "parameters"]) {
+    if (req[container] === undefined) continue;
+    let extra = req[container];
+    if (typeof extra === "string") extra = JSON.parse(extra);
+    if (!extra || typeof extra !== "object" || Array.isArray(extra)) throw new Error(container + " must be a JSON object");
+    for (const key of ["seconds", "duration", "resolution", "size", "n", "count", "batch_size"]) {
+      if (Object.prototype.hasOwnProperty.call(extra, key))
+        throw new Error(container + "." + key + " is not supported; provide billing parameters at the top level");
+    }
+  }
   resolutionFact(req);
 }
 
@@ -118,16 +133,34 @@ export function parseSubmitResponse(_ctx, resp) {
   return { taskId, taskData: body };
 }
 
-/** 按次报告用量；旧倍率入口返回空对象，防止时长或清晰度重复乘价。 */
+/** 报告已校验秒数与清晰度；旧倍率入口返回空对象，防止额外乘价。 */
 export function extractUsage(ctx) {
   validateRequest(ctx.requestBody);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  return { count: 1, resolution: resolutionFact(ctx.requestBody) };
+  const req = ctx.requestBody;
+  return { seconds: Number(req.seconds === undefined ? req.duration : req.seconds), resolution: resolutionFact(req) };
 }
 
-/** 成功仍只计一次；不使用上游时长或任意计数字段改变收费次数，保留请求清晰度分档。 */
-export function extractUsageOnComplete(_task, result) {
-  return result && result.status === "SUCCESS" ? { count: 1 } : null;
+/** 成功时按上游明确提供的有效秒数结算；缺失时保留预扣秒数，请求清晰度不变，错误秒数显式报错。 */
+export function extractUsageOnComplete(_task, result, body) {
+  if (!result || result.status !== "SUCCESS") return null;
+  const response = body || {};
+  if (response.seconds === undefined && response.duration === undefined) return null;
+  for (const key of ["seconds", "duration"]) {
+    const raw = response[key];
+    if (raw === undefined) continue;
+    if (
+      (typeof raw !== "number" && typeof raw !== "string") ||
+      String(raw).trim() === "" ||
+      !Number.isFinite(Number(raw)) ||
+      Number(raw) <= 0 ||
+      Number(raw) > 3600
+    )
+      throw new Error("upstream " + key + " must be greater than 0 and at most 3600");
+  }
+  if (response.seconds !== undefined && response.duration !== undefined && Number(response.seconds) !== Number(response.duration))
+    throw new Error("upstream seconds and duration conflict");
+  return { seconds: Number(response.seconds === undefined ? response.duration : response.seconds) };
 }
 
 /** 查询上游任务；路径参数编码，避免任务 ID 改写请求路径。 */
@@ -244,7 +277,8 @@ export const protocols = {
       for (const key of ["seconds", "duration", "resolution", "size", "aspect_ratio", "n", "count", "batch_size"]) {
         if (req[key] !== undefined) body[key] = req[key];
       }
-      validateRequest(body);
+      // 在白名单投影前校验原始参数，避免隐藏计费字段被静默丢弃。
+      validateRequest(Object.assign({}, req, { prompt: req.input }));
       return { kind: "submit", model: ctx.model, action: "text_to_video", requestBody: body };
     },
     /** 输出进度与唯一终态；失败事件交由宿主完成标准 Responses 封装。 */
