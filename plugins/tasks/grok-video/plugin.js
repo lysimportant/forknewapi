@@ -88,7 +88,7 @@ export function buildSubmitRequest(ctx) {
   validateRequest(req);
   const body = Object.assign({}, req, { model: ctx.upstreamModel });
   const headers = { Authorization: "Bearer " + ctx.apiKey };
-  const descriptor = { url: apiBase(ctx) + "/videos/generations", method: "POST", headers };
+  const descriptor = { url: apiBase(ctx) + "/videos", method: "POST", headers };
   if ((ctx.files || []).length) {
     const parts = [];
     for (const key of Object.keys(body)) {
