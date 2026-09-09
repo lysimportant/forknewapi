@@ -10,7 +10,7 @@ export const meta = {
   },
   version: "1.1.1",
   author: { name: "lysimportant/forknewapi" },
-  models: ["grok-imagine-video-1.5", "grok-imagine-video"],
+  models: ["grok-imagine-video-1.5", "grok-imagine-video-1.5.1", "grok-imagine-video"],
   fetchMode: "per_task",
   protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }],
   usageSchema: {
