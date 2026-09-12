@@ -34,9 +34,9 @@ afterEach(async () => {
 
 it.each([
   [
-    'bad-address',
-    'Please enter a valid email address',
-    '请输入有效的电子邮件地址',
+    'reader@example.com',
+    '',
+    '当前邮箱不支持，请使用 QQ 邮箱（例如：123456@qq.com）。',
   ],
   [
     'reader@example.com',

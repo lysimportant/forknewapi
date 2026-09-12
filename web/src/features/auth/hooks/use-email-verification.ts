@@ -1,21 +1,3 @@
-/*
-Copyright (C) 2023-2026 QuantumNous
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
-*/
 import { isAxiosError } from 'axios'
 import i18next from 'i18next'
 import { useState } from 'react'
@@ -51,6 +33,16 @@ export function useEmailVerification(options?: UseEmailVerificationOptions) {
   const sendCode = async (email: string) => {
     if (!email) {
       toast.error(i18next.t('Please enter your email first'))
+      return false
+    }
+
+    // 注册入口统一使用 QQ 邮箱，先在前端给出明确提示，避免无效请求触发多条服务端错误消息。
+    if (!/@qq\.com$/i.test(email.trim())) {
+      toast.error(
+        i18next.t(
+          'This email address is not supported. Please use a QQ email address (e.g. 123456@qq.com).'
+        )
+      )
       return false
     }
 
