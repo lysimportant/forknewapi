@@ -309,7 +309,9 @@ export function SignUpForm({
                   </FormLabel>
                   <FormControl>
                     <Input
-                      placeholder={t('name@example.com')}
+                      placeholder={t(
+                        'Please use a QQ email address (e.g. 123456@qq.com)'
+                      )}
                       type='email'
                       {...field}
                     />

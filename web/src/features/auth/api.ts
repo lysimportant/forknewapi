@@ -251,13 +251,15 @@ export async function register(payload: RegisterPayload): Promise<ApiResponse> {
   return res.data
 }
 
-// Send email verification code
+/** 发送注册邮箱验证码；错误由调用方翻译并提示，避免全局拦截器重复弹出英文消息。 */
 export async function sendEmailVerification(
   email: string,
   turnstile?: string
 ): Promise<ApiResponse> {
   const res = await api.get('/api/verification', {
     params: { email, turnstile },
+    skipBusinessError: true,
+    skipErrorHandler: true,
   })
   return res.data
 }
