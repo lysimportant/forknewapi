@@ -2934,6 +2934,7 @@
     "Matched models": "Matched models",
     "Matched Tier": "Matched Tier",
     "Matches models not claimed by earlier splits.": "Matches models not claimed by earlier splits.",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "Matches the resolved reasoning effort from the request body or model suffix.",
     "Matching Rules": "Matching Rules",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "Matching rules apply to metadata. Pricing is configured for each concrete model.",
     "Max Disk Cache Size (MB)": "Max Disk Cache Size (MB)",

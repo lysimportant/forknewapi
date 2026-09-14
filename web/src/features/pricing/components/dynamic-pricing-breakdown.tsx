@@ -33,6 +33,7 @@ import {
   MATCH_GTE,
   MATCH_LT,
   MATCH_RANGE,
+  SOURCE_EFFORT,
   SOURCE_TIME,
   parseTaskTiersFromExpr,
   parseTiersFromExpr,
@@ -200,6 +201,11 @@ function describeCondition(
       [MATCH_LT]: '<',
     }
     return `${fn} ${opMap[cond.mode] || '='} ${cond.value} (${tz})`
+  }
+  if (cond.source === SOURCE_EFFORT) {
+    const src = t('Reasoning Effort')
+    if (cond.mode === MATCH_EXISTS) return `${src} ${t('Exists')}`
+    return `${src} = ${cond.value}`
   }
   const src = cond.source === 'header' ? t('Header') : t('Body param')
   const path = cond.path || ''

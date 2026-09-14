@@ -11,6 +11,9 @@ type RequestInput struct {
 	Headers map[string]string
 	Body    []byte
 	Usage   map[string]any
+	// Effort 是解析后的推理档位（none/minimal/low/medium/high/xhigh/max 等）。
+	// 空字符串表示请求未显式指定档位；模型后缀优先于请求体字段。
+	Effort string
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.

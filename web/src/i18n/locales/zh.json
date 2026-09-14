@@ -2934,6 +2934,7 @@
     "Matched models": "匹配模型",
     "Matched Tier": "命中阶梯",
     "Matches models not claimed by earlier splits.": "匹配前面分流未占用的模型。",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "匹配从请求体或模型后缀解析出的推理档位。",
     "Matching Rules": "匹配规则",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "匹配规则仅用于元信息，价格按具体模型配置。",
     "Max Disk Cache Size (MB)": "磁盘缓存最大总量 (MB)",

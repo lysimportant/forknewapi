@@ -46,6 +46,12 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `img_o` | 图片输出 token 数 |
 | `ao` | 音频输出 token 数 |
 
+**请求变量：**
+
+| 变量 | 含义 |
+|------|------|
+| `effort` | 解析后的推理档位字符串。来自请求体 `reasoning_effort` / `reasoning.effort` / `output_config.effort` / Gemini `thinkingLevel`，或模型名 `@effort:max`、`gpt-5-max` 这类显式后缀。未指定时为空字符串。取值：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。**不会**把仅开启 thinking 或 budget 推断成某个档位。 |
+
 #### `p` 和 `c` 的自动排除机制
 
 `p` 和 `c` 是"兜底变量"——它们代表**所有没有被表达式单独定价的 token**。系统会根据表达式实际使用了哪些变量，自动从 `p` / `c` 中减去对应的子类别 token，避免重复计费。
@@ -114,9 +120,10 @@ Request-conditional multipliers are appended to the expression after a `|||` sep
 
 ```
 tier("base", p * 5 + c * 25)|||when(header("anthropic-beta") has "fast-mode") * 6
+tier("base", p * 2.5 + c * 15)|||when(effort == "max") * 2
 ```
 
-These factors are stored as ordinary multiplication in the final expression (for example, `(tier(...)) * (condition ? 6 : 1)`) and run in the same billing program.
+These factors are stored as ordinary multiplication in the final expression (for example, `(tier(...)) * (condition ? 6 : 1)`) and run in the same billing program. `effort` is a resolved request variable, so `effort == "max"` is traced the same way as `param(...)` / `header(...)`.
 
 ### Request Rule Tracing
 
@@ -126,7 +133,7 @@ At compile time, the engine instruments ternary factors with this exact shape:
 <request-probe condition> ? <numeric literal> : 1
 ```
 
-The condition must reference at least one request probe (`param`, `header`, `hour`, `minute`, `weekday`, `month`, or `day`). Both branches must be numeric literals and the fallback must equal `1`. Other conditionals, including `(condition ? 2 : 1.5)`, are evaluated normally but are not traced. Integer-only factors use an integer-preserving trace callback, so instrumentation does not change expressions that require an integer operand (for example, `%`). The internal trace callback names are reserved and cannot be used in stored expressions.
+The condition must reference at least one request probe (`param`, `header`, `effort`, `hour`, `minute`, `weekday`, `month`, or `day`). Both branches must be numeric literals and the fallback must equal `1`. Other conditionals, including `(condition ? 2 : 1.5)`, are evaluated normally but are not traced. Integer-only factors use an integer-preserving trace callback, so instrumentation does not change expressions that require an integer operand (for example, `%`). The internal trace callback names are reserved and cannot be used in stored expressions.
 
 The compiled cache stores the canonical condition and multiplier for every instrumented node. Each run starts with the full detected rule list marked as unmatched; callbacks mark rules that actually evaluate true. Rules skipped by normal expression short-circuiting remain unmatched. This keeps the expression's numeric result unchanged and avoids reparsing it on each request.
 

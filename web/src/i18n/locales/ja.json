@@ -2934,6 +2934,7 @@
     "Matched models": "一致モデル",
     "Matched Tier": "一致した階層",
     "Matches models not claimed by earlier splits.": "前の分岐で使われていないモデルに一致します。",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "リクエスト本文またはモデル名の接尾辞から解決した推論レベルに一致します。",
     "Matching Rules": "マッチングルール",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "マッチングルールはメタデータに適用されます。料金は個々のモデルに設定します。",
     "Max Disk Cache Size (MB)": "ディスクキャッシュ最大容量 (MB)",

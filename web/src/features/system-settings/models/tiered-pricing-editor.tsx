@@ -58,6 +58,8 @@ import {
   MATCH_LT,
   MATCH_LTE,
   MATCH_RANGE,
+  REASONING_EFFORT_VALUES,
+  SOURCE_EFFORT,
   SOURCE_HEADER,
   SOURCE_PARAM,
   SOURCE_TIME,
@@ -65,11 +67,13 @@ import {
   buildRequestRuleExpr,
   combineBillingExpr,
   createEmptyCondition,
+  createEmptyEffortCondition,
   createEmptyRuleGroup,
   createEmptyTimeCondition,
   getRequestRuleMatchOptions,
   splitBillingExprAndRequestRules,
   tryParseRequestRuleExpr,
+  type EffortCondition,
   type ParamHeaderCondition,
   type RequestCondition,
   type RequestRuleGroup,
@@ -239,6 +243,23 @@ const PRESET_GROUPS: PresetGroup[] = [
               },
             ],
             multiplier: '0.5',
+          },
+        ],
+      },
+      {
+        key: 'reasoning-max-x2',
+        label: 'Reasoning Max ×2',
+        expr: 'tier("base", p * 2.5 + c * 15)',
+        requestRules: [
+          {
+            conditions: [
+              {
+                source: SOURCE_EFFORT as 'effort',
+                mode: MATCH_EQ,
+                value: 'max',
+              },
+            ],
+            multiplier: '2',
           },
         ],
       },
@@ -884,7 +905,7 @@ function RawExprEditor({ exprString, onChange }: RawExprEditorProps) {
             {t('Variables')}: <code>len</code>, <code>p</code>, <code>c</code>,{' '}
             <code>cr</code>, <code>cc</code>, <code>cc1h</code>,{' '}
             <code>img</code>, <code>img_o</code>, <code>ai</code>,{' '}
-            <code>ao</code>
+            <code>ao</code>, <code>effort</code>
           </div>
           <div>
             {t('Functions')}: <code>tier(name, value)</code>, <code>max</code>,{' '}
@@ -961,17 +982,30 @@ function RuleConditionRow({
         return timeFunc
     }
   }
-  const sourceLabel =
-    condition.source === SOURCE_PARAM
-      ? t('Body param')
-      : condition.source === SOURCE_HEADER
-        ? t('Header')
-        : t('Time')
+  const getSourceLabel = (source: string) => {
+    if (source === SOURCE_PARAM) {
+      return t('Body param')
+    }
+    if (source === SOURCE_HEADER) {
+      return t('Header')
+    }
+    if (source === SOURCE_EFFORT) {
+      return t('Reasoning Effort')
+    }
+    return t('Time')
+  }
+  const sourceLabel = getSourceLabel(condition.source)
 
   const handleSourceChange = (source: string) => {
     if (source === SOURCE_TIME) {
       onChange(createEmptyTimeCondition())
-    } else if (source === SOURCE_HEADER || source === SOURCE_PARAM) {
+      return
+    }
+    if (source === SOURCE_EFFORT) {
+      onChange(createEmptyEffortCondition())
+      return
+    }
+    if (source === SOURCE_HEADER || source === SOURCE_PARAM) {
       onChange({
         ...createEmptyCondition(),
         source: source as 'param' | 'header',
@@ -1079,6 +1113,61 @@ className='w-56'
     </>
   )
 
+  const renderEffortCondition = (effortCond: EffortCondition) => {
+    const knownEfforts: readonly string[] = REASONING_EFFORT_VALUES
+    let effortItems = knownEfforts
+    if (effortCond.value && !knownEfforts.includes(effortCond.value)) {
+      effortItems = [...knownEfforts, effortCond.value]
+    }
+    return (
+      <>
+        <Select
+          items={matchOptions.map((option) => ({
+            value: option.value,
+            label: getMatchLabel(option.value),
+          }))}
+          value={effortCond.mode}
+          onValueChange={(v) => v !== null && handleModeChange(v)}
+        >
+          <SelectTrigger className='w-32' size='sm'>
+            <SelectValue>{getMatchLabel(effortCond.mode)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent alignItemWithTrigger={false}>
+            <SelectGroup>
+              {matchOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {getMatchLabel(option.value)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        {effortCond.mode !== MATCH_EXISTS && (
+          <Select
+            items={effortItems.map((value) => ({ value, label: value }))}
+            value={effortCond.value}
+            onValueChange={(value) =>
+              value !== null && onChange({ ...effortCond, value })
+            }
+          >
+            <SelectTrigger className='w-28' size='sm'>
+              <SelectValue>{effortCond.value || 'max'}</SelectValue>
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {effortItems.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {value}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        )}
+      </>
+    )
+  }
+
   const renderParamHeaderCondition = (phCond: ParamHeaderCondition) => (
     <>
       <Input
@@ -1125,31 +1214,43 @@ className='w-56'
     </>
   )
 
+  const renderConditionFields = () => {
+    if (condition.source === SOURCE_TIME) {
+      return renderTimeCondition(condition as TimeCondition)
+    }
+    if (condition.source === SOURCE_EFFORT) {
+      return renderEffortCondition(condition as EffortCondition)
+    }
+    return renderParamHeaderCondition(condition as ParamHeaderCondition)
+  }
+
   return (
     <div className='flex flex-wrap items-center gap-2'>
       <Select
         items={[
           { value: SOURCE_PARAM, label: t('Body param') },
           { value: SOURCE_HEADER, label: t('Header') },
+          { value: SOURCE_EFFORT, label: t('Reasoning Effort') },
           { value: SOURCE_TIME, label: t('Time') },
         ]}
         value={condition.source}
         onValueChange={(v) => v !== null && handleSourceChange(v)}
       >
-        <SelectTrigger className='w-28' size='sm'>
+        <SelectTrigger className='w-36' size='sm'>
           <SelectValue>{sourceLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent alignItemWithTrigger={false}>
           <SelectGroup>
             <SelectItem value={SOURCE_PARAM}>{t('Body param')}</SelectItem>
             <SelectItem value={SOURCE_HEADER}>{t('Header')}</SelectItem>
+            <SelectItem value={SOURCE_EFFORT}>
+              {t('Reasoning Effort')}
+            </SelectItem>
             <SelectItem value={SOURCE_TIME}>{t('Time')}</SelectItem>
           </SelectGroup>
         </SelectContent>
       </Select>
-      {condition.source === SOURCE_TIME
-        ? renderTimeCondition(condition as TimeCondition)
-        : renderParamHeaderCondition(condition as ParamHeaderCondition)}
+      {renderConditionFields()}
       <Button
         variant='ghost'
         size='icon'
@@ -1162,6 +1263,13 @@ className='w-56'
       {condition.source === SOURCE_TIME && condition.mode === MATCH_RANGE && (
         <p className='text-muted-foreground w-full text-xs'>
           {t('Start ≤ end: within the day; start > end: across midnight')}
+        </p>
+      )}
+      {condition.source === SOURCE_EFFORT && (
+        <p className='text-muted-foreground w-full text-xs'>
+          {t(
+            'Matches the resolved reasoning effort from the request body or model suffix.'
+          )}
         </p>
       )}
     </div>
@@ -1478,6 +1586,7 @@ Output side:
 - c — output token count. Also auto-excludes sub-categories priced separately
 - img_o — image output token count
 - ao — audio output token count
+- effort — resolved reasoning effort (none/minimal/low/medium/high/xhigh/max; empty if unspecified). Comes from reasoning_effort / reasoning.effort or model suffix @effort:max
 
 ### p/c Auto-exclusion
 
@@ -1492,6 +1601,7 @@ Important: len is NOT affected by auto-exclusion. Tier conditions should use len
 - ceil(x), floor(x), abs(x) — ceiling, floor, absolute value
 - header(name) — reads a request header
 - param(path) — reads a request body JSON path (gjson syntax)
+- effort — resolved reasoning effort string; use effort == "max" in request rules
 - has(source, substr) — substring check
 - hour(tz), minute(tz), weekday(tz), month(tz), day(tz) — time functions, tz is a timezone like "Asia/Shanghai"
 

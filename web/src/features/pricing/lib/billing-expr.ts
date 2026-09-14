@@ -174,6 +174,18 @@ const BILLING_VAR_REGEX = new RegExp(
 export const SOURCE_PARAM = 'param'
 export const SOURCE_HEADER = 'header'
 export const SOURCE_TIME = 'time'
+export const SOURCE_EFFORT = 'effort'
+
+export const REASONING_EFFORT_VALUES = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+export type ReasoningEffortValue = (typeof REASONING_EFFORT_VALUES)[number]
 
 export const MATCH_EQ = 'eq'
 export const MATCH_CONTAINS = 'contains'
@@ -223,7 +235,16 @@ export type TimeCondition = {
   rangeEnd: string
 }
 
-export type RequestCondition = TimeCondition | ParamHeaderCondition
+export type EffortCondition = {
+  source: 'effort'
+  mode: string
+  value: string
+}
+
+export type RequestCondition =
+  | TimeCondition
+  | ParamHeaderCondition
+  | EffortCondition
 
 export type RequestRuleGroup = {
   conditions: RequestCondition[]
@@ -729,7 +750,17 @@ function tryParseRequestCondition(expr: string): RequestCondition | null {
   const tc = tryParseTimeCondition(expr)
   if (tc) return tc
 
-  let m = expr.match(/^header\("([^"]+)"\) != ""$/)
+  if (expr === 'effort != ""') {
+    return { source: 'effort', mode: MATCH_EXISTS, value: '' }
+  }
+  let m = expr.match(/^effort == (.+)$/)
+  if (m) {
+    const parsedValue = parseExprLiteral(m[1])
+    if (parsedValue === null) return null
+    return { source: 'effort', mode: MATCH_EQ, value: String(parsedValue) }
+  }
+
+  m = expr.match(/^header\("([^"]+)"\) != ""$/)
   if (m) return { source: 'header', path: m[1], mode: MATCH_EXISTS, value: '' }
 
   m = expr.match(/^param\("([^"]+)"\) != nil$/)
@@ -949,6 +980,10 @@ export function createEmptyCondition(): ParamHeaderCondition {
   return { source: 'param', path: '', mode: MATCH_EQ, value: '' }
 }
 
+export function createEmptyEffortCondition(): EffortCondition {
+  return { source: 'effort', mode: MATCH_EQ, value: 'max' }
+}
+
 export function createEmptyTimeCondition(): TimeCondition {
   return {
     source: 'time',
@@ -976,6 +1011,12 @@ export function createEmptyTimeRuleGroup(): RequestRuleGroup {
 export type MatchOption = { value: string; labelKey: string }
 
 export function getRequestRuleMatchOptions(source: string): MatchOption[] {
+  if (source === SOURCE_EFFORT) {
+    return [
+      { value: MATCH_EQ, labelKey: 'Equals' },
+      { value: MATCH_EXISTS, labelKey: 'Exists' },
+    ]
+  }
   if (source === SOURCE_TIME) {
     return [
       { value: MATCH_EQ, labelKey: 'Equals' },
@@ -1015,6 +1056,21 @@ export function normalizeCondition(
     source = 'time'
   } else if (cond?.source === 'header') {
     source = 'header'
+  } else if (cond?.source === 'effort') {
+    source = 'effort'
+  }
+
+  if (source === 'effort') {
+    const effortCond = cond as Partial<EffortCondition> | null | undefined
+    const options = getRequestRuleMatchOptions(SOURCE_EFFORT)
+    const mode = options.some((item) => item.value === effortCond?.mode)
+      ? (effortCond?.mode as string)
+      : MATCH_EQ
+    return {
+      source: 'effort',
+      mode,
+      value: effortCond?.value == null ? '' : String(effortCond.value),
+    }
   }
 
   if (source === 'time') {
@@ -1097,6 +1153,13 @@ function buildTimeConditionExpr(cond: TimeCondition): string {
 
 function buildRequestConditionExpr(cond: RequestCondition): string {
   if (cond.source === 'time') return buildTimeConditionExpr(cond)
+  if (cond.source === 'effort') {
+    const normalized = normalizeCondition(cond) as EffortCondition
+    if (normalized.mode === MATCH_EXISTS) return 'effort != ""'
+    const value = normalized.value.trim()
+    if (!value) return ''
+    return `effort == ${buildExprLiteral(MATCH_EQ, value)}`
+  }
   const normalized = normalizeCondition(cond) as ParamHeaderCondition
   const path = normalized.path.trim()
   if (!path) return ''

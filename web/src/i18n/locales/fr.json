@@ -2934,6 +2934,7 @@
     "Matched models": "Modèles associés",
     "Matched Tier": "Palier correspondant",
     "Matches models not claimed by earlier splits.": "Correspond aux modèles non pris par les branches précédentes.",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "Correspond à l'effort de raisonnement résolu depuis le corps de la requête ou le suffixe du modèle.",
     "Matching Rules": "Règles de correspondance",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "Les règles de correspondance concernent les métadonnées. Les tarifs se définissent par modèle.",
     "Max Disk Cache Size (MB)": "Taille max du cache disque (Mo)",

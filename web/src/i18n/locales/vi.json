@@ -2934,6 +2934,7 @@
     "Matched models": "Mô hình khớp",
     "Matched Tier": "Bậc khớp",
     "Matches models not claimed by earlier splits.": "Khớp các mô hình chưa được nhánh trước nhận.",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "Khớp với cường độ suy luận đã suy ra từ thân yêu cầu hoặc hậu tố tên mô hình.",
     "Matching Rules": "Quy tắc khớp",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "Quy tắc khớp chỉ áp dụng cho siêu dữ liệu. Giá được cấu hình cho từng mô hình cụ thể.",
     "Max Disk Cache Size (MB)": "Dung lượng tối đa bộ nhớ đệm đĩa (MB)",

@@ -1063,3 +1063,43 @@ func BenchmarkExprRunCached(b *testing.B) {
 		billingexpr.RunExpr(benchComplexExpr, params)
 	}
 }
+
+func TestRequestProbeEffortVariable(t *testing.T) {
+	exprStr := `(tier("base", p * 2)) * (effort == "max" ? 2 : 1)`
+	cost, trace, err := billingexpr.RunExprWithRequest(
+		exprStr,
+		billingexpr.TokenParams{P: 10},
+		billingexpr.RequestInput{Effort: "max"},
+	)
+	require.NoError(t, err)
+	assert.InDelta(t, 40, cost, 1e-6)
+	assert.Equal(t, "base", trace.MatchedTier)
+	assert.Equal(t, []billingexpr.RequestRuleTrace{
+		{Cond: `effort == "max"`, Multiplier: 2, Matched: true},
+	}, trace.RequestRules)
+
+	cost, trace, err = billingexpr.RunExprWithRequest(
+		exprStr,
+		billingexpr.TokenParams{P: 10},
+		billingexpr.RequestInput{Effort: "high"},
+	)
+	require.NoError(t, err)
+	assert.InDelta(t, 20, cost, 1e-6)
+	assert.Equal(t, []billingexpr.RequestRuleTrace{
+		{Cond: `effort == "max"`, Multiplier: 2, Matched: false},
+	}, trace.RequestRules)
+}
+
+func TestRequestProbeEffortExists(t *testing.T) {
+	exprStr := `(tier("base", p * 2)) * (effort != "" ? 1.5 : 1)`
+	cost, trace, err := billingexpr.RunExprWithRequest(
+		exprStr,
+		billingexpr.TokenParams{P: 10},
+		billingexpr.RequestInput{Effort: "low"},
+	)
+	require.NoError(t, err)
+	assert.InDelta(t, 30, cost, 1e-6)
+	assert.Equal(t, []billingexpr.RequestRuleTrace{
+		{Cond: `effort != ""`, Multiplier: 1.5, Matched: true},
+	}, trace.RequestRules)
+}

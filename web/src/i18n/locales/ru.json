@@ -2934,6 +2934,7 @@
     "Matched models": "Модели для сопоставления",
     "Matched Tier": "Подходящий уровень",
     "Matches models not claimed by earlier splits.": "Совпадает с моделями, не занятыми предыдущими ветками.",
+    "Matches the resolved reasoning effort from the request body or model suffix.": "Соответствует уровню рассуждения, полученному из тела запроса или суффикса модели.",
     "Matching Rules": "Правила сопоставления",
     "Matching rules apply to metadata. Pricing is configured for each concrete model.": "Правила сопоставления применяются к метаданным. Цены задаются для конкретных моделей.",
     "Max Disk Cache Size (MB)": "Макс. размер дискового кэша (МБ)",

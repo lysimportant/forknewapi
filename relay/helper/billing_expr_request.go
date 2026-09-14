@@ -7,7 +7,11 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
+	"github.com/QuantumNous/new-api/setting/model_setting"
+	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.RelayInfo) (billingexpr.RequestInput, error) {
@@ -31,6 +35,7 @@ func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.Re
 		return billingexpr.RequestInput{}, err
 	}
 	input.Body = bodyBytes
+	input.Effort = resolveBillingEffort(info, bodyBytes)
 	return input, nil
 }
 
@@ -47,6 +52,7 @@ func BuildBillingExprRequestInputFromRequest(request dto.Request, headers map[st
 		return billingexpr.RequestInput{}, err
 	}
 	input.Body = bodyBytes
+	input.Effort = resolveBillingEffort(nil, bodyBytes)
 	return input, nil
 }
 
@@ -64,6 +70,7 @@ func readIncomingBillingExprBody(c *gin.Context) ([]byte, error) {
 func cloneRequestInput(src billingexpr.RequestInput) billingexpr.RequestInput {
 	input := billingexpr.RequestInput{
 		Headers: cloneStringMap(src.Headers),
+		Effort:  src.Effort,
 	}
 	if len(src.Body) > 0 {
 		input.Body = append([]byte(nil), src.Body...)
@@ -88,4 +95,88 @@ func cloneStringMap(src map[string]string) map[string]string {
 		dst[key] = value
 	}
 	return dst
+}
+
+// resolveBillingEffort 解析计费用推理档位。
+// 模型名上的显式 @effort / 旧后缀优先于请求体，与转换层“后缀覆盖请求字段”一致。
+// 不把 thinking:on 或 budget 推断成 high，避免未声明档位被误加价。
+func resolveBillingEffort(info *relaycommon.RelayInfo, body []byte) string {
+	modelName := ""
+	if info != nil {
+		modelName = strings.TrimSpace(info.GetOriginModelName())
+	}
+	if modelName == "" && len(body) > 0 {
+		modelName = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
+	if effort := explicitEffortFromModelName(modelName); effort != "" {
+		return effort
+	}
+	if info != nil {
+		if effort := normalizeBillingEffortValue(info.GetReasoningEffort()); effort != "" {
+			return effort
+		}
+	}
+	return effortFromRequestBody(body)
+}
+
+func explicitEffortFromModelName(modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" || model_setting.ShouldPreserveThinkingSuffix(modelName) {
+		return ""
+	}
+	spec := kitreasoning.ParseModelModifiers(modelName)
+	if model_setting.ShouldPreserveThinkingSuffix(spec.Base) {
+		return ""
+	}
+	last := ""
+	for _, modifier := range spec.Modifiers {
+		if modifier.Key == "effort" {
+			last = modifier.Value
+		}
+	}
+	if effort, err := kitreasoning.ParseEffort(last); err == nil && effort != "" {
+		return string(effort)
+	}
+	_, intent, found, err := hostreasoning.ParseLegacyModelSuffix(
+		spec.Base,
+		model_setting.GetClaudeSettings().ThinkingAdapterEnabled,
+		model_setting.GetGeminiSettings().ThinkingAdapterEnabled,
+	)
+	if err != nil || !found {
+		return ""
+	}
+	return string(intent.Effort)
+}
+
+func effortFromRequestBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	for _, path := range []string{
+		"reasoning_effort",
+		"reasoning.effort",
+		"output_config.effort",
+		"generationConfig.thinkingConfig.thinkingLevel",
+		"generation_config.thinking_config.thinking_level",
+	} {
+		value := gjson.GetBytes(body, path)
+		if value.Type != gjson.String {
+			continue
+		}
+		if effort := normalizeBillingEffortValue(value.String()); effort != "" {
+			return effort
+		}
+	}
+	return ""
+}
+
+func normalizeBillingEffortValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if effort, err := kitreasoning.ParseEffort(raw); err == nil && effort != "" {
+		return string(effort)
+	}
+	return strings.ToLower(raw)
 }

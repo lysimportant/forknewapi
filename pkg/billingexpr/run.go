@@ -16,6 +16,7 @@ import (
 //   - p, c             — prompt / completion tokens (auto-excluding separately-priced sub-categories)
 //   - len              — total input context length for tier conditions (never reduced by sub-category exclusion)
 //   - cr, cc, cc1h     — cache read / creation / creation-1h tokens
+//   - effort           — resolved reasoning effort (empty when unspecified)
 //   - tier(name, value) — trace callback that records which tier matched
 //   - max, min, abs, ceil, floor — standard math helpers
 //
@@ -55,16 +56,17 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 	headers := normalizeHeaders(request.Headers)
 
 	env := map[string]interface{}{
-		"p":     params.P,
-		"c":     params.C,
-		"len":   params.Len,
-		"cr":    params.CR,
-		"cc":    params.CC,
-		"cc1h":  params.CC1h,
-		"img":   params.Img,
-		"img_o": params.ImgO,
-		"ai":    params.AI,
-		"ao":    params.AO,
+		"p":      params.P,
+		"c":      params.C,
+		"len":    params.Len,
+		"cr":     params.CR,
+		"cc":     params.CC,
+		"cc1h":   params.CC1h,
+		"img":    params.Img,
+		"img_o":  params.ImgO,
+		"ai":     params.AI,
+		"ao":     params.AO,
+		"effort": request.Effort,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value

@@ -21,8 +21,10 @@ import { describe, expect, test } from 'vitest'
 import {
   buildRequestRuleExpr,
   MATCH_EQ,
+  MATCH_EXISTS,
   MATCH_GTE,
   MATCH_RANGE,
+  SOURCE_EFFORT,
   type RequestCondition,
   type RequestRuleGroup,
   type TimeCondition,
@@ -216,3 +218,36 @@ describe('time range round-trip stability', () => {
     expect(buildRequestRuleExpr(parsed ?? [])).toBe(expr)
   })
 })
+
+describe('reasoning effort request rules', () => {
+  test('builds and parses max multiplier', () => {
+    const groups: RequestRuleGroup[] = [
+      {
+        conditions: [
+          { source: SOURCE_EFFORT, mode: MATCH_EQ, value: 'max' },
+        ],
+        multiplier: '2',
+      },
+    ]
+    const expr = buildRequestRuleExpr(groups)
+    expect(expr).toBe('(effort == "max" ? 2 : 1)')
+    const parsed = tryParseRequestRuleExpr(expr)
+    expect(parsed).toEqual(groups)
+    expect(buildRequestRuleExpr(parsed ?? [])).toBe(expr)
+  })
+
+  test('builds and parses effort exists', () => {
+    const groups: RequestRuleGroup[] = [
+      {
+        conditions: [
+          { source: SOURCE_EFFORT, mode: MATCH_EXISTS, value: '' },
+        ],
+        multiplier: '1.5',
+      },
+    ]
+    const expr = buildRequestRuleExpr(groups)
+    expect(expr).toBe('(effort != "" ? 1.5 : 1)')
+    expect(tryParseRequestRuleExpr(expr)).toEqual(groups)
+  })
+})
+

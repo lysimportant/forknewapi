@@ -622,7 +622,8 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
                 </div>
                 <div>
                   {t('Functions')}: <code>tier(name, value)</code>,{' '}
-                  <code>header(name)</code>, <code>param(path)</code>
+                  <code>header(name)</code>, <code>param(path)</code>,{' '}
+                  <code>effort</code>
                 </div>
                 {showRawMatrixHint ? (
                   <div>
