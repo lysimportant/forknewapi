@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { api } from '@/lib/api'
+import { api, type ApiRequestConfig } from '@/lib/api'
 
 import type {
   Redemption,
@@ -88,8 +88,11 @@ export async function updateRedemptionStatus(
 }
 
 // Delete a single redemption code
-export async function deleteRedemption(id: number): Promise<ApiResponse> {
-  const res = await api.delete(`/api/redemption/${id}/`)
+export async function deleteRedemption(
+  id: number,
+  config?: ApiRequestConfig
+): Promise<ApiResponse> {
+  const res = await api.delete(`/api/redemption/${id}/`, config)
   return res.data
 }
 
