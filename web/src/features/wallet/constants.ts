@@ -64,3 +64,8 @@ export const DEFAULT_DISCOUNT_RATE = 1.0
  * Default minimum topup amount
  */
 export const DEFAULT_MIN_TOPUP = 1
+
+/**
+ * Embedded shop used on the wallet recharge card.
+ */
+export const WALLET_SHOP_URL = 'https://wzyp.cn/shop/RPE3AZIX'
