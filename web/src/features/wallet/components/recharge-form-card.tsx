@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+/* eslint-disable react/iframe-missing-sandbox -- shop iframe needs scripts and same-origin together */
 import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -299,11 +300,15 @@ export function RechargeFormCard({
           </Button>
         </div>
         <div className='bg-muted/20 overflow-hidden rounded-lg border'>
+          {/*
+            allow-same-origin is required for this third-party shop: without it
+            the iframe origin becomes null and its Vue assets fail CORS.
+          */}
           <iframe
             src={WALLET_SHOP_URL}
             title={t('My Shop')}
             className='h-[420px] w-full border-0 bg-background sm:h-[520px]'
-            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
+            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin'
             referrerPolicy='no-referrer-when-downgrade'
             loading='lazy'
           />
