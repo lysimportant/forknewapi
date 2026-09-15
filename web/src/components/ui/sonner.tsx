@@ -36,7 +36,8 @@ const Toaster = (props: ToasterProps) => {
   return (
     <Sonner
       theme={resolvedTheme}
-      className='toaster group'
+      className='toaster group !z-[200]'
+      visibleToasts={3}
       icons={{
         success: (
           <HugeiconsIcon

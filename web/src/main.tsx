@@ -26,7 +26,7 @@ import { AxiosError } from 'axios'
 import i18next from 'i18next'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 
 import { getStatus } from '@/lib/api'
 import { installBuildMetadata } from '@/lib/build-metadata'
