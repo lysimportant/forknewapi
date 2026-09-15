@@ -148,6 +148,18 @@ func TestRedeemCreditsQuotaExactlyOnce(t *testing.T) {
 	assert.Equal(t, 500, user.Quota)
 }
 
+func TestRedeemAcceptsPaddedKey(t *testing.T) {
+	userId, key := setupRedeemFixture(t, 200)
+
+	quota, err := Redeem("  "+key+"  ", userId)
+	require.NoError(t, err)
+	assert.Equal(t, 200, quota)
+
+	var user User
+	require.NoError(t, DB.First(&user, "id = ?", userId).Error)
+	assert.Equal(t, 200, user.Quota)
+}
+
 func TestRedeemRejectsWalletOverflow(t *testing.T) {
 	userId, key := setupRedeemFixture(t, 11)
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", userId).Update("quota", common.MaxWalletQuota-10).Error)
