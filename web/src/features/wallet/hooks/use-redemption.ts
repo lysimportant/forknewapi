@@ -29,11 +29,22 @@ import { redeemTopupCode } from '../api'
 // Redemption Hook
 // ============================================================================
 
+export function extractRedemptionKey(code: string): string {
+  const normalized = code
+    .replaceAll('\uFEFF', '')
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+  const firstLine = (normalized.split('\n')[0] ?? '').trim()
+  const tabIndex = firstLine.lastIndexOf('\t')
+  const value = tabIndex >= 0 ? firstLine.slice(tabIndex + 1) : firstLine
+  return value.replaceAll(/[\s\u00A0]+/g, '')
+}
+
 export function useRedemption() {
   const [redeeming, setRedeeming] = useState(false)
 
   const redeemCode = useCallback(async (code: string): Promise<boolean> => {
-    const key = code.trim()
+    const key = extractRedemptionKey(code)
     if (!key) {
       toast.error(i18next.t('Please enter a redemption code'))
       return false

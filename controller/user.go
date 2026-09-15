@@ -1191,6 +1191,20 @@ type topUpRequest struct {
 	Key string `json:"key"`
 }
 
+// extractRedemptionKey 取出可兑换的单个兑换码。
+// 多选复制可能带多行或隐藏空白，后端按完整字符串精确匹配，必须先清洗。
+func extractRedemptionKey(raw string) string {
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = strings.TrimPrefix(normalized, "\uFEFF")
+	line, _, _ := strings.Cut(normalized, "\n")
+	line = strings.TrimSpace(line)
+	if i := strings.LastIndex(line, "\t"); i >= 0 {
+		line = line[i+1:]
+	}
+	return strings.Join(strings.Fields(line), "")
+}
+
 var topUpLocks sync.Map
 var topUpCreateLock sync.Mutex
 
@@ -1251,11 +1265,16 @@ func TopUp(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	quota, err := model.Redeem(req.Key, id)
+	key := extractRedemptionKey(req.Key)
+	if key == "" {
+		common.ApiErrorI18n(c, i18n.MsgRedeemFailed)
+		return
+	}
+	quota, err := model.Redeem(key, id)
 	if err != nil {
 		// 不向用户暴露兑换失败的细分原因，避免攻击者根据错误类型判断兑换码状态。
 		common.ApiErrorI18n(c, i18n.MsgRedeemFailed)
-		logger.LogError(c, fmt.Sprintf("failed to redeem key %s for user %d: %s", req.Key, id, err.Error()))
+		logger.LogError(c, fmt.Sprintf("failed to redeem key %s for user %d: %s", key, id, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
