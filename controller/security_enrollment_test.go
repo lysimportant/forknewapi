@@ -102,9 +102,57 @@ func setupSecurityEnrollmentTest(t *testing.T) (*model.User, service.AuthIdentit
 	return user, identity
 }
 
+// noConsentInjection 是显式声明“本用例要验证未同意被拒绝”的请求标记。
+// 命中该标记时不做任何协议字段注入，让请求保持用例构造的原样。
+const noConsentInjection = "x-test-no-consent-injection"
+
+// loginConsentBody 给登录与注册请求补上协议确认字段，使既有用例在强制同意后
+// 依然走通正常路径（它们假设同意不是被测行为）；带 noConsentInjection 标记的用例
+// 只去掉标记、不注入字段，用于验证拒绝路径。
+func loginConsentBody(body, path string) string {
+	if strings.HasPrefix(body, noConsentInjection) {
+		return strings.TrimPrefix(body, noConsentInjection)
+	}
+	if body == "" || !isConsentEnforcedPath(path) {
+		return body
+	}
+	var payload map[string]any
+	if err := common.UnmarshalJsonStr(body, &payload); err != nil {
+		return body
+	}
+	payload["consent"] = true
+	payload["consent_version"] = system_setting.CurrentLegalConsentVersion
+	encoded, err := common.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return string(encoded)
+}
+
+// isConsentEnforcedPath 列出发起登录或注册、因而要求协议确认的接口。
+func isConsentEnforcedPath(path string) bool {
+	return strings.HasSuffix(path, "/api/user/login") || strings.HasSuffix(path, "/api/user/register")
+}
+
+// loginConsentQuery 为以查询参数提交协议版本的入口（微信回调）补上版本号。
+func loginConsentQuery(path string) string {
+	if !strings.HasPrefix(path, "/api/oauth/wechat") || strings.Contains(path, "consent_version=") {
+		return path
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "consent_version=" + system_setting.CurrentLegalConsentVersion
+}
+
 func securityEnrollmentRequest(method, path, body, proof string, identity service.AuthIdentity, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(response)
+	path = loginConsentQuery(path)
+	if method == http.MethodPost {
+		body = loginConsentBody(body, path)
+	}
 	c.Request = httptest.NewRequest(method, path, strings.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("X-Security-Proof", proof)

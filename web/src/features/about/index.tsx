@@ -17,104 +17,73 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Construction } from 'lucide-react'
+import { Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { EmptyState } from '@/components/empty-state'
+import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
+import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
 
 import { getAboutContent } from './api'
+import { AboutHelp } from './components/about-help'
+import { AboutIntro } from './components/about-intro'
+import { AboutPrivacySummary } from './components/about-privacy-summary'
 
-function EmptyAboutState() {
+function AboutSkeleton() {
+  return (
+    <div className='mx-auto flex max-w-4xl flex-col gap-4 py-12'>
+      <Skeleton className='h-8 w-[45%]' />
+      <Skeleton className='h-4 w-full' />
+      <Skeleton className='h-4 w-[90%]' />
+      <Skeleton className='h-4 w-[80%]' />
+    </div>
+  )
+}
+
+/**
+ * 管理员配置的站点介绍。普通文本与 Markdown 都作为「站点介绍」正文渲染，
+ * 因此单行内容也有完整版式；未配置时明确区分于请求失败。
+ */
+function SiteIntroduction(props: { content: string }) {
   const { t } = useTranslation()
-  const currentYear = new Date().getFullYear()
 
   return (
-    <div className='flex min-h-[60vh] items-center justify-center p-8'>
-      <div className='max-w-2xl space-y-6 text-center'>
-        <div className='flex justify-center'>
-          <Construction className='text-muted-foreground h-24 w-24' />
-        </div>
-        <div className='space-y-2'>
-          <h2 className='text-2xl font-bold'>{t('No About Content Set')}</h2>
-          <p className='text-muted-foreground'>
-            {t(
-              'The administrator has not configured any about content yet. You can set it in the settings page, supporting HTML or URL.'
+    <section className='border-border/40 relative z-10 border-t px-6 py-16 md:py-20'>
+      <div className='mx-auto max-w-4xl'>
+        <h2 className='mb-6 text-xl font-bold tracking-tight md:text-2xl'>
+          {t('Site introduction')}
+        </h2>
+        {props.content ? (
+          <div className='break-words'>
+            <RichContent
+              mode='markdown'
+              content={props.content}
+              className='prose-neutral dark:prose-invert max-w-none'
+            />
+          </div>
+        ) : (
+          <EmptyState
+            icon={Info}
+            bordered
+            className='min-h-0'
+            title={t('No site introduction yet')}
+            description={t(
+              'The administrator has not configured a site introduction yet. It can be set in the site settings.'
             )}
-          </p>
-        </div>
-        <div className='space-y-4 text-sm'>
-          <p>
-            {t('New API Project Repository:')}{' '}
-            <a
-              href='https://github.com/QuantumNous/new-api'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('https://github.com/QuantumNous/new-api')}
-            </a>
-          </p>
-          <p className='text-muted-foreground'>
-            <a
-              href='https://github.com/QuantumNous/new-api'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('NewAPI')}
-            </a>{' '}
-            © {currentYear}{' '}
-            <a
-              href='https://github.com/QuantumNous'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('QuantumNous')}
-            </a>{' '}
-            {t('| Based on')}{' '}
-            <a
-              href='https://github.com/songquanpeng/one-api'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('One API')}
-            </a>{' '}
-            © 2023{' '}
-            <a
-              href='https://github.com/songquanpeng'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('JustSong')}
-            </a>
-          </p>
-          <p className='text-muted-foreground'>
-            {t('This project must be used in compliance with the')}{' '}
-            <a
-              href='https://github.com/QuantumNous/new-api/blob/main/LICENSE'
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-primary hover:underline'
-            >
-              {t('AGPL v3.0 License')}
-            </a>
-            .
-          </p>
-        </div>
+          />
+        )}
       </div>
-    </div>
+    </section>
   )
 }
 
 export function About() {
   const { t } = useTranslation()
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['about-content'],
     queryFn: getAboutContent,
   })
@@ -123,24 +92,34 @@ export function About() {
   const hasContent = rawContent.length > 0
   const isUrl = hasContent && isHttpUrl(rawContent)
   const contentIsHtml = hasContent && isLikelyHtml(rawContent)
+  // 请求失败与管理员未配置必须分开：前者可重试，后者是正常空状态。
+  const loadFailed = Boolean(error) || data?.success === false
 
   if (isLoading) {
     return (
-      <PublicLayout>
-        <div className='mx-auto flex max-w-4xl flex-col gap-4 py-12'>
-          <Skeleton className='h-8 w-[45%]' />
-          <Skeleton className='h-4 w-full' />
-          <Skeleton className='h-4 w-[90%]' />
-          <Skeleton className='h-4 w-[80%]' />
+      <PublicLayout showMainContainer={false}>
+        <div className='px-6 pt-20'>
+          <AboutSkeleton />
         </div>
       </PublicLayout>
     )
   }
 
-  if (!hasContent) {
+  if (loadFailed) {
     return (
-      <PublicLayout>
-        <EmptyAboutState />
+      <PublicLayout showMainContainer={false}>
+        <div className='px-6 pt-20'>
+          <ErrorState
+            title={t('Failed to load the about page')}
+            description={t(
+              'The about content could not be loaded. Check your connection and retry. If it keeps failing, contact the administrator.'
+            )}
+            onRetry={() => {
+              void refetch()
+            }}
+          />
+        </div>
+        <Footer />
       </PublicLayout>
     )
   }
@@ -154,6 +133,7 @@ export function About() {
           title={t('About')}
           sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
         />
+        <Footer />
       </PublicLayout>
     )
   }
@@ -167,19 +147,18 @@ export function About() {
           content={rawContent}
           className='prose-neutral dark:prose-invert max-w-none'
         />
+        <Footer />
       </PublicLayout>
     )
   }
 
   return (
-    <PublicLayout>
-      <div className='mx-auto max-w-6xl px-4 py-8'>
-        <RichContent
-          mode='markdown'
-          content={rawContent}
-          className='prose-neutral dark:prose-invert max-w-none'
-        />
-      </div>
+    <PublicLayout showMainContainer={false}>
+      <AboutIntro />
+      <SiteIntroduction content={rawContent} />
+      <AboutPrivacySummary />
+      <AboutHelp />
+      <Footer />
     </PublicLayout>
   )
 }

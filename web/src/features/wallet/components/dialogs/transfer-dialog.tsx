@@ -38,7 +38,10 @@ interface TransferDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: (amount: number) => Promise<boolean>
+  /** Quota that can be withdrawn right now (matured rewards only) */
   availableQuota: number
+  /** Quota still inside its per-reward freeze window, shown for context */
+  frozenQuota?: number
   transferring: boolean
 }
 
@@ -47,6 +50,7 @@ export function TransferDialog({
   onOpenChange,
   onConfirm,
   availableQuota,
+  frozenQuota = 0,
   transferring,
 }: TransferDialogProps) {
   const { t } = useTranslation()
@@ -67,10 +71,11 @@ export function TransferDialog({
 
   useEffect(() => {
     if (open) {
+      // Default to the full matured amount so the common case is one click.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAmount(minimumAmount)
+      setAmount(availableQuota > 0 ? maximumAmount : minimumAmount)
     }
-  }, [minimumAmount, open])
+  }, [availableQuota, maximumAmount, minimumAmount, open])
 
   const handleConfirm = async () => {
     if (!canTransfer) return
@@ -114,11 +119,28 @@ export function TransferDialog({
       <div className='space-y-4 py-3 sm:space-y-6 sm:py-4'>
         <div className='space-y-2'>
           <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
-            {t('Available Rewards')}
+            {t('Withdrawable Rewards')}
           </Label>
           <div className='text-2xl font-semibold'>
             {formatQuota(availableQuota)}
           </div>
+          {frozenQuota > 0 ? (
+            <p className='text-muted-foreground text-xs'>
+              {t('Frozen Rewards')}: {formatQuota(frozenQuota)}
+            </p>
+          ) : null}
+        </div>
+
+        <div className='space-y-1'>
+          <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+            {t('Withdrawal Destination')}
+          </Label>
+          <p className='text-sm'>{t('In-site balance')}</p>
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Rewards are credited to your in-site balance and can be used for API calls.'
+            )}
+          </p>
         </div>
 
         <div className='space-y-3'>

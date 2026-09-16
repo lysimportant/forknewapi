@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -19,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/QuantumNous/new-api/constant"
 
@@ -31,6 +33,57 @@ type LoginRequest struct {
 	Password          string `json:"password"`
 	PasswordEncrypted string `json:"password_encrypted"`
 	EncryptionKeyID   string `json:"encryption_key_id"`
+	// Consent 与 ConsentVersion 是登录前勾选的《API 服务、隐私与使用责任协议》确认标记。
+	Consent        bool   `json:"consent"`
+	ConsentVersion string `json:"consent_version"`
+}
+
+const contextKeyLoginConsent = "legal_consent_state"
+
+// loginConsentState 保存一次登录请求已确认的协议版本，供同一请求内的会话建立复核。
+type loginConsentState struct {
+	Agreed  bool
+	Version string
+}
+
+// setLoginConsent 记录本次请求的协议同意状态。带同意标记的入口（密码、注册、OAuth
+// 发起）写入实际值，OAuth 回调与二次验证从服务端流程状态恢复同样的确认。
+func setLoginConsent(c *gin.Context, agreed bool, version string) {
+	c.Set(contextKeyLoginConsent, loginConsentState{Agreed: agreed, Version: version})
+}
+
+// requireCurrentLoginConsent 校验当前请求已确认协议且版本仍然有效。
+// 会话建立前统一调用，保证所有登录入口遵守同一规则。
+func requireCurrentLoginConsent(c *gin.Context) bool {
+	value, ok := c.Get(contextKeyLoginConsent)
+	if !ok {
+		writeLegalConsentError(c, system_setting.ErrLegalConsentRequired)
+		return false
+	}
+	consent, _ := value.(loginConsentState)
+	if err := system_setting.ValidateLegalConsent(consent.Agreed, consent.Version); err != nil {
+		writeLegalConsentError(c, err)
+		return false
+	}
+	return true
+}
+
+// writeLegalConsentError 返回带明确 code 的协议错误，便于前端区分“未勾选”和
+// “协议已更新”。HTTP 状态保持 200，与项目其它业务错误一致。
+func writeLegalConsentError(c *gin.Context, err error) {
+	code := "legal_consent_required"
+	message := "请先阅读并勾选同意《API 服务、隐私与使用责任协议》"
+	if errors.Is(err, system_setting.ErrLegalConsentOutdated) {
+		code = "legal_consent_outdated"
+		message = "协议已更新，请刷新页面后重新阅读并勾选同意"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":          false,
+		"message":          message,
+		"code":             code,
+		"consent_required": true,
+		"consent_version":  system_setting.CurrentLegalConsentVersion,
+	})
 }
 
 func GetPasswordEncryptionKey(c *gin.Context) {
@@ -96,7 +149,18 @@ func Login(c *gin.Context) {
 		return
 	}
 
+	// 凭据验证通过后再校验协议确认：未同意的请求不会建立会话，也不会提前暴露
+	// 用户名是否存在。
+	if !setAndRequireLoginConsent(c, loginRequest.Consent, loginRequest.ConsentVersion) {
+		return
+	}
 	setupLogin(&user, c)
+}
+
+// setAndRequireLoginConsent 记录并校验本次登录请求的协议确认。
+func setAndRequireLoginConsent(c *gin.Context, agreed bool, version string) bool {
+	setLoginConsent(c, agreed, version)
+	return requireCurrentLoginConsent(c)
 }
 
 // loginMethodFromContext 根据请求路径推导登录方式，用于登录审计日志。
@@ -146,7 +210,10 @@ func recordLoginAudit(user *model.User, c *gin.Context) {
 // setupLogin evaluates the shared login policy after primary authentication.
 // Only a completed Passkey ceremony may go directly to session issuance.
 func setupLogin(user *model.User, c *gin.Context) {
-	challenge, err := service.StartLoginVerification(user, loginMethodFromContext(c))
+	if !requireCurrentLoginConsent(c) {
+		return
+	}
+	challenge, err := service.StartLoginVerification(user, loginMethodFromContext(c), loginConsentVersion(c))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -157,6 +224,16 @@ func setupLogin(user *model.User, c *gin.Context) {
 		return
 	}
 	setupLoginAtAuthVersion(user, user.AuthVersion, c)
+}
+
+// loginConsentVersion 返回当前请求已确认的协议版本，供二次验证流程绑定。
+func loginConsentVersion(c *gin.Context) string {
+	value, ok := c.Get(contextKeyLoginConsent)
+	if !ok {
+		return ""
+	}
+	consent, _ := value.(loginConsentState)
+	return consent.Version
 }
 
 func setupLoginAtAuthVersion(user *model.User, expectedAuthVersion int64, c *gin.Context) {
@@ -212,6 +289,13 @@ func writeLoginResponse(c *gin.Context, user *model.User, bundle *service.AuthBu
 	})
 }
 
+// registerRequest 在注册用户字段之上携带协议确认，与登录请求使用同一组字段名。
+type registerRequest struct {
+	model.User
+	Consent        bool   `json:"consent"`
+	ConsentVersion string `json:"consent_version"`
+}
+
 func Register(c *gin.Context) {
 	if !common.RegisterEnabled {
 		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
@@ -221,12 +305,16 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
-	var user model.User
-	err := common.DecodeJson(c.Request.Body, &user)
-	if err != nil {
+	// 注册同样必须确认协议：客户端用与登录一致的字段提交同意标记与版本。
+	var request registerRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+	if !setAndRequireLoginConsent(c, request.Consent, request.ConsentVersion) {
+		return
+	}
+	user := request.User
 	user.Username = strings.TrimSpace(user.Username)
 	user.Email = model.NormalizeEmail(user.Email)
 	if user.Username == "" {
@@ -408,6 +496,8 @@ func GetUser(c *gin.Context) {
 
 type TransferAffQuotaRequest struct {
 	Quota int `json:"quota" binding:"required"`
+	// IdempotencyKey 由客户端生成，用于把连点、网络重试和多会话并发折叠成一次入账。
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 func TransferAffQuota(c *gin.Context) {
@@ -416,22 +506,70 @@ func TransferAffQuota(c *gin.Context) {
 	}
 
 	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	tran := TransferAffQuotaRequest{}
 	if err := c.ShouldBindJSON(&tran); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	err = user.TransferAffQuotaToQuota(tran.Quota)
+	quota, err := model.WithdrawInviteRewards(id, tran.IdempotencyKey, tran.Quota)
 	if err != nil {
-		common.ApiErrorI18n(c, i18n.MsgUserTransferFailed, map[string]any{"Error": err.Error()})
+		writeInviteWithdrawError(c, err)
 		return
 	}
-	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, nil)
+	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, gin.H{"quota": quota})
+}
+
+// GetInviteRewards 返回当前用户的奖励汇总与逐笔明细，包含冻结额和最近可提现时间。
+func GetInviteRewards(c *gin.Context) {
+	id := c.GetInt("id")
+	summary, err := model.GetInviteRewardSummary(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    summary,
+	})
+}
+
+// writeInviteWithdrawError 把提现失败原因映射为带 code 的业务错误，便于客户端区分
+// “需要升级”“金额不足”“仍在冻结期”和“服务端错误”。金额类失败沿用 200 业务错误，
+// 避免被通用错误拦截器吞掉具体原因。
+func writeInviteWithdrawError(c *gin.Context, err error) {
+	var frozen *model.InviteRewardFrozenError
+	switch {
+	case errors.Is(err, model.ErrInviteRewardIdempotencyKeyMissing):
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "提现请求缺少幂等标识，请升级客户端后重试",
+			"code":    "invite_reward_idempotency_key_missing",
+		})
+	case errors.As(err, &frozen):
+		c.JSON(http.StatusOK, gin.H{
+			"success":           false,
+			"message":           fmt.Sprintf("奖励仍在冻结期，最早可提现时间 %s", time.Unix(frozen.NextAvailableAt, 0).Format(time.RFC3339)),
+			"code":              "invite_reward_frozen",
+			"next_available_at": frozen.NextAvailableAt,
+		})
+	case errors.Is(err, model.ErrInviteRewardQuotaInsufficient):
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "可提现邀请额度不足！",
+			"code":    "invite_reward_insufficient",
+		})
+	case errors.Is(err, model.ErrInviteRewardQuotaNotPositive),
+		errors.Is(err, model.ErrWalletQuotaLimitExceeded),
+		errors.Is(err, model.ErrInviteRewardConcurrentModification):
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "提现金额不合法或状态已变化，请刷新后重试！",
+			"code":    "invite_reward_invalid_amount",
+		})
+	default:
+		common.ApiErrorI18n(c, i18n.MsgUserTransferFailed, map[string]any{"Error": err.Error()})
+	}
 }
 
 func GetAffCode(c *gin.Context) {
@@ -468,6 +606,13 @@ func GetSelf(c *gin.Context) {
 		return
 	}
 	responseData := buildSelfUserData(user)
+	// 钱包页面已经通过 /api/user/self 取用户数据，奖励汇总随同一响应返回，
+	// 避免为展示冻结与可提金额再增加一次请求。
+	if summary, summaryErr := model.GetInviteRewardSummary(id); summaryErr == nil {
+		responseData["referral_rewards"] = summary
+	} else {
+		common.SysError("读取邀请奖励汇总失败: " + summaryErr.Error())
+	}
 	// The authenticated role is loaded from GetUserCache. It should equal the
 	// row role, but use it for capabilities so GetSelf and login/refresh remain
 	// consistent with the authorization decision made for this request.

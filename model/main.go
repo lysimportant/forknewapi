@@ -367,6 +367,8 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&CasbinRule{},
 		&AuthzRole{},
+		&InviteReward{},
+		&InviteRewardWithdrawal{},
 	)
 	if err != nil {
 		return err
@@ -375,6 +377,9 @@ func migrateDB() error {
 		return err
 	}
 	if err := InitializeExternalIdentityClaims(); err != nil {
+		return err
+	}
+	if err := InitializeInviteRewardLedger(); err != nil {
 		return err
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {

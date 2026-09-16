@@ -178,6 +178,12 @@ func validateAnnouncements(announcementsStr string) error {
 				}
 			}
 		}
+		// pinned 为可选字段，历史数据缺失时按 false 读取；出现时必须是布尔值
+		if pinned, exists := ann["pinned"]; exists {
+			if _, ok := pinned.(bool); !ok {
+				return fmt.Errorf("第%d个公告的 pinned 字段必须是布尔值", i+1)
+			}
+		}
 		if exceedsMaxCharacters(content, 500) {
 			return fmt.Errorf("第%d个公告的内容长度不能超过500字符", i+1)
 		}
@@ -228,9 +234,20 @@ func getPublishTime(item map[string]interface{}) time.Time {
 	return time.Time{}
 }
 
+// isPinned 判断公告是否置顶，缺失或非布尔值均按 false 处理
+func isPinned(item map[string]interface{}) bool {
+	pinned, ok := item["pinned"].(bool)
+	return ok && pinned
+}
+
+// GetAnnouncements 返回公告列表，排序为：置顶优先 → 发布时间倒序 → 时间相同时保持稳定顺序
 func GetAnnouncements() []map[string]interface{} {
 	list := getJSONList(GetConsoleSetting().Announcements)
 	sort.SliceStable(list, func(i, j int) bool {
+		pinnedI, pinnedJ := isPinned(list[i]), isPinned(list[j])
+		if pinnedI != pinnedJ {
+			return pinnedI
+		}
 		return getPublishTime(list[i]).After(getPublishTime(list[j]))
 	})
 	return list

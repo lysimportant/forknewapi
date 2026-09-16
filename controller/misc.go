@@ -125,7 +125,9 @@ func GetStatus(c *gin.Context) {
 		"setup":                       constant.Setup,
 		"user_agreement_enabled":      legalSetting.UserAgreement != "",
 		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
-		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
+		// 登录与注册必须按该版本回传同意标记，服务端据此拒绝缺失或过期版本。
+		"legal_consent":   system_setting.CurrentConsentRequirement(),
+		"checkin_enabled": operation_setting.GetCheckinSetting().Enabled,
 	}
 
 	// 根据启用状态注入可选内容
@@ -195,6 +197,12 @@ func GetUserAgreement(c *gin.Context) {
 
 func GetPrivacyPolicy(c *gin.Context) {
 	serveRevalidatedJSON(c, system_setting.GetLegalSettings().PrivacyPolicy)
+}
+
+// GetAPIServiceAgreement 公开返回《API 服务、隐私与使用责任协议》正文，
+// 供登录页的协议弹窗和独立协议页面读取。正文不含敏感信息，无需认证。
+func GetAPIServiceAgreement(c *gin.Context) {
+	serveRevalidatedJSON(c, system_setting.GetAPIServiceAgreement())
 }
 
 func GetMidjourney(c *gin.Context) {

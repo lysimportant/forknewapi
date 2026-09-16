@@ -25,6 +25,9 @@ type FlowSecurity struct {
 	Authorization  *model.AuthFlowAuthorization `json:"authorization,omitempty"`
 	LoginFlowID    int64                        `json:"login_flow_id,omitempty"`
 	LoginExpiresAt int64                        `json:"login_expires_at,omitempty"`
+	// ConsentVersion 记录发起 Passkey 登录时确认的协议版本，会话建立前复核，
+	// 避免该入口绕过登录协议确认。
+	ConsentVersion string `json:"consent_version,omitempty"`
 }
 
 func CreateSessionDataFlow(purpose string, security FlowSecurity, data *webauthn.SessionData) (string, int64, error) {

@@ -33,13 +33,19 @@ function OAuthComponent() {
     provider?: 'github' | 'discord' | 'oidc' | 'linuxdo' | 'telegram' | 'wechat'
     code?: string
     state?: string
+    // 协议版本随重定向回传：微信服务端只回传 code，未确认协议时不建立会话。
+    consent_version?: string
   }
 
   useEffect(() => {
     ;(async () => {
       try {
         if (search?.provider === 'wechat' && search.code) {
-          const res = await wechatLoginByCode(search.code)
+          // 协议相关的业务错误由响应拦截器按 code 提示，这里只需回到登录页。
+          const res = await wechatLoginByCode(
+            search.code,
+            search.consent_version
+          )
           if (res?.success && isAuthBundle(res.data)) {
             applyAuthBundle(res.data)
             const target =

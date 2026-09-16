@@ -17,7 +17,54 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import {
+  createJSONStorage,
+  persist,
+  type StateStorage,
+} from 'zustand/middleware'
+
+/** 本地存储不可用（禁用、隐私模式或配额耗尽）时的内存兜底，保证关闭逻辑不中断渲染。 */
+const memoryStorageFallback = new Map<string, string>()
+
+/** 探测本地存储是否可写；不可写时「今日关闭」无法跨刷新保存。 */
+function canWriteLocalStorage(): boolean {
+  try {
+    const probeKey = 'notification-storage-probe'
+    window.localStorage.setItem(probeKey, '1')
+    window.localStorage.removeItem(probeKey)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 读写全部兜底：localStorage 抛错时降级为内存存储。
+ * 关闭状态仍会生效于当前页面会话，只是无法跨刷新保留。
+ */
+const notificationStorage: StateStorage = {
+  getItem: (name) => {
+    try {
+      return window.localStorage.getItem(name)
+    } catch {
+      return memoryStorageFallback.get(name) ?? null
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      window.localStorage.setItem(name, value)
+    } catch {
+      memoryStorageFallback.set(name, value)
+    }
+  },
+  removeItem: (name) => {
+    try {
+      window.localStorage.removeItem(name)
+    } catch {
+      memoryStorageFallback.delete(name)
+    }
+  },
+}
 
 interface NotificationState {
   // Last read Notice content signature (full trimmed message)
@@ -26,6 +73,10 @@ interface NotificationState {
   readAnnouncementKeys: string[]
   // Timestamp of last "Close Today" action
   closedUntilDate: string | null
+  // 本次页面会话内关闭公告弹窗，不持久化，刷新后允许重新弹出
+  sessionClosed: boolean
+  // 本地存储是否可写；false 表示「今日关闭」无法跨刷新保存
+  storageAvailable: boolean
 
   // Actions
   markNoticeRead: (noticeContent: string) => void
@@ -33,6 +84,9 @@ interface NotificationState {
   setClosedUntilDate: (date: string | null) => void
   isAnnouncementRead: (key: string) => boolean
   isNoticeClosed: () => boolean
+  closeAnnouncementsForSession: () => void
+  closeAnnouncementsForToday: () => void
+  canAutoOpenAnnouncements: () => boolean
 }
 
 /**
@@ -45,6 +99,8 @@ export const useNotificationStore = create<NotificationState>()(
       lastReadNotice: '',
       readAnnouncementKeys: [],
       closedUntilDate: null,
+      sessionClosed: false,
+      storageAvailable: canWriteLocalStorage(),
 
       markNoticeRead: (noticeContent: string) => {
         // Persist the full trimmed content so edits beyond 100 chars register
@@ -75,9 +131,28 @@ export const useNotificationStore = create<NotificationState>()(
         const today = new Date().toDateString()
         return closedUntilDate === today
       },
+
+      closeAnnouncementsForSession: () => {
+        set({ sessionClosed: true })
+      },
+
+      closeAnnouncementsForToday: () => {
+        set({
+          closedUntilDate: new Date().toDateString(),
+          sessionClosed: true,
+        })
+        // 先触发持久化再探测：配额耗尽或隐私模式下降级为仅本次关闭
+        set({ storageAvailable: canWriteLocalStorage() })
+      },
+
+      canAutoOpenAnnouncements: () => {
+        if (get().sessionClosed) return false
+        return !get().isNoticeClosed()
+      },
     }),
     {
       name: 'notification-storage',
+      storage: createJSONStorage(() => notificationStorage),
       partialize: (state) => ({
         lastReadNotice: state.lastReadNotice,
         readAnnouncementKeys: state.readAnnouncementKeys,

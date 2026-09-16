@@ -44,6 +44,16 @@ func newSecurityLoginPasskey(t *testing.T, userID int) *ecdsa.PrivateKey {
 	return key
 }
 
+// loginOAuthFlowPayload 构造带协议确认的登录流程载荷，与服务端发起流程时写入的
+// 字段保持一致；直接建流程的用例必须显式带上确认版本，否则会话建立会被拒绝。
+func loginOAuthFlowPayload() string {
+	payload, err := common.Marshal(oauthFlowPayload{ConsentVersion: system_setting.CurrentLegalConsentVersion})
+	if err != nil {
+		panic(err)
+	}
+	return string(payload)
+}
+
 func beginSecurityLoginPasskey(t *testing.T, parentToken string) (string, string) {
 	t.Helper()
 	body, err := common.Marshal(map[string]string{"flow_token": parentToken})
@@ -76,7 +86,7 @@ func TestSecurityLoginCodeCompletesOnce(t *testing.T) {
 			user, _ := setupSecurityEnrollmentTest(t)
 			factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
 			require.NoError(t, model.DB.Create(factor).Error)
-			challenge, err := service.StartLoginVerification(user, "password")
+			challenge, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 			require.NoError(t, err)
 			require.NotNil(t, challenge)
 			code, err := totp.GenerateCode(factor.Secret, time.Now())
@@ -121,7 +131,7 @@ func TestSecurityLoginRejectsChangedOrExpiredAuthorization(t *testing.T) {
 			user, _ := setupSecurityEnrollmentTest(t)
 			factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
 			require.NoError(t, model.DB.Create(factor).Error)
-			challenge, err := service.StartLoginVerification(user, "password")
+			challenge, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 			require.NoError(t, err)
 			method := "2fa"
 			switch change {
@@ -167,7 +177,13 @@ func TestSecurityLoginPasskeyDoesNotRequireAdditionalTwoFA(t *testing.T) {
 			for _, verified := range []bool{false, true} {
 				var flowToken, challenge, parentToken string
 				if direct {
-					response := securityEnrollmentRequest("POST", "/api/user/passkey/login/begin", "", "", service.AuthIdentity{}, PasskeyLoginBegin)
+					// Passkey 直达登录必须在发起流程时提交协议确认。
+					beginBody, err := common.Marshal(map[string]any{
+						"consent":         true,
+						"consent_version": system_setting.CurrentLegalConsentVersion,
+					})
+					require.NoError(t, err)
+					response := securityEnrollmentRequest("POST", "/api/user/passkey/login/begin", string(beginBody), "", service.AuthIdentity{}, PasskeyLoginBegin)
 					var result struct {
 						Data struct {
 							FlowToken string `json:"flow_token"`
@@ -183,7 +199,7 @@ func TestSecurityLoginPasskeyDoesNotRequireAdditionalTwoFA(t *testing.T) {
 					require.Equal(t, "required", result.Data.Options.PublicKey.UserVerification)
 					flowToken, challenge = result.Data.FlowToken, result.Data.Options.PublicKey.Challenge
 				} else {
-					pending, err := service.StartLoginVerification(user, "oauth:github")
+					pending, err := service.StartLoginVerification(user, "oauth:github", system_setting.CurrentLegalConsentVersion)
 					require.NoError(t, err)
 					parentToken = pending.FlowToken
 					flowToken, challenge = beginSecurityLoginPasskey(t, parentToken)
@@ -225,7 +241,7 @@ func TestSecurityLoginPasskeyDoesNotRequireAdditionalTwoFA(t *testing.T) {
 func TestSecurityLoginPasskeyConcurrentCompletionCreatesOneSession(t *testing.T) {
 	user, _ := setupSecurityEnrollmentTest(t)
 	key := newSecurityLoginPasskey(t, user.Id)
-	pending, err := service.StartLoginVerification(user, "password")
+	pending, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 	require.NoError(t, err)
 	requests := make([]string, 2)
 	for index := range requests {
@@ -268,7 +284,7 @@ func TestSecurityLoginPasskeyConcurrentCompletionCreatesOneSession(t *testing.T)
 func TestSecurityLoginSessionFailureRollsBackChallengeConsumption(t *testing.T) {
 	user, _ := setupSecurityEnrollmentTest(t)
 	key := newSecurityLoginPasskey(t, user.Id)
-	pending, err := service.StartLoginVerification(user, "password")
+	pending, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 	require.NoError(t, err)
 	require.NoError(t, model.DB.Callback().Create().Before("gorm:create").Register("login_session_failure", func(tx *gorm.DB) {
 		if tx.Statement.Table == "user_sessions" {
@@ -383,7 +399,7 @@ func TestSecurityLoginAllPrimaryTransportsRequireAdditionalVerification(t *testi
 					oauth.Register(slug, &boundLoginOAuthProvider{userID: user.Id})
 				}
 				t.Cleanup(func() { oauth.Unregister(slug) })
-				token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{Purpose: model.AuthFlowPurposeOAuth, Provider: slug, Intent: model.AuthFlowIntentLogin, Payload: `{}`, ExpiresAt: time.Now().Add(time.Minute)})
+				token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{Purpose: model.AuthFlowPurposeOAuth, Provider: slug, Intent: model.AuthFlowIntentLogin, Payload: loginOAuthFlowPayload(), ExpiresAt: time.Now().Add(time.Minute)})
 				require.NoError(t, err)
 				router := gin.New()
 				router.GET("/api/oauth/:provider", HandleOAuth)
@@ -412,7 +428,7 @@ func TestSecurityLoginPasskeyCannotCompleteAnotherChallenge(t *testing.T) {
 		t.Run(fmt.Sprintf("other-user=%t", otherUser), func(t *testing.T) {
 			user, _ := setupSecurityEnrollmentTest(t)
 			key := newSecurityLoginPasskey(t, user.Id)
-			first, err := service.StartLoginVerification(user, "password")
+			first, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 			require.NoError(t, err)
 			passkeyToken, challenge := beginSecurityLoginPasskey(t, first.FlowToken)
 			if otherUser {
@@ -420,7 +436,7 @@ func TestSecurityLoginPasskeyCannotCompleteAnotherChallenge(t *testing.T) {
 				require.NoError(t, model.DB.Create(user).Error)
 				newSecurityLoginPasskey(t, user.Id)
 			}
-			second, err := service.StartLoginVerification(user, "password")
+			second, err := service.StartLoginVerification(user, "password", system_setting.CurrentLegalConsentVersion)
 			require.NoError(t, err)
 			body, err := common.Marshal(map[string]any{"flow_token": second.FlowToken, "passkey_flow_token": passkeyToken, "credential": securityPasskeyResponse(t, key, challenge, false, 0)})
 			require.NoError(t, err)
@@ -679,7 +695,7 @@ func TestGenerateOAuthCodeCarriesAffiliateInLoginFlow(t *testing.T) {
 	setupAuthFlowControllerTest(t)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/oauth/state", strings.NewReader(`{"provider":"auth-flow-test","intent":"login","aff":"invite-code"}`))
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/oauth/state", strings.NewReader(fmt.Sprintf(`{"provider":"auth-flow-test","intent":"login","aff":"invite-code","consent":true,"consent_version":%q}`, system_setting.CurrentLegalConsentVersion)))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	GenerateOAuthCode(c)
@@ -817,4 +833,205 @@ func TestOAuthBindProviderErrorConsumesSessionBoundFlow(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrAuthFlowConsumed)
 	assert.Zero(t, provider.exchangeCalls)
 	assert.Zero(t, provider.userInfoCalls)
+}
+
+// consentJSONFields 返回当前生效协议版本的同意字段片段，供测试构造满足协议的
+// 登录/注册请求体，避免在多处重复版本字面量。
+func consentJSONFields() string {
+	return fmt.Sprintf(`"consent":true,"consent_version":%q`, system_setting.CurrentLegalConsentVersion)
+}
+
+// TestLoginConsentEnforcement 覆盖《API 服务、隐私与使用责任协议》在服务端的
+// 强制校验：缺失、未勾选或版本过期的请求都必须在建立会话或账号之前被拒绝，
+// 当前版本正常放行，二次验证流程也不能绕过发起登录时的协议确认。
+func TestLoginConsentEnforcement(t *testing.T) {
+	currentVersion := system_setting.CurrentLegalConsentVersion
+	credentials := `"username":"enrollment-user","password":"enrollment-password"`
+
+	for _, test := range []struct {
+		name   string
+		fields string
+		code   string
+	}{
+		{name: "missing consent", code: "legal_consent_required"},
+		{name: "consent false", fields: fmt.Sprintf(`"consent":false,"consent_version":%q`, currentVersion), code: "legal_consent_required"},
+		{name: "consent without version", fields: `"consent":true`, code: "legal_consent_outdated"},
+		{name: "stale consent version", fields: `"consent":true,"consent_version":"2000-01-01"`, code: "legal_consent_outdated"},
+	} {
+		t.Run("password login rejects "+test.name, func(t *testing.T) {
+			user, _ := setupSecurityEnrollmentTest(t)
+			previousPasswordLogin := common.PasswordLoginEnabled
+			common.PasswordLoginEnabled = true
+			t.Cleanup(func() { common.PasswordLoginEnabled = previousPasswordLogin })
+			before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+
+			body := "{" + credentials
+			if test.fields != "" {
+				body += "," + test.fields
+			}
+			body += "}"
+			// 该用例验证的是「未同意必须被拒绝」，因此显式禁用测试助手的同意注入。
+			response := securityEnrollmentRequest(http.MethodPost, "/api/user/login", noConsentInjection+body, "", service.AuthIdentity{}, Login)
+
+			assert.Contains(t, response.Body.String(), `"code":"`+test.code+`"`, response.Body.String())
+			assert.Empty(t, response.Header().Values("Set-Cookie"))
+			after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "a rejected login must not create a session")
+		})
+	}
+
+	t.Run("password login accepts the current consent version", func(t *testing.T) {
+		user, _ := setupSecurityEnrollmentTest(t)
+		previousPasswordLogin := common.PasswordLoginEnabled
+		common.PasswordLoginEnabled = true
+		t.Cleanup(func() { common.PasswordLoginEnabled = previousPasswordLogin })
+		before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+
+		body := fmt.Sprintf("{%s,%s}", credentials, consentJSONFields())
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/login", body, "", service.AuthIdentity{}, Login)
+
+		var result struct {
+			Success bool `json:"success"`
+			Data    struct {
+				AccessToken         string `json:"access_token"`
+				RequireVerification bool   `json:"require_verification"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		assert.False(t, result.Data.RequireVerification)
+		assert.NotEmpty(t, result.Data.AccessToken)
+		after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+		assert.Equal(t, before+1, after, "an accepted login issues exactly one session")
+	})
+
+	t.Run("registration rejects missing consent", func(t *testing.T) {
+		setupRegistrationConsentTest(t)
+		// 显式禁用测试助手的同意注入，确保请求真的不带同意标记。
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/register", noConsentInjection+`{"username":"consent-new-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, Register)
+
+		assert.Contains(t, response.Body.String(), `"code":"legal_consent_required"`, response.Body.String())
+		assert.NotContains(t, response.Body.String(), `"success":true`, "被拒绝的注册不能返回成功")
+		// 拒绝发生在任何写库之前：注册被拒时不会再查询用户是否存在，因此这里
+		// 只在请求真的成功时才回查，避免在清理后的数据库上访问全局 DB。
+		if strings.Contains(response.Body.String(), `"success":true`) {
+			exists, err := model.CheckUserExistOrDeleted("consent-new-user", "")
+			require.NoError(t, err)
+			assert.False(t, exists, "a rejected registration must not create the account")
+		}
+	})
+
+	t.Run("registration accepts the current consent version", func(t *testing.T) {
+		setupRegistrationConsentTest(t)
+		body := fmt.Sprintf(`{"username":"consent-new-user","password":"enrollment-password",%s}`, consentJSONFields())
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/register", body, "", service.AuthIdentity{}, Register)
+
+		assert.Contains(t, response.Body.String(), `"success":true`, response.Body.String())
+		exists, err := model.CheckUserExistOrDeleted("consent-new-user", "")
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("oauth login intent rejects missing consent", func(t *testing.T) {
+		setupAuthFlowControllerTest(t)
+		response := securityEnrollmentRequest(http.MethodPost, "/api/oauth/state", `{"provider":"auth-flow-test","intent":"login"}`, "", service.AuthIdentity{}, GenerateOAuthCode)
+
+		assert.Contains(t, response.Body.String(), `"code":"legal_consent_required"`, response.Body.String())
+	})
+
+	t.Run("oauth login intent rejects a stale consent version", func(t *testing.T) {
+		setupAuthFlowControllerTest(t)
+		response := securityEnrollmentRequest(http.MethodPost, "/api/oauth/state", `{"provider":"auth-flow-test","intent":"login","consent":true,"consent_version":"2000-01-01"}`, "", service.AuthIdentity{}, GenerateOAuthCode)
+
+		assert.Contains(t, response.Body.String(), `"code":"legal_consent_outdated"`, response.Body.String())
+	})
+
+	t.Run("oauth login intent binds the current consent version", func(t *testing.T) {
+		setupAuthFlowControllerTest(t)
+		body := fmt.Sprintf(`{"provider":"auth-flow-test","intent":"login",%s}`, consentJSONFields())
+		response := securityEnrollmentRequest(http.MethodPost, "/api/oauth/state", body, "", service.AuthIdentity{}, GenerateOAuthCode)
+
+		var result struct {
+			Success bool `json:"success"`
+			Data    struct {
+				FlowToken string `json:"flow_token"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		flow, err := model.GetAuthFlow(result.Data.FlowToken, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeOAuth, Provider: "auth-flow-test", Intent: model.AuthFlowIntentLogin})
+		require.NoError(t, err)
+		var payload oauthFlowPayload
+		require.NoError(t, common.UnmarshalJsonStr(flow.Payload, &payload))
+		assert.Equal(t, currentVersion, payload.ConsentVersion, "the confirmed version must be bound to the server-owned flow")
+	})
+
+	t.Run("two factor flow started without consent cannot complete", func(t *testing.T) {
+		user, _ := setupSecurityEnrollmentTest(t)
+		factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
+		require.NoError(t, model.DB.Create(factor).Error)
+		// 直接以空版本启动验证流程，模拟绕过登录入口的旧客户端；建立会话前
+		// 必须复核流程内绑定的协议版本并拒绝。
+		challenge, err := service.StartLoginVerification(user, "password", "")
+		require.NoError(t, err)
+		require.NotNil(t, challenge)
+		code, err := totp.GenerateCode(factor.Secret, time.Now())
+		require.NoError(t, err)
+		before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+		body, err := common.Marshal(map[string]string{"flow_token": challenge.FlowToken, "code": code})
+		require.NoError(t, err)
+
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/verify", string(body), "", service.AuthIdentity{}, VerifyLogin)
+
+		assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+		assert.NotContains(t, response.Body.String(), "access_token")
+		assert.Empty(t, response.Header().Values("Set-Cookie"))
+		after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+	})
+
+	t.Run("passkey flow started without consent cannot complete", func(t *testing.T) {
+		user, _ := setupSecurityEnrollmentTest(t)
+		key := newSecurityLoginPasskey(t, user.Id)
+		pending, err := service.StartLoginVerification(user, "password", "")
+		require.NoError(t, err)
+		token, passkeyChallenge := beginSecurityLoginPasskey(t, pending.FlowToken)
+		before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+		body, err := common.Marshal(map[string]any{
+			"flow_token": pending.FlowToken, "passkey_flow_token": token,
+			"credential": securityPasskeyResponse(t, key, passkeyChallenge, false, 0),
+		})
+		require.NoError(t, err)
+
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/passkey/finish", string(body), "", service.AuthIdentity{}, LoginPasskeyFinish)
+
+		assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+		assert.NotContains(t, response.Body.String(), "access_token")
+		assert.Empty(t, response.Header().Values("Set-Cookie"))
+		after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+	})
+}
+
+// setupRegistrationConsentTest 准备注册路径所需的数据库与 i18n 状态，并打开
+// 密码注册、关闭邮箱验证，使注册只受协议确认一个变量影响。
+func setupRegistrationConsentTest(t *testing.T) {
+	t.Helper()
+	setupSecurityEnrollmentTest(t)
+	previousRegister, previousPasswordRegister := common.RegisterEnabled, common.PasswordRegisterEnabled
+	previousEmailVerification := common.EmailVerificationEnabled
+	common.RegisterEnabled, common.PasswordRegisterEnabled = true, true
+	common.EmailVerificationEnabled = false
+	t.Cleanup(func() {
+		common.RegisterEnabled, common.PasswordRegisterEnabled = previousRegister, previousPasswordRegister
+		common.EmailVerificationEnabled = previousEmailVerification
+	})
 }

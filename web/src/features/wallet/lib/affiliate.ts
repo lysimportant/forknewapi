@@ -27,3 +27,23 @@ export function generateAffiliateLink(affCode: string): string {
   if (typeof window === 'undefined') return ''
   return `${window.location.origin}/sign-up?aff=${affCode}`
 }
+
+/**
+ * Create an idempotency key for one withdrawal submission.
+ *
+ * The server stores the key with a unique index, so resending the same key
+ * returns the first result instead of crediting the wallet again. A new user
+ * action must call this again to obtain a new key.
+ *
+ * @returns A unique request identifier; falls back to a timestamp and random
+ * suffix when the Web Crypto API is unavailable.
+ */
+export function createIdempotencyKey(): string {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID()
+  }
+  return `aff-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}

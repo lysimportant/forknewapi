@@ -579,56 +579,42 @@ func HardDeleteUserById(id int) error {
 	return user.HardDelete()
 }
 
-func inviteUser(inviterId int) error {
-	result := DB.Model(&User{}).Where("id = ?", inviterId).Updates(map[string]interface{}{
-		"aff_count":   gorm.Expr("aff_count + ?", 1),
-		"aff_quota":   gorm.Expr("aff_quota + ?", common.QuotaForInviter),
-		"aff_history": gorm.Expr("aff_history + ?", common.QuotaForInviter),
+// grantInviteRewards 发放邀请人与受邀人的注册奖励。
+//
+// 邀请人奖励写入按笔冻结的账本，受邀人赠送直接计入余额；两者都以受邀用户 ID 为
+// 去重来源，重复回调不会重复计款。奖励写入与汇总字段更新在同一事务内完成，失败时
+// 整笔回滚并返回错误，调用方必须显式处理，不能静默忽略。
+func (user *User) grantInviteRewards(inviterId int) error {
+	if inviterId == 0 || inviterId == user.Id || !operation_setting.IsPaymentComplianceConfirmed() {
+		return nil
+	}
+	now := common.GetTimestamp()
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if common.QuotaForInvitee > 0 {
+			// 赠送前先占用来源，重复回调在这里得到 claimed=false 并跳过加款。
+			claimed, err := ClaimInviteReward(tx, user.Id, inviteRewardSourceKey(InviteRewardKindInvitee, user.Id), InviteRewardKindInvitee, common.QuotaForInvitee, now)
+			if err != nil {
+				return err
+			}
+			if claimed {
+				result := tx.Model(&User{}).
+					Where("id = ? AND quota <= ?", user.Id, common.MaxWalletQuota-common.QuotaForInvitee).
+					Update("quota", gorm.Expr("quota + ?", common.QuotaForInvitee))
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return ErrWalletQuotaLimitExceeded
+				}
+			}
+		}
+		if common.QuotaForInviter > 0 {
+			if _, err := GrantInviteReward(tx, inviterId, inviteRewardSourceKey(InviteRewardKindInviter, user.Id), InviteRewardKindInviter, common.QuotaForInviter, now); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
-}
-
-func (user *User) TransferAffQuotaToQuota(quota int) error {
-	// 检查quota是否小于最小额度
-	if float64(quota) < common.QuotaPerUnit {
-		return fmt.Errorf("转移额度最小为%s！", logger.LogQuota(common.QuotaFromFloat(common.QuotaPerUnit)))
-	}
-
-	// 开始数据库事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer tx.Rollback() // 确保在函数退出时事务能回滚
-
-	// 加锁查询用户以确保数据一致性
-	err := lockForUpdate(tx).First(user, user.Id).Error
-	if err != nil {
-		return err
-	}
-
-	// 再次检查用户的AffQuota是否足够
-	if user.AffQuota < quota {
-		return errors.New("邀请额度不足！")
-	}
-
-	// 更新用户额度
-	user.AffQuota -= quota
-	user.Quota += quota
-
-	// 保存用户状态
-	if err := tx.Save(user).Error; err != nil {
-		return err
-	}
-
-	// 提交事务
-	return tx.Commit().Error
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
@@ -709,39 +695,38 @@ func (user *User) Insert(inviterId int) error {
 }
 
 func (user *User) finishInsert(inviterId int) {
-	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
 	var createdUser User
-	if err := DB.Where("username = ?", user.Username).First(&createdUser).Error; err == nil {
-		// 生成基于角色的默认边栏配置
-		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
-		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
-			common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
-		}
+	if err := DB.Where("username = ?", user.Username).First(&createdUser).Error; err != nil {
+		common.SysError(fmt.Sprintf("读取新建用户失败 user=%d: %s", user.Id, err.Error()))
+		return
+	}
+	user.finalizeCreatedUser(createdUser, inviterId)
+}
+
+func (user *User) FinishInsert(inviterId int) {
+	user.finishInsert(inviterId)
+}
+
+// finalizeCreatedUser 完成用户创建后的收尾：初始化边栏配置、记录注册赠送日志，
+// 并发放邀请奖励。奖励失败只记录错误而不回滚账号，因为账号创建已经提交，且奖励
+// 按来源记账，重试不会重复计款。
+func (user *User) finalizeCreatedUser(createdUser User, inviterId int) {
+	defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
+	if defaultSidebarConfig != "" {
+		currentSetting := createdUser.GetSetting()
+		currentSetting.SidebarModules = defaultSidebarConfig
+		createdUser.SetSetting(currentSetting)
+		createdUser.Update(false)
+		common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
 	}
 
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
-		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-			RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
-		}
-		if common.QuotaForInviter > 0 {
-			//_ = IncreaseUserQuota(inviterId, common.QuotaForInviter)
-			RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
-			_ = inviteUser(inviterId)
-		}
+	if err := user.grantInviteRewards(inviterId); err != nil {
+		common.SysError(fmt.Sprintf("发放邀请奖励失败 user=%d inviter=%d: %s", user.Id, inviterId, err.Error()))
 	}
-}
-
-func (user *User) FinishInsert(inviterId int) {
-	user.finishInsert(inviterId)
 }
 
 // InsertWithTx inserts a new user within an existing transaction.
@@ -768,32 +753,12 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 // FinalizeOAuthUserCreation performs post-transaction tasks for OAuth user creation.
 // This should be called after the transaction commits successfully.
 func (user *User) FinalizeOAuthUserCreation(inviterId int) {
-	// 用户创建成功后，根据角色初始化边栏配置
 	var createdUser User
-	if err := DB.Where("id = ?", user.Id).First(&createdUser).Error; err == nil {
-		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
-		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
-			common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
-		}
+	if err := DB.Where("id = ?", user.Id).First(&createdUser).Error; err != nil {
+		common.SysError(fmt.Sprintf("读取新建 OAuth 用户失败 user=%d: %s", user.Id, err.Error()))
+		return
 	}
-
-	if common.QuotaForNewUser > 0 {
-		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
-	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
-		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-			RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
-		}
-		if common.QuotaForInviter > 0 {
-			RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
-			_ = inviteUser(inviterId)
-		}
-	}
+	user.finalizeCreatedUser(createdUser, inviterId)
 }
 
 func (user *User) Update(updatePassword bool) error {

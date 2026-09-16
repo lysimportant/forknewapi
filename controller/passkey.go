@@ -289,6 +289,18 @@ func PasskeyLoginBegin(c *gin.Context) {
 		return
 	}
 
+	// Passkey 登录没有用户名环节，必须在发起流程时确认协议；确认状态绑定到
+	// 服务端流程，finish 时复核，浏览器端无法绕过。
+	var request passkeyLoginBeginRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorMsg(c, "无效的 Passkey 请求")
+		return
+	}
+	if err := system_setting.ValidateLegalConsent(request.Consent, request.ConsentVersion); err != nil {
+		writeLegalConsentError(c, err)
+		return
+	}
+
 	wa, err := passkeysvc.BuildWebAuthn(c.Request)
 	if err != nil {
 		writeSecurityOperationError(c, err)
@@ -303,7 +315,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 
 	flowToken, expiresAt, err := passkeysvc.CreateSessionDataFlow(
 		model.AuthFlowPurposePasskeyLogin,
-		passkeysvc.FlowSecurity{},
+		passkeysvc.FlowSecurity{ConsentVersion: system_setting.CurrentLegalConsentVersion},
 		sessionData,
 	)
 	if err != nil {
@@ -348,7 +360,7 @@ func PasskeyLoginFinish(c *gin.Context) {
 		return
 	}
 
-	sessionData, _, err := passkeysvc.PopSessionDataFlow(
+	sessionData, security, err := passkeysvc.PopSessionDataFlow(
 		request.FlowToken,
 		model.AuthFlowPurposePasskeyLogin,
 		service.AuthIdentity{},
@@ -359,6 +371,15 @@ func PasskeyLoginFinish(c *gin.Context) {
 	}
 	if sessionData.UserVerification != protocol.VerificationRequired {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+		return
+	}
+	// 复核发起流程时绑定的协议确认：版本必须仍然是当前生效版本。
+	if security == nil {
+		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+		return
+	}
+	if err := system_setting.ValidateLegalConsent(true, security.ConsentVersion); err != nil {
+		writeLegalConsentError(c, err)
 		return
 	}
 
@@ -422,6 +443,12 @@ func PasskeyLoginFinish(c *gin.Context) {
 
 	c.Set("login_verification_method", service.VerificationMethodPasskey)
 	setupLoginAtAuthVersion(modelUser, modelUser.AuthVersion, c)
+}
+
+// passkeyLoginBeginRequest 是 Passkey 登录发起请求，携带登录前勾选的协议确认。
+type passkeyLoginBeginRequest struct {
+	Consent        bool   `json:"consent"`
+	ConsentVersion string `json:"consent_version"`
 }
 
 func AdminResetPasskey(c *gin.Context) {

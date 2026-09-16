@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -27,6 +28,9 @@ type oauthStateRequest struct {
 	Aff      string          `json:"aff,omitempty"`
 	Scope    string          `json:"scope,omitempty"`
 	Context  json.RawMessage `json:"context,omitempty"`
+	// Consent 与 ConsentVersion 记录发起登录流程前勾选的协议确认。
+	Consent        bool   `json:"consent"`
+	ConsentVersion string `json:"consent_version"`
 }
 
 type oauthFlowPayload struct {
@@ -35,6 +39,9 @@ type oauthFlowPayload struct {
 	Telegram        *oauth.TelegramOAuthFlow       `json:"telegram,omitempty"`
 	SessionIdentity *service.AuthIdentity          `json:"session_identity,omitempty"`
 	Authorization   *model.AuthFlowAuthorization   `json:"authorization,omitempty"`
+	// ConsentVersion 把发起流程时确认的协议版本绑定到服务端 state，
+	// 回调据此恢复同样的确认，不依赖浏览器端存储。
+	ConsentVersion string `json:"consent_version,omitempty"`
 }
 
 // providerParams returns map with Provider key for i18n templates
@@ -64,6 +71,14 @@ func GenerateOAuthCode(c *gin.Context) {
 	sessionID := ""
 	flowPayload := oauthFlowPayload{AffiliateCode: request.Aff}
 	bindingStarted := false
+	// 登录流程必须携带协议确认；绑定与二次验证由已登录会话发起，不重复要求。
+	if request.Intent == model.AuthFlowIntentLogin {
+		if err := system_setting.ValidateLegalConsent(request.Consent, request.ConsentVersion); err != nil {
+			writeLegalConsentError(c, err)
+			return
+		}
+		flowPayload.ConsentVersion = system_setting.CurrentLegalConsentVersion
+	}
 	if request.Provider == "telegram" {
 		telegramFlow, err := oauth.NewTelegramOAuthFlow()
 		if err != nil {
@@ -321,6 +336,8 @@ func handleOAuthLogin(c *gin.Context, provider oauth.Provider, oauthUser *oauth.
 		writeSecurityOperationError(c, err)
 		return
 	}
+	// 从服务端流程状态恢复协议确认：回调不依赖浏览器端凭据，也无法串用他人确认。
+	setLoginConsent(c, true, payload.ConsentVersion)
 	user, err := findOrCreateOAuthUser(c, provider, oauthUser, payload.AffiliateCode)
 	if err != nil {
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {

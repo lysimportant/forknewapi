@@ -68,6 +68,9 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
       {
         username: payload.username,
         ...passwordFields,
+        // 服务端在建立会话前校验协议确认，拒绝缺失或过期版本的请求。
+        consent: payload.consent,
+        consent_version: payload.consent_version,
       },
       { skipAuthRefresh: true }
     )
@@ -172,9 +175,19 @@ export async function createOAuthAuthorization(
   intent: 'login' | 'bind' | 'verify',
   operation?: VerificationOperation,
   signal?: AbortSignal,
-  proofToken?: string
+  proofToken?: string,
+  consentVersion?: string
 ): Promise<{ state: string; authorizationUrl?: string }> {
   const aff = intent === 'login' ? getAffiliateCode() : ''
+  let consentFields: { consent?: boolean; consent_version?: string } = {}
+  if (intent === 'login') {
+    // 登录流程必须在发起时绑定协议确认；版本未知时不发起请求，避免服务端
+    // 在回调阶段才拒绝，导致用户已经完成第三方授权却拿不到会话。
+    if (!consentVersion) {
+      throw new AuthOperationError('Please agree to the legal terms first')
+    }
+    consentFields = { consent: true, consent_version: consentVersion }
+  }
   const res = await api.post(
     '/api/oauth/state',
     {
@@ -183,6 +196,7 @@ export async function createOAuthAuthorization(
       aff: aff || undefined,
       scope: operation?.scope,
       ...(operation?.context ? { context: operation.context } : {}),
+      ...consentFields,
     },
     {
       skipAuthRefresh: intent === 'login',
@@ -214,15 +228,31 @@ export async function createOAuthFlow(
   provider: string,
   intent: 'login' | 'bind' | 'verify',
   operation?: VerificationOperation,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  consentVersion?: string
 ): Promise<string> {
-  return (await createOAuthAuthorization(provider, intent, operation, signal))
-    .state
+  return (
+    await createOAuthAuthorization(
+      provider,
+      intent,
+      operation,
+      signal,
+      undefined,
+      consentVersion
+    )
+  ).state
 }
 
-// WeChat login by authorization code
-export async function wechatLoginByCode(code: string): Promise<ApiResponse> {
-  const res = await api.get('/api/oauth/wechat', { params: { code } })
+// WeChat login by authorization code. The WeChat server redirects back with a
+// code, so the consent version confirmed before the redirect travels as a query
+// parameter and is validated server-side before any account is created.
+export async function wechatLoginByCode(
+  code: string,
+  consentVersion?: string
+): Promise<ApiResponse> {
+  const res = await api.get('/api/oauth/wechat', {
+    params: { code, consent_version: consentVersion },
+  })
   return res.data
 }
 
@@ -243,7 +273,7 @@ export async function telegramLogin(
 // Registration
 // ----------------------------------------------------------------------------
 
-// User registration
+// User registration. RegisterPayload carries the same consent fields as login.
 export async function register(payload: RegisterPayload): Promise<ApiResponse> {
   const res = await api.post(`/api/user/register`, payload, {
     params: { turnstile: payload.turnstile ?? '' },

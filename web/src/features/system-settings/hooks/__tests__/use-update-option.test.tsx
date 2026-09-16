@@ -124,6 +124,7 @@ describe('保存配置兼容官方刷新与定制提示', () => {
     'oidc.display_name',
     'HeaderNavModules',
     'console_setting.api_info',
+    'general_setting.docs_link',
     'server_address',
   ])('配置 %s 同步失效查询与旧公开状态缓存', async (key) => {
     localStorage.setItem('status', 'stale')

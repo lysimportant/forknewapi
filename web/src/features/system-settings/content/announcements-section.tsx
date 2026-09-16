@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Plus, Trash2, Save } from 'lucide-react'
+import { Pin, PinOff, Plus, Trash2, Save } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -39,6 +39,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -59,10 +60,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { sortAnnouncements } from '@/features/announcements/lib/announcement-sort'
 import dayjs from '@/lib/dayjs'
 
-import { SettingsSwitchField } from '../components/settings-form-layout'
+import {
+  SettingsSwitchContent,
+  SettingsSwitchField,
+  SettingsSwitchItem,
+} from '../components/settings-form-layout'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 
@@ -72,6 +79,7 @@ type Announcement = {
   publishDate: string
   type: 'default' | 'ongoing' | 'success' | 'warning' | 'error'
   extra?: string
+  pinned?: boolean
 }
 
 type AnnouncementsSectionProps = {
@@ -90,6 +98,7 @@ const announcementSchema = z.object({
     .string()
     .max(100, 'Extra must be less than 100 characters')
     .optional(),
+  pinned: z.boolean(),
 })
 
 type AnnouncementFormValues = z.infer<typeof announcementSchema>
@@ -152,6 +161,7 @@ export function AnnouncementsSection({
       publishDate: new Date().toISOString(),
       type: 'default',
       extra: '',
+      pinned: false,
     },
   })
 
@@ -162,6 +172,8 @@ export function AnnouncementsSection({
         setAnnouncements(
           parsed.map((item, idx) => ({
             ...item,
+            // 历史数据没有 pinned 字段，必须按 false 读取
+            pinned: item.pinned === true,
             id: item.id || idx + 1,
           }))
         )
@@ -195,6 +207,7 @@ export function AnnouncementsSection({
       publishDate: new Date().toISOString(),
       type: 'default',
       extra: '',
+      pinned: false,
     })
     setShowDialog(true)
   }
@@ -206,8 +219,19 @@ export function AnnouncementsSection({
       publishDate: announcement.publishDate,
       type: announcement.type,
       extra: announcement.extra || '',
+      pinned: announcement.pinned === true,
     })
     setShowDialog(true)
+  }
+
+  // 置顶/取消置顶：与编辑表单一致，保存后统一生效
+  const handleTogglePin = (id: number) => {
+    setAnnouncements((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, pinned: item.pinned !== true } : item
+      )
+    )
+    setHasChanges(true)
   }
 
   const handleDelete = (announcement: Announcement) => {
@@ -289,13 +313,11 @@ export function AnnouncementsSection({
     )
   }
 
-  const sortedAnnouncements = useMemo(() => {
-    return [...announcements].sort((a, b) => {
-      return (
-        new Date(b.publishDate).getTime() - new Date(a.publishDate).getTime()
-      )
-    })
-  }, [announcements])
+  // 列表顺序与公告弹窗、通知列表保持一致：置顶优先 → 发布时间倒序
+  const sortedAnnouncements = useMemo(
+    () => sortAnnouncements(announcements),
+    [announcements]
+  )
 
   const getRelativeTime = (date: string) => {
     const now = new Date()
@@ -373,6 +395,27 @@ export function AnnouncementsSection({
                     toggleSelectOne(announcement.id, checked as boolean)
                   }
                 />
+              ),
+            },
+            {
+              id: 'pinned',
+              header: t('Pinned'),
+              className: 'w-32',
+              cell: (announcement) => (
+                <div className='flex items-center gap-1.5'>
+                  {announcement.pinned ? (
+                    <Badge variant='warning'>{t('Pinned')}</Badge>
+                  ) : null}
+                  <Button
+                    variant='ghost'
+                    size='icon-sm'
+                    aria-label={announcement.pinned ? t('Unpin') : t('Pin')}
+                    title={announcement.pinned ? t('Unpin') : t('Pin')}
+                    onClick={() => handleTogglePin(announcement.id)}
+                  >
+                    {announcement.pinned ? <PinOff /> : <Pin />}
+                  </Button>
+                </div>
               ),
             },
             {
@@ -582,6 +625,26 @@ export function AnnouncementsSection({
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='pinned'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Pinned')}</FormLabel>
+                    <FormDescription>
+                      {t('Pinned announcements are displayed first')}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value === true}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
               )}
             />
           </form>

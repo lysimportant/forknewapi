@@ -38,3 +38,12 @@ export async function getPrivacyPolicy(): Promise<LegalDocumentResponse> {
   })
   return res.data
 }
+
+// 《API 服务、隐私与使用责任协议》正文。站点始终内置默认正文，因此该文档
+// 一定可阅读，与登录页强制勾选的协议名称一致。
+export async function getAPIServiceAgreement(): Promise<LegalDocumentResponse> {
+  const res = await api.get<LegalDocumentResponse>('/api/api-service-agreement', {
+    headers: { 'Cache-Control': null },
+  })
+  return res.data
+}

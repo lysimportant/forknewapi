@@ -35,10 +35,15 @@ import type { SystemStatus, CustomOAuthProviderInfo } from '../types'
 
 /**
  * Hook for managing OAuth login
+ *
+ * `consentVersion` is the agreement version confirmed on the sign-in surface.
+ * Every login-intent flow binds it server-side, and no flow is started without
+ * it, so a redirect can never produce a session that skipped consent.
  */
 export function useOAuthLogin(
   status: SystemStatus | null,
-  redirectTo?: string
+  redirectTo?: string,
+  consentVersion?: string
 ) {
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
@@ -64,9 +69,19 @@ export function useOAuthLogin(
     clearAuthentication()
   }
 
+  // 每个登录入口都经过同一道守卫：按钮禁用之外再校验一次协议版本，
+  // 避免任何一条路径在未确认协议时发起登录流程。
+  const confirmedConsentVersion = (): string | null => {
+    if (consentVersion) return consentVersion
+    toast.error(t('Please agree to the legal terms first'))
+    return null
+  }
+
   const handleGitHubLogin = async () => {
     if (!status?.github_client_id) return
     if (githubButtonDisabled) return
+    const version = confirmedConsentVersion()
+    if (!version) return
 
     setIsLoading(true)
     setGithubButtonDisabled(true)
@@ -86,7 +101,13 @@ export function useOAuthLogin(
 
     try {
       await resetSession()
-      const state = await createOAuthFlow('github', 'login')
+      const state = await createOAuthFlow(
+        'github',
+        'login',
+        undefined,
+        undefined,
+        version
+      )
       rememberOAuthLoginRedirect(state, redirectTo)
 
       const url = buildGitHubOAuthUrl(status.github_client_id, state)
@@ -104,11 +125,19 @@ export function useOAuthLogin(
 
   const handleDiscordLogin = async () => {
     if (!status?.discord_client_id) return
+    const version = confirmedConsentVersion()
+    if (!version) return
 
     setIsLoading(true)
     try {
       await resetSession()
-      const state = await createOAuthFlow('discord', 'login')
+      const state = await createOAuthFlow(
+        'discord',
+        'login',
+        undefined,
+        undefined,
+        version
+      )
       rememberOAuthLoginRedirect(state, redirectTo)
 
       const url = buildDiscordOAuthUrl(status.discord_client_id, state)
@@ -122,11 +151,19 @@ export function useOAuthLogin(
 
   const handleOIDCLogin = async () => {
     if (!status?.oidc_authorization_endpoint || !status?.oidc_client_id) return
+    const version = confirmedConsentVersion()
+    if (!version) return
 
     setIsLoading(true)
     try {
       await resetSession()
-      const state = await createOAuthFlow('oidc', 'login')
+      const state = await createOAuthFlow(
+        'oidc',
+        'login',
+        undefined,
+        undefined,
+        version
+      )
       rememberOAuthLoginRedirect(state, redirectTo)
 
       const url = buildOIDCOAuthUrl(
@@ -144,11 +181,19 @@ export function useOAuthLogin(
 
   const handleLinuxDOLogin = async () => {
     if (!status?.linuxdo_client_id) return
+    const version = confirmedConsentVersion()
+    if (!version) return
 
     setIsLoading(true)
     try {
       await resetSession()
-      const state = await createOAuthFlow('linuxdo', 'login')
+      const state = await createOAuthFlow(
+        'linuxdo',
+        'login',
+        undefined,
+        undefined,
+        version
+      )
       rememberOAuthLoginRedirect(state, redirectTo)
 
       const url = buildLinuxDOOAuthUrl(status.linuxdo_client_id, state)
@@ -169,9 +214,19 @@ export function useOAuthLogin(
       )
       return
     }
+    const version = confirmedConsentVersion()
+    if (!version) return
+
     setIsLoading(true)
     try {
-      const authorization = await createOAuthAuthorization('telegram', 'login')
+      const authorization = await createOAuthAuthorization(
+        'telegram',
+        'login',
+        undefined,
+        undefined,
+        undefined,
+        version
+      )
       if (!authorization.authorizationUrl) {
         throw new AuthOperationError('Failed to initialize OAuth')
       }
@@ -187,11 +242,19 @@ export function useOAuthLogin(
 
   const handleCustomOAuthLogin = async (provider: CustomOAuthProviderInfo) => {
     if (!provider.authorization_endpoint || !provider.client_id) return
+    const version = confirmedConsentVersion()
+    if (!version) return
 
     setIsLoading(true)
     try {
       await resetSession()
-      const state = await createOAuthFlow(provider.slug, 'login')
+      const state = await createOAuthFlow(
+        provider.slug,
+        'login',
+        undefined,
+        undefined,
+        version
+      )
       rememberOAuthLoginRedirect(state, redirectTo)
 
       const redirectUri = `${window.location.origin}/oauth/${provider.slug}`

@@ -1,6 +1,12 @@
 package operation_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // 额度展示类型
 const (
@@ -39,6 +45,30 @@ func init() {
 
 func GetGeneralSetting() *GeneralSetting {
 	return &generalSetting
+}
+
+// ValidateDocsLink 校验文档链接：允许留空（回退到默认文档地址），
+// 否则必须是完整的 http/https 地址，且不能携带用户名或密码
+func ValidateDocsLink(link string) error {
+	trimmed := strings.TrimSpace(link)
+	if trimmed == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("文档链接格式不正确：%s", err.Error())
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("文档链接必须以 http:// 或 https:// 开头")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("文档链接缺少有效的主机名")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("文档链接不能包含用户名或密码")
+	}
+	return nil
 }
 
 // IsCurrencyDisplay 是否以货币形式展示（美元或人民币）

@@ -40,6 +40,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { formatAnnouncementRelativeTime } from '@/lib/announcement-time'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -50,6 +51,7 @@ interface AnnouncementItem {
   content?: string
   extra?: string
   publishDate?: string | Date
+  pinned?: boolean
 }
 
 interface NotificationPopoverProps {
@@ -62,65 +64,8 @@ interface NotificationPopoverProps {
   announcements: AnnouncementItem[]
   loading: boolean
   className?: string
-}
-
-/**
- * Get relative time string from a date
- */
-function getRelativeTime(publishDate: string | Date, t: TFunction): string {
-  if (!publishDate) return ''
-
-  const now = new Date()
-  const pubDate = new Date(publishDate)
-
-  // If invalid date, return original string
-  if (Number.isNaN(pubDate.getTime())) {
-    return typeof publishDate === 'string' ? publishDate : ''
-  }
-
-  const diffMs = now.getTime() - pubDate.getTime()
-  const diffSeconds = Math.floor(diffMs / 1000)
-  const diffMinutes = Math.floor(diffSeconds / 60)
-  const diffHours = Math.floor(diffMinutes / 60)
-  const diffDays = Math.floor(diffHours / 24)
-  const diffWeeks = Math.floor(diffDays / 7)
-  const diffMonths = Math.floor(diffDays / 30)
-  const diffYears = Math.floor(diffDays / 365)
-
-  // If future time, show specific date
-  if (diffMs < 0) return formatDateTimeObject(pubDate)
-
-  // Return relative time based on difference
-  if (diffSeconds < 60) return t('Just now')
-  if (diffMinutes < 60) {
-    return diffMinutes === 1
-      ? t('1 minute ago')
-      : t('{{count}} minutes ago', { count: diffMinutes })
-  }
-  if (diffHours < 24) {
-    return diffHours === 1
-      ? t('1 hour ago')
-      : t('{{count}} hours ago', { count: diffHours })
-  }
-  if (diffDays < 7) {
-    return diffDays === 1
-      ? t('1 day ago')
-      : t('{{count}} days ago', { count: diffDays })
-  }
-  if (diffWeeks < 4) {
-    return diffWeeks === 1
-      ? t('1 week ago')
-      : t('{{count}} weeks ago', { count: diffWeeks })
-  }
-  if (diffMonths < 12) {
-    return diffMonths === 1
-      ? t('1 month ago')
-      : t('{{count}} months ago', { count: diffMonths })
-  }
-  if (diffYears < 2) return t('1 year ago')
-
-  // Over 2 years, show specific date
-  return formatDateTimeObject(pubDate)
+  /** 打开完整公告时间轴；不传则不展示入口 */
+  onViewAllAnnouncements?: () => void
 }
 
 /**
@@ -247,7 +192,7 @@ function AnnouncementsContent({
             ? new Date(item.publishDate)
             : null
           const relativeTime = publishDate
-            ? getRelativeTime(publishDate, t)
+            ? formatAnnouncementRelativeTime(publishDate, t)
             : ''
           const absoluteTime = publishDate
             ? formatDateTimeObject(publishDate)
@@ -259,6 +204,12 @@ function AnnouncementsContent({
                 <div className='flex items-start gap-3'>
                   <AnnouncementDot type={item.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-2'>
+                    {item.pinned ? (
+                      <Badge variant='warning' className='w-fit'>
+                        {t('Pinned')}
+                      </Badge>
+                    ) : null}
+
                     <div className='text-sm'>
                       <RichContent breaks content={item.content || ''} />
                     </div>
@@ -300,6 +251,7 @@ export function NotificationPopover({
   announcements,
   loading,
   className,
+  onViewAllAnnouncements,
 }: NotificationPopoverProps) {
   const { t } = useTranslation()
   return (
@@ -365,7 +317,20 @@ export function NotificationPopover({
           </TabsContent>
         </Tabs>
 
-        <div className='flex justify-end'>
+        <div className='flex flex-wrap items-center justify-end gap-2'>
+          {onViewAllAnnouncements ? (
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                onOpenChange(false)
+                onViewAllAnnouncements()
+              }}
+            >
+              <Megaphone className='size-3.5' />
+              {t('View All Announcements')}
+            </Button>
+          ) : null}
           <Button size='sm' onClick={() => onOpenChange(false)}>
             {t('Close')}
           </Button>

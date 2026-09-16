@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -146,6 +147,8 @@ func TestSessionLimitDoesNotRecordRejectedLoginAsSuccessful(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", nil)
+	// 登录协议确认是会话建立的前置条件，这里显式确认以便验证会话上限路径。
+	setLoginConsent(c, true, system_setting.CurrentLegalConsentVersion)
 	setupLogin(user, c)
 
 	assert.Equal(t, http.StatusConflict, recorder.Code)

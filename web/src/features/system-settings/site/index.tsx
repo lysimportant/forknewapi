@@ -37,6 +37,10 @@ const defaultSiteSettings: SiteSettings = {
   'legal.privacy_policy': '',
   HeaderNavModules: '',
   SidebarModulesAdmin: '',
+  // getOptionValue 只保留出现在默认值中的键，公告与文档链接必须在此登记
+  'console_setting.announcements': '[]',
+  'console_setting.announcements_enabled': true,
+  'general_setting.docs_link': '',
 }
 
 export function SiteSettings() {

@@ -17,8 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { sortAnnouncements } from '@/features/announcements/lib/announcement-sort'
+import type { AnnouncementEntry } from '@/features/announcements/types'
 import { useStatus } from '@/hooks/use-status'
 import { getNotice } from '@/lib/api'
 import { useNotificationStore } from '@/stores/notification-store'
@@ -40,20 +42,22 @@ function hashString(input: string): string {
  * Generate a unique key for an announcement
  * Prefer backend id, fall back to a content hash so edits register
  */
-function getAnnouncementKey(item: Record<string, unknown>): string {
+function getAnnouncementKey(item: AnnouncementEntry): string {
   if (!item) return ''
 
   if (item.id !== undefined && item.id !== null) {
     return `id:${item.id}`
   }
 
+  // 历史公告可能带有 title / link 字段，指纹必须与旧版本保持一致
+  const legacy = item as AnnouncementEntry & { title?: string; link?: string }
   const fingerprint = JSON.stringify({
-    publishDate: (item?.publishDate as string) || '',
-    content: ((item?.content as string) || '').trim(),
-    extra: ((item?.extra as string) || '').trim(),
-    type: (item?.type as string) || '',
-    title: ((item?.title as string) || '').trim(),
-    link: ((item?.link as string) || '').trim(),
+    publishDate: item.publishDate || '',
+    content: (item.content || '').trim(),
+    extra: (item.extra || '').trim(),
+    type: item.type || '',
+    title: (legacy.title || '').trim(),
+    link: (legacy.link || '').trim(),
   })
   return `hash:${hashString(fingerprint)}`
 }
@@ -64,9 +68,12 @@ function getAnnouncementKey(item: Record<string, unknown>): string {
  */
 export function useNotifications() {
   const [popoverOpen, setPopoverOpen] = useState(false)
+  const [timelineOpen, setTimelineOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'notice' | 'announcements'>(
     'notice'
   )
+  // 自动弹出每次页面会话只判定一次，路由切换不重复打扰
+  const autoOpenHandledRef = useRef(false)
 
   // Fetch Notice from API
   const {
@@ -82,10 +89,19 @@ export function useNotifications() {
   // Fetch Announcements from status
   const { status, loading: statusLoading } = useStatus()
   const announcementsEnabled = status?.announcements_enabled ?? false
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const announcements: Record<string, unknown>[] = announcementsEnabled
-    ? ((status?.announcements || []) as Record<string, unknown>[]).slice(0, 20)
-    : []
+  const statusAnnouncements = status?.announcements as
+    | AnnouncementEntry[]
+    | undefined
+  // 时间轴弹窗展示全部公告，通知列表沿用前 20 条截断；两者共用置顶优先排序
+  const allAnnouncements = useMemo(
+    () =>
+      announcementsEnabled ? sortAnnouncements(statusAnnouncements ?? []) : [],
+    [announcementsEnabled, statusAnnouncements]
+  )
+  const announcements = useMemo(
+    () => allAnnouncements.slice(0, 20),
+    [allAnnouncements]
+  )
 
   // Notification store
   const {
@@ -93,7 +109,28 @@ export function useNotifications() {
     markNoticeRead,
     markAnnouncementsRead,
     isAnnouncementRead,
+    storageAvailable,
+    closeAnnouncementsForSession,
+    closeAnnouncementsForToday,
+    canAutoOpenAnnouncements,
   } = useNotificationStore()
+
+  // 登录后首次进入控制台自动弹出一次时间轴；无公告、展示关闭或读取失败都不弹空弹窗
+  useEffect(() => {
+    if (autoOpenHandledRef.current || statusLoading) return
+    if (!announcementsEnabled || allAnnouncements.length === 0) return
+
+    autoOpenHandledRef.current = true
+    // 「今日关闭」与「关闭本次」都不强制重新弹出
+    if (!canAutoOpenAnnouncements()) return
+
+    setTimelineOpen(true)
+  }, [
+    statusLoading,
+    announcementsEnabled,
+    allAnnouncements.length,
+    canAutoOpenAnnouncements,
+  ])
 
   // Extract notice content
   const noticeContent = noticeResponse?.success
@@ -105,12 +142,10 @@ export function useNotifications() {
     const noticeUnread =
       noticeContent && noticeContent !== lastReadNotice ? 1 : 0
 
-    const announcementsUnread = announcements.filter(
-      (item: Record<string, unknown>) => {
-        const key = getAnnouncementKey(item)
-        return !isAnnouncementRead(key)
-      }
-    ).length
+    const announcementsUnread = announcements.filter((item) => {
+      const key = getAnnouncementKey(item)
+      return !isAnnouncementRead(key)
+    }).length
 
     return {
       notice: noticeUnread,
@@ -121,9 +156,7 @@ export function useNotifications() {
 
   const markAnnouncementsAsRead = () => {
     if (announcements.length > 0) {
-      const allKeys = announcements.map((item: Record<string, unknown>) =>
-        getAnnouncementKey(item)
-      )
+      const allKeys = announcements.map((item) => getAnnouncementKey(item))
       markAnnouncementsRead(allKeys)
     }
   }
@@ -162,10 +195,30 @@ export function useNotifications() {
     }
   }
 
+  // 手动查看始终可用：不受「今日关闭」限制
+  const openTimeline = () => {
+    setTimelineOpen(true)
+  }
+
+  // ×、Esc、点击遮罩与「关闭公告」都只关闭本次页面会话
+  const handleTimelineOpenChange = (open: boolean) => {
+    setTimelineOpen(open)
+
+    if (!open) {
+      closeAnnouncementsForSession()
+    }
+  }
+
+  const closeTimelineForToday = () => {
+    closeAnnouncementsForToday()
+    setTimelineOpen(false)
+  }
+
   return {
     // Data
     notice: noticeContent,
     announcements,
+    allAnnouncements,
     loading: noticeLoading || statusLoading,
 
     // Unread counts
@@ -178,6 +231,13 @@ export function useNotifications() {
     setPopoverOpen: handlePopoverOpenChange,
     activeTab,
     setActiveTab: handleTabChange,
+
+    // Timeline dialog state
+    timelineOpen,
+    setTimelineOpen: handleTimelineOpenChange,
+    openTimeline,
+    closeTimelineForToday,
+    closeTodayPersists: storageAvailable,
 
     // Actions
     openPopover: handleOpenPopover,

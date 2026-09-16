@@ -119,6 +119,10 @@ export type SiteSettings = {
   'legal.privacy_policy': string
   HeaderNavModules: string
   SidebarModulesAdmin: string
+  // 系统公告页同时管理公告列表与文档链接
+  'console_setting.announcements': string
+  'console_setting.announcements_enabled': boolean
+  'general_setting.docs_link': string
 }
 
 export type AuthSettings = {

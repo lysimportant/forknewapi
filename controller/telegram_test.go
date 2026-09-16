@@ -154,7 +154,13 @@ func setupTelegramOAuthTest(t *testing.T) *telegramOAuthFixture {
 
 func (fixture *telegramOAuthFixture) authorization(t *testing.T, intent string, identity service.AuthIdentity, scope string, claims jwt.MapClaims) (string, string) {
 	t.Helper()
-	request, err := common.Marshal(oauthStateRequest{Provider: "telegram", Intent: intent, Scope: scope})
+	state := oauthStateRequest{Provider: "telegram", Intent: intent, Scope: scope}
+	if intent == "login" {
+		// 登录意图必须携带协议确认，服务端在发起流程时校验并绑定版本。
+		state.Consent = true
+		state.ConsentVersion = system_setting.CurrentLegalConsentVersion
+	}
+	request, err := common.Marshal(state)
 	require.NoError(t, err)
 	proof := ""
 	if intent == "bind" {

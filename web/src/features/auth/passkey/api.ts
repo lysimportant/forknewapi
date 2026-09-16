@@ -80,11 +80,17 @@ export function deletePasskey(
   )
 }
 
-export async function beginPasskeyLogin(): Promise<
-  ApiResponse<PasskeyOptionsPayload>
-> {
+/**
+ * Passkey 登录没有用户名环节，服务端要求在发起流程时绑定协议确认，
+ * 并在会话建立前复核该版本，因此这里必须携带登录前已勾选的协议版本。
+ */
+export async function beginPasskeyLogin(
+  consentVersion: string
+): Promise<ApiResponse<PasskeyOptionsPayload>> {
   const res = await api.post<ApiResponse<PasskeyOptionsPayload>>(
-    '/api/user/passkey/login/begin'
+    '/api/user/passkey/login/begin',
+    { consent: true, consent_version: consentVersion },
+    { skipAuthRefresh: true }
   )
   return res.data
 }

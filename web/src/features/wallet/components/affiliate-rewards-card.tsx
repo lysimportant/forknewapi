@@ -26,6 +26,7 @@ import { IconBadge } from '@/components/ui/icon-badge'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatQuota } from '@/lib/format'
+import { formatDateTimeObject } from '@/lib/time'
 
 import type { UserWalletData } from '../types'
 
@@ -33,6 +34,7 @@ interface AffiliateRewardsCardProps {
   user: UserWalletData | null
   affiliateLink: string
   onTransfer: () => void
+  onShowRewards: () => void
   complianceConfirmed?: boolean
   loading?: boolean
 }
@@ -41,6 +43,7 @@ export function AffiliateRewardsCard({
   user,
   affiliateLink,
   onTransfer,
+  onShowRewards,
   complianceConfirmed = true,
   loading,
 }: AffiliateRewardsCardProps) {
@@ -60,11 +63,15 @@ export function AffiliateRewardsCard({
     )
   }
 
-  const hasRewards = (user?.aff_quota ?? 0) > 0
+  const summary = user?.referral_rewards
+  const withdrawable = summary?.withdrawable_quota ?? user?.aff_quota ?? 0
+  const frozen = summary?.frozen_quota ?? 0
+  const hasWithdrawable = withdrawable > 0
+  const nextAvailableAt = summary?.next_available_at ?? 0
 
   return (
     <Card data-card-hover='false' className='bg-muted/20 py-0'>
-      <CardContent className='grid gap-3 p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(200px,1fr)_minmax(180px,0.65fr)_minmax(280px,1fr)] lg:items-center'>
+      <CardContent className='grid gap-3 p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(200px,1fr)_minmax(220px,0.75fr)_minmax(280px,1fr)] lg:items-center'>
         <div className='flex min-w-0 items-center gap-2.5'>
           <IconBadge tone='chart-3'>
             <Share2 />
@@ -73,17 +80,18 @@ export function AffiliateRewardsCard({
             <h3 className='truncate text-sm font-semibold'>
               {t('Referral Program')}
             </h3>
-            <p className='text-muted-foreground line-clamp-1 text-xs'>
+            <p className='text-muted-foreground line-clamp-2 text-xs'>
               {t(
-                'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
+                'Each invite reward is frozen for 48 hours, then you can withdraw it to your in-site balance.'
               )}
             </p>
           </div>
         </div>
 
-        <div className='grid grid-cols-3 gap-1.5 text-center'>
+        <div className='grid grid-cols-2 gap-1.5 text-center sm:grid-cols-4 lg:grid-cols-2'>
           {[
-            [t('Pending'), formatQuota(user?.aff_quota ?? 0)],
+            [t('Withdrawable'), formatQuota(withdrawable)],
+            [t('Frozen'), formatQuota(frozen)],
             [t('Total Earned'), formatQuota(user?.aff_history_quota ?? 0)],
             [t('Invites'), String(user?.aff_count ?? 0)],
           ].map(([label, value]) => (
@@ -98,7 +106,7 @@ export function AffiliateRewardsCard({
           ))}
         </div>
 
-        <div className='flex items-center gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
           <Input
             value={affiliateLink}
             readOnly
@@ -112,17 +120,34 @@ export function AffiliateRewardsCard({
             tooltip={t('Copy referral link')}
             aria-label={t('Copy referral link')}
           />
-          {hasRewards && (
+          {(user?.aff_history_quota ?? 0) > 0 && (
+            <Button
+              onClick={onShowRewards}
+              variant='outline'
+              className='h-9 shrink-0 px-3'
+              size='sm'
+            >
+              {t('Reward Details')}
+            </Button>
+          )}
+          {hasWithdrawable && (
             <Button
               onClick={onTransfer}
               disabled={!complianceConfirmed}
               className='h-9 shrink-0 px-3'
               size='sm'
             >
-              {t('Transfer to Balance')}
+              {t('Withdraw')}
             </Button>
           )}
         </div>
+
+        {!hasWithdrawable && nextAvailableAt > 0 ? (
+          <p className='text-muted-foreground text-xs lg:col-span-3'>
+            {t('Next reward becomes withdrawable at')}{' '}
+            {formatDateTimeObject(new Date(nextAvailableAt * 1000))}
+          </p>
+        ) : null}
         {!complianceConfirmed ? (
           <p className='text-muted-foreground text-xs lg:col-span-3'>
             {t(

@@ -39,6 +39,8 @@ type OAuthProvidersProps = {
   onWeChatLogin?: () => void
   isWeChatLoading?: boolean
   redirectTo?: string
+  /** 已确认的协议版本；未确认时所有登录入口保持禁用且不发起流程 */
+  consentVersion?: string
 }
 
 type ProviderButton = {
@@ -56,6 +58,7 @@ export function OAuthProviders({
   onWeChatLogin,
   isWeChatLoading = false,
   redirectTo,
+  consentVersion,
 }: OAuthProvidersProps) {
   const { t } = useTranslation()
   const {
@@ -68,7 +71,7 @@ export function OAuthProviders({
     handleLinuxDOLogin,
     handleTelegramLogin,
     handleCustomOAuthLogin,
-  } = useOAuthLogin(status, redirectTo)
+  } = useOAuthLogin(status, redirectTo, consentVersion)
 
   const providerButtons: ProviderButton[] = []
 

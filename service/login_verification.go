@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 )
 
 const LoginVerificationTTL = 5 * time.Minute
@@ -19,6 +20,9 @@ type LoginChallenge struct {
 type loginFlowPayload struct {
 	AuthVersion int64  `json:"auth_version"`
 	LoginMethod string `json:"login_method"`
+	// ConsentVersion 记录发起本次登录时已确认的协议版本。会话建立前会再次比对
+	// 当前生效版本，因此二次验证不能绕过同意，也不会串用已过期的确认。
+	ConsentVersion string `json:"consent_version,omitempty"`
 }
 
 // LoginVerification is server-owned state read from a primary-authenticated flow.
@@ -29,7 +33,7 @@ type LoginVerification struct {
 	payload loginFlowPayload
 }
 
-func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallenge, error) {
+func StartLoginVerification(user *model.User, loginMethod, consentVersion string) (*LoginChallenge, error) {
 	if user == nil || user.Id <= 0 || user.AuthVersion <= 0 || loginMethod == "" {
 		return nil, model.ErrAuthFlowInvalid
 	}
@@ -51,7 +55,7 @@ func StartLoginVerification(user *model.User, loginMethod string) (*LoginChallen
 	if !available {
 		return nil, ErrVerificationUnavailable
 	}
-	payload, err := common.Marshal(loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod})
+	payload, err := common.Marshal(loginFlowPayload{AuthVersion: state.AuthVersion, LoginMethod: loginMethod, ConsentVersion: consentVersion})
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +130,10 @@ func VerifyLoginCode(token, code, ip, userAgent string) (*AuthBundle, error) {
 func CompleteLoginVerification(token string, verification *LoginVerification, method, ip, userAgent string) (*AuthBundle, error) {
 	if verification == nil || verification.Flow == nil || verification.State == nil {
 		return nil, model.ErrAuthFlowInvalid
+	}
+	// 会话建立前复核协议确认：流程内记录的版本必须仍然是当前生效版本。
+	if err := system_setting.ValidateLegalConsent(true, verification.payload.ConsentVersion); err != nil {
+		return nil, err
 	}
 	session, refreshSecret, err := newLoginSession(verification.State.UserID, verification.payload.AuthVersion, verification.payload.LoginMethod, ip, userAgent)
 	if err != nil {

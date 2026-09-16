@@ -29,6 +29,9 @@ import { consumeOAuthLoginRedirect } from './lib/oauth-callback-mode'
 
 afterEach(() => vi.restoreAllMocks())
 
+/** 服务端当前生效的协议版本，登录流程必须回传该版本。 */
+const CONSENT_VERSION = '2026-09-16'
+
 test.each([true, false])(
   'starts Telegram OAuth only when configuration is ready: %s',
   async (configured) => {
@@ -55,7 +58,8 @@ test.each([true, false])(
     const { result } = renderHook(() =>
       useOAuthLogin(
         { telegram_oauth: true, telegram_oauth_configured: configured },
-        '/console/personal'
+        '/console/personal',
+        CONSENT_VERSION
       )
     )
     await act(() => result.current.handleTelegramLogin())
@@ -66,7 +70,12 @@ test.each([true, false])(
       ])
       expect(post).toHaveBeenCalledWith(
         '/api/oauth/state',
-        expect.objectContaining({ provider: 'telegram', intent: 'login' }),
+        expect.objectContaining({
+          provider: 'telegram',
+          intent: 'login',
+          consent: true,
+          consent_version: CONSENT_VERSION,
+        }),
         expect.anything()
       )
       expect(open).toHaveBeenCalledWith(
@@ -85,6 +94,26 @@ test.each([true, false])(
     }
   }
 )
+
+test('does not start an OAuth login flow without a confirmed agreement version', async () => {
+  const post = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+    throw new Error(`Unexpected POST ${url}`)
+  })
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  const error = vi.spyOn(toast, 'error')
+  const { result } = renderHook(() =>
+    useOAuthLogin({
+      telegram_oauth: true,
+      telegram_oauth_configured: true,
+    })
+  )
+
+  await act(() => result.current.handleTelegramLogin())
+
+  expect(post).not.toHaveBeenCalled()
+  expect(open).not.toHaveBeenCalled()
+  expect(error).toHaveBeenCalledWith('Please agree to the legal terms first')
+})
 
 const bundle: AuthBundle = {
   access_token: 'access-token',

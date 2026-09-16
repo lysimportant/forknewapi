@@ -23,6 +23,8 @@ For commercial licensing, please contact support@quantumnous.com
 // System Configuration Defaults
 export const DEFAULT_SYSTEM_NAME = 'New API'
 export const DEFAULT_LOGO = '/logo.png'
+// 与后端 general_setting.docs_link 的默认值保持一致，避免空值产生死链
+export const DEFAULT_DOCS_LINK = 'https://docs.newapi.pro'
 
 // LocalStorage Keys
 export const STORAGE_KEYS = {

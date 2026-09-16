@@ -65,4 +65,21 @@ describe('server error message mapping', () => {
       })
     ).toBe(expected.TELEGRAM_BIND_INTERNAL_ERROR)
   })
+
+  test('maps legal consent failures to sign-in and refresh guidance', () => {
+    // 协议同意失败必须给出「回到登录页重新同意」或「刷新后重新同意」的明确
+    // 指引，不能退化成通用失败提示，OAuth 回调路由也依赖该映射。
+    const required = getServerErrorMessageKey({
+      code: 'legal_consent_required',
+    })
+    expect(required ?? '').toMatch(/sign-in page/)
+    expect(required ?? '').toMatch(/accept/)
+
+    const outdated = getServerErrorMessageKey({
+      code: 'legal_consent_outdated',
+    })
+    expect(outdated ?? '').toMatch(/agreement has been updated/)
+    expect(outdated ?? '').toMatch(/Refresh the page/)
+    expect(outdated).not.toBe(required)
+  })
 })

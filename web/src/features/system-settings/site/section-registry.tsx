@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { AnnouncementsSection } from '../content/announcements-section'
 import { SystemInfoSection } from '../general/system-info-section'
 import {
   parseHeaderNavModules,
@@ -23,6 +24,7 @@ import {
   serializeHeaderNavModules,
   serializeSidebarModulesAdmin,
 } from '../maintenance/config'
+import { DocsLinkSection } from '../maintenance/docs-link-section'
 import { HeaderNavigationSection } from '../maintenance/header-navigation-section'
 import { NoticeSection } from '../maintenance/notice-section'
 import { SidebarModulesSection } from '../maintenance/sidebar-modules-section'
@@ -54,8 +56,16 @@ const SITE_SECTIONS = [
   {
     id: 'notice',
     titleKey: 'System Notice',
+    // 统一管理入口：兼容区旧 Notice 文本 + 公告列表 + 文档链接
     build: (settings: SiteSettings) => (
-      <NoticeSection defaultValue={settings.Notice ?? ''} />
+      <>
+        <NoticeSection defaultValue={settings.Notice ?? ''} />
+        <DocsLinkSection defaultValue={settings['general_setting.docs_link']} />
+        <AnnouncementsSection
+          enabled={settings['console_setting.announcements_enabled']}
+          data={settings['console_setting.announcements']}
+        />
+      </>
     ),
   },
   {

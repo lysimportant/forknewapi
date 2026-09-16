@@ -21,10 +21,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
-import { getSelf } from '@/lib/api'
 
 import { getAffiliateCode, transferAffiliateQuota } from '../api'
-import { generateAffiliateLink } from '../lib'
+import { createIdempotencyKey, generateAffiliateLink } from '../lib'
 
 // ============================================================================
 // Affiliate Hook
@@ -61,21 +60,26 @@ export function useAffiliate() {
     copyToClipboard(affiliateLink)
   }, [affiliateLink, copyToClipboard])
 
-  // Transfer affiliate quota to balance
+  // Transfer affiliate quota to balance.
+  // The idempotency key is generated per submission so a retry of the same
+  // submission cannot credit the wallet twice; a fresh user action gets a new
+  // key and is therefore a distinct, legitimate withdrawal.
   const transferQuota = useCallback(async (quota: number): Promise<boolean> => {
     try {
       setTransferring(true)
-      const response = await transferAffiliateQuota({ quota })
+      const response = await transferAffiliateQuota({
+        quota,
+        idempotency_key: createIdempotencyKey(),
+      })
 
       if (response.success) {
         toast.success(response.message || i18next.t('Transfer successful'))
-        await getSelf()
         return true
       }
 
       toast.error(response.message || i18next.t('Transfer failed'))
       return false
-    } catch (_error) {
+    } catch {
       toast.error(i18next.t('Transfer failed'))
       return false
     } finally {

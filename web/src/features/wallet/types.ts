@@ -218,6 +218,49 @@ export interface AmountRequest {
 export interface AffiliateTransferRequest {
   /** Quota amount to transfer */
   quota: number
+  /**
+   * Client-generated idempotency key. The server folds repeated submissions
+   * (double click, network retry, two sessions) into a single credit and
+   * rejects requests that omit it.
+   */
+  idempotency_key: string
+}
+
+/** Single invite reward ledger entry status */
+export type InviteRewardStatus = 'frozen' | 'available' | 'withdrawn'
+
+/** Single invite reward ledger entry */
+export interface InviteRewardItem {
+  id: number
+  kind: string
+  quota: number
+  remaining_quota: number
+  status: InviteRewardStatus
+  created_at: number
+  /** Server timestamp (seconds) when this reward becomes withdrawable */
+  next_available_at: number
+}
+
+/** Invite reward summary returned with the wallet user payload */
+export interface InviteRewardSummary {
+  aff_quota: number
+  aff_history_quota: number
+  aff_count: number
+  /** Rewards still inside the per-reward freeze window */
+  frozen_quota: number
+  /** Rewards that can be withdrawn right now */
+  withdrawable_quota: number
+  /** Already withdrawn rewards */
+  withdrawn_quota: number
+  /** Earliest next availability timestamp (seconds), 0 when nothing is frozen */
+  next_available_at: number
+  /** Minimum withdrawal amount in quota units */
+  minimum_quota: number
+  /** Currently effective freeze duration in seconds */
+  freeze_seconds: number
+  /** Server time used to compute the statuses above (seconds) */
+  server_time: number
+  rewards: InviteRewardItem[]
 }
 
 /**
@@ -242,6 +285,8 @@ export interface UserWalletData {
   aff_count: number
   /** User group */
   group: string
+  /** Per-reward freeze and withdrawal state for the referral program */
+  referral_rewards?: InviteRewardSummary
 }
 
 /**

@@ -74,6 +74,14 @@ const serverErrorMessageKeys = {
   TELEGRAM_BIND_USER_DELETED: 'This user account no longer exists.',
   TELEGRAM_BIND_USER_DISABLED: 'This user account is disabled.',
   TELEGRAM_BIND_INTERNAL_ERROR: 'Telegram binding failed. Please try again.',
+
+  // 《API 服务、隐私与使用责任协议》同意校验失败。服务端在建立会话前校验，
+  // 登录、注册、OAuth 发起与微信回调都会返回这两个 code；前端必须给出
+  // 「回到登录页重新阅读并勾选」的明确指引，而不是通用失败提示。
+  legal_consent_required:
+    'Please return to the sign-in page, read and accept the 《API 服务、隐私与使用责任协议》, then try again.',
+  legal_consent_outdated:
+    'The agreement has been updated. Refresh the page, then read and accept the 《API 服务、隐私与使用责任协议》 again.',
 } as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {

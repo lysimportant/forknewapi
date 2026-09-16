@@ -63,6 +63,11 @@ func WeChatAuth(c *gin.Context) {
 		})
 		return
 	}
+	// 微信回调只带 code，协议确认随授权地址回传。这里统一记录并校验一次，
+	// 已有账号登录与自动注册都必须满足同一要求，会话建立前还会再复核。
+	if !setAndRequireLoginConsent(c, true, c.Query("consent_version")) {
+		return
+	}
 	code := c.Query("code")
 	wechatId, err := getWeChatIdByCode(code)
 	if err != nil {
@@ -93,6 +98,7 @@ func WeChatAuth(c *gin.Context) {
 		}
 	} else {
 		if common.RegisterEnabled {
+			// 协议确认已在入口处统一校验，此处只创建经同意的账号。
 			user.Username = "wechat_" + strconv.Itoa(model.GetMaxUserId()+1)
 			user.DisplayName = "WeChat User"
 			user.Role = common.RoleCommonUser

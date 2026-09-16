@@ -21,11 +21,12 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
+import { AnnouncementTimelineDialog } from '@/features/announcements/components/announcement-timeline-dialog'
 import { useNotifications } from '@/hooks/use-notifications'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
 import { defaultTopNavLinks } from '../config/top-nav.config'
-import { type TopNavLink } from '../types'
+import type { TopNavLink } from '../types'
 import { Header } from './header'
 import { SystemBrand } from './system-brand'
 import { TopNav } from './top-nav'
@@ -137,6 +138,7 @@ export function AppHeader({
                 notice={notifications.notice}
                 announcements={notifications.announcements}
                 loading={notifications.loading}
+                onViewAllAnnouncements={notifications.openTimeline}
               />
             )}
             <LanguageSwitcher />
@@ -145,6 +147,15 @@ export function AppHeader({
           </div>
         )}
       </Header>
+
+      {/* 时间轴弹窗只在控制台布局挂载：登录页不会自动遮挡登录流程 */}
+      <AnnouncementTimelineDialog
+        open={notifications.timelineOpen}
+        onOpenChange={notifications.setTimelineOpen}
+        announcements={notifications.allAnnouncements}
+        onCloseForToday={notifications.closeTimelineForToday}
+        closeTodayPersists={notifications.closeTodayPersists}
+      />
     </>
   )
 }
