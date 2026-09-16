@@ -130,16 +130,14 @@ export function AffiliateRewardsCard({
               {t('Reward Details')}
             </Button>
           )}
-          {hasWithdrawable && (
-            <Button
-              onClick={onTransfer}
-              disabled={!complianceConfirmed}
-              className='h-9 shrink-0 px-3'
-              size='sm'
-            >
-              {t('Withdraw')}
-            </Button>
-          )}
+          <Button
+            onClick={onTransfer}
+            disabled={!hasWithdrawable || !complianceConfirmed}
+            className='h-9 shrink-0 px-3'
+            size='sm'
+          >
+            {t('Withdraw')}
+          </Button>
         </div>
 
         {!hasWithdrawable && nextAvailableAt > 0 ? (

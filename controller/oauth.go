@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,26 @@ type oauthFlowPayload struct {
 	// ConsentVersion 把发起流程时确认的协议版本绑定到服务端 state，
 	// 回调据此恢复同样的确认，不依赖浏览器端存储。
 	ConsentVersion string `json:"consent_version,omitempty"`
+	// BrowserTokenHash 将登录回调绑定到发起浏览器的 HttpOnly Cookie，不保存 Cookie 原值。
+	BrowserTokenHash string `json:"browser_token_hash,omitempty"`
+}
+
+// oauthLoginBrowserCookie 为单次 OAuth 登录生成浏览器绑定 Cookie；负数有效期表示清除。
+// HTTPS 模式使用 __Host- 前缀，禁止子域覆盖；独立名称允许多个登录流程并行。
+func oauthLoginBrowserCookie(state, token string, maxAge int) *http.Cookie {
+	prefix := "new_api_oauth_"
+	if common.SessionCookieSecure {
+		prefix = "__Host-" + prefix
+	}
+	expires := time.Now().Add(oauthAuthFlowTTL)
+	if maxAge < 0 {
+		expires = time.Unix(1, 0)
+	}
+	return &http.Cookie{
+		Name:  prefix + common.GenerateHMACWithKey([]byte(common.SessionSecret), state)[:24],
+		Value: token, Path: "/", MaxAge: maxAge, Expires: expires,
+		HttpOnly: true, Secure: common.SessionCookieSecure, SameSite: http.SameSiteLaxMode,
+	}
 }
 
 // providerParams returns map with Provider key for i18n templates
@@ -70,6 +92,7 @@ func GenerateOAuthCode(c *gin.Context) {
 	userID := 0
 	sessionID := ""
 	flowPayload := oauthFlowPayload{AffiliateCode: request.Aff}
+	browserToken := ""
 	bindingStarted := false
 	// 登录流程必须携带协议确认；绑定与二次验证由已登录会话发起，不重复要求。
 	if request.Intent == model.AuthFlowIntentLogin {
@@ -78,6 +101,8 @@ func GenerateOAuthCode(c *gin.Context) {
 			return
 		}
 		flowPayload.ConsentVersion = system_setting.CurrentLegalConsentVersion
+		browserToken = rand.Text()
+		flowPayload.BrowserTokenHash = common.GenerateHMACWithKey([]byte(common.SessionSecret), browserToken)
 	}
 	if request.Provider == "telegram" {
 		telegramFlow, err := oauth.NewTelegramOAuthFlow()
@@ -146,6 +171,9 @@ func GenerateOAuthCode(c *gin.Context) {
 		return
 	}
 	bindingStarted = request.Intent == model.AuthFlowIntentBind
+	if request.Intent == model.AuthFlowIntentLogin {
+		http.SetCookie(c.Writer, oauthLoginBrowserCookie(state, browserToken, int(oauthAuthFlowTTL/time.Second)))
+	}
 	data := gin.H{"flow_token": state, "expires_at": expiresAt.Unix()}
 	if flowPayload.Telegram != nil {
 		data["authorization_url"] = flowPayload.Telegram.AuthorizationURL(state)
@@ -187,6 +215,18 @@ func HandleOAuth(c *gin.Context) {
 		Purpose:  model.AuthFlowPurposeOAuth,
 		Provider: providerName,
 		Intent:   pendingFlow.Intent,
+	}
+	var loginBrowserCookie *http.Cookie
+	if pendingFlow.Intent == model.AuthFlowIntentLogin {
+		var payload oauthFlowPayload
+		bindingCookie := oauthLoginBrowserCookie(state, "", -1)
+		cookies := c.Request.CookiesNamed(bindingCookie.Name)
+		if common.UnmarshalJsonStr(pendingFlow.Payload, &payload) != nil || payload.BrowserTokenHash == "" || len(cookies) != 1 ||
+			subtle.ConstantTimeCompare([]byte(payload.BrowserTokenHash), []byte(common.GenerateHMACWithKey([]byte(common.SessionSecret), cookies[0].Value))) != 1 {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": i18n.T(c, i18n.MsgOAuthStateInvalid)})
+			return
+		}
+		loginBrowserCookie = bindingCookie
 	}
 	bindSucceeded, notificationFailed := false, false
 	if pendingFlow.Intent == model.AuthFlowIntentBind {
@@ -263,6 +303,9 @@ func HandleOAuth(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": i18n.T(c, i18n.MsgOAuthStateInvalid)})
 			return
 		}
+		if loginBrowserCookie != nil {
+			http.SetCookie(c.Writer, loginBrowserCookie)
+		}
 		errorDescription := c.Query("error_description")
 		if errorDescription == "" {
 			errorDescription = errorCode
@@ -304,6 +347,9 @@ func HandleOAuth(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": i18n.T(c, i18n.MsgOAuthStateInvalid)})
 		return
 	}
+	if loginBrowserCookie != nil {
+		http.SetCookie(c.Writer, loginBrowserCookie)
+	}
 
 	switch flow.Intent {
 	case model.AuthFlowIntentLogin:
@@ -336,8 +382,10 @@ func handleOAuthLogin(c *gin.Context, provider oauth.Provider, oauthUser *oauth.
 		writeSecurityOperationError(c, err)
 		return
 	}
-	// 从服务端流程状态恢复协议确认：回调不依赖浏览器端凭据，也无法串用他人确认。
-	setLoginConsent(c, true, payload.ConsentVersion)
+	// 在账号创建或外部身份迁移前复核服务端流程绑定的协议版本。
+	if !setAndRequireLoginConsent(c, true, payload.ConsentVersion) {
+		return
+	}
 	user, err := findOrCreateOAuthUser(c, provider, oauthUser, payload.AffiliateCode)
 	if err != nil {
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {

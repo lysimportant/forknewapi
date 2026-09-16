@@ -38,8 +38,6 @@ import { updateSystemOption } from '../../api'
 import { FAQSection } from '../../content/faq-section'
 import { useUpdateOption } from '../use-update-option'
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-
 /** 仅替换外部传输层；真实保存 API、请求及响应拦截器均参与测试。 */
 const transport = vi.fn<AxiosAdapter>()
 /** 保存测试前的传输配置，结束时恢复，避免影响其他测试。 */
@@ -64,6 +62,9 @@ function setup() {
 }
 
 beforeEach(() => {
+  // 去重包装器在模块加载时替换 Sonner 方法，需监听最终导出的方法。
+  vi.spyOn(toast, 'success').mockReturnValue('test-success')
+  vi.spyOn(toast, 'error').mockReturnValue('test-error')
   responseBody = { success: true, message: '' }
   transport.mockReset()
   transport.mockImplementation(async (config) => ({

@@ -17,10 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import '@testing-library/jest-dom/vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
 import i18next from 'i18next'
 import { initReactI18next } from 'react-i18next'
 import { afterEach, beforeAll } from 'vitest'
+
+// 并发编译时仍等待可观察的异步结果，不把调度延迟当作交互失败。
+configure({ asyncUtilTimeout: 5000 })
 
 beforeAll(async () => {
   await i18next.use(initReactI18next).init({
@@ -41,7 +44,8 @@ afterEach(() => {
 Object.defineProperty(window, 'matchMedia', {
   configurable: true,
   value: (query: string): MediaQueryList => ({
-    matches: false,
+    // 行为测试采用减少动态效果，动画与像素表现由浏览器验收覆盖。
+    matches: /^\(prefers-reduced-motion(?::\s*reduce)?\)$/.test(query),
     media: query,
     onchange: null,
     addListener: () => undefined,
@@ -55,6 +59,7 @@ Object.defineProperty(window, 'matchMedia', {
 window.requestAnimationFrame = (callback: FrameRequestCallback) =>
   window.setTimeout(() => callback(performance.now()), 0)
 window.cancelAnimationFrame = (handle: number) => window.clearTimeout(handle)
+window.scrollTo = () => undefined
 
 class ResizeObserverMock {
   observe(): void {}

@@ -29,14 +29,24 @@ import userEvent from '@testing-library/user-event'
 import { AxiosError, type AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { About } from '../index'
 import { api } from '@/lib/api'
+
+import { About } from '../index'
 
 /** 保存请求适配器，测试只替换网络边界并在结束时恢复。 */
 const originalAdapter = api.defaults.adapter
 
-/** 项目归属信息由 <Footer /> 提供，必须在所有分支中可见且指向项目仓库。 */
-const ATTRIBUTION_URL = 'https://github.com/QuantumNous/new-api'
+/** 关于页在所有内容模式下保留项目、作者和许可证归属。 */
+const ATTRIBUTION_LINKS = [
+  ['NewAPI', 'https://github.com/QuantumNous/new-api'],
+  ['QuantumNous', 'https://github.com/QuantumNous'],
+  ['One API', 'https://github.com/songquanpeng/one-api'],
+  ['JustSong', 'https://github.com/songquanpeng'],
+  [
+    'AGPL v3.0 License',
+    'https://github.com/QuantumNous/new-api/blob/main/LICENSE',
+  ],
+] as const
 
 function stubAboutResponse(data: unknown) {
   const adapter = vi.fn<AxiosAdapter>(async (config) => ({
@@ -96,12 +106,15 @@ function renderAbout() {
   return { view, queryClient }
 }
 
-function attributionLink(): HTMLElement | null {
-  return (
-    screen
-      .queryAllByRole('link', { name: 'New API' })
-      .find((link) => link.getAttribute('href') === ATTRIBUTION_URL) ?? null
-  )
+/** 每个归属链接都必须可见、保持原目标并隔离新窗口。 */
+function expectProjectAttribution(): void {
+  for (const [name, href] of ATTRIBUTION_LINKS) {
+    const link = screen.getByRole('link', { name })
+    expect(link).toBeVisible()
+    expect(link).toHaveAttribute('href', href)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  }
 }
 
 beforeEach(() => {
@@ -113,22 +126,31 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('加载失败时显示错误状态与重试，而不是空状态', async () => {
-  api.defaults.adapter = async (config) => {
-    throw new AxiosError('Network Error', 'ERR_NETWORK', config)
+it.each(['network', 'business'])(
+  '%s 加载失败时显示错误与重试并保留完整归属，而不是空状态',
+  async (failure) => {
+    if (failure === 'network') {
+      api.defaults.adapter = async (config) => {
+        throw new AxiosError('Network Error', 'ERR_NETWORK', config)
+      }
+    } else {
+      stubAboutResponse({ success: false, message: 'Unavailable' })
+    }
+    const { view, queryClient } = renderAbout()
+
+    expect(
+      await screen.findByText('Failed to load the about page')
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(
+      screen.queryByText('No site introduction yet')
+    ).not.toBeInTheDocument()
+    expectProjectAttribution()
+
+    view.unmount()
+    queryClient.clear()
   }
-  const { view, queryClient } = renderAbout()
-
-  expect(
-    await screen.findByText('Failed to load the about page')
-  ).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
-  expect(screen.queryByText('No site introduction yet')).not.toBeInTheDocument()
-  expect(attributionLink()).not.toBeNull()
-
-  view.unmount()
-  queryClient.clear()
-})
+)
 
 it('管理员未配置内容时保留完整介绍版式并说明未配置', async () => {
   stubAboutResponse({ success: true, message: '', data: '' })
@@ -141,7 +163,25 @@ it('管理员未配置内容时保留完整介绍版式并说明未配置', asyn
   expect(screen.getByText('Get started in three steps')).toBeInTheDocument()
   expect(screen.getByText('Service scope and privacy')).toBeInTheDocument()
   expect(screen.getByText('No site introduction yet')).toBeInTheDocument()
-  expect(attributionLink()).not.toBeNull()
+  expectProjectAttribution()
+
+  view.unmount()
+  queryClient.clear()
+})
+
+it('隐私摘要保留不售卖承诺并明确必要的上游处理及其适用政策', async () => {
+  stubAboutResponse({ success: true, message: '', data: '' })
+  const { view, queryClient } = renderAbout()
+  expect(
+    await screen.findByText(
+      'Personal information, account details, prompts, and model replies are not sold or rented. Content is sent to the selected upstream model service only to process your request; its data handling and retention policies apply.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByText(
+      'Personal information, account details, prompts, and model replies are not sold, rented, or provided to others.'
+    )
+  ).not.toBeInTheDocument()
 
   view.unmount()
   queryClient.clear()
@@ -160,7 +200,7 @@ it('单行文本作为站点介绍正文渲染并保留归属信息', async () =
     screen.getByText('A single line about this gateway.')
   ).toBeInTheDocument()
   expect(screen.queryByText('No site introduction yet')).not.toBeInTheDocument()
-  expect(attributionLink()).not.toBeNull()
+  expectProjectAttribution()
 
   view.unmount()
   queryClient.clear()
@@ -178,7 +218,7 @@ it('Markdown 内容渲染在站点介绍区域', async () => {
     await screen.findByRole('heading', { name: 'Gateway headline' })
   ).toBeInTheDocument()
   expect(screen.getByText('Body paragraph.')).toBeInTheDocument()
-  expect(attributionLink()).not.toBeNull()
+  expectProjectAttribution()
 
   view.unmount()
   queryClient.clear()
@@ -192,15 +232,19 @@ it('隔离 HTML 模式不套用模板且保留归属信息', async () => {
   })
   const { view, queryClient } = renderAbout()
 
-  await waitFor(() =>
-    expect(attributionLink()).not.toBeNull()
-  )
+  await waitFor(() => {
+    const roots = [...view.container.querySelectorAll('div')].map(
+      (element) => element.shadowRoot
+    )
+    expect(
+      roots.some((root) => root?.textContent?.includes('Custom HTML body'))
+    ).toBe(true)
+  })
+  expectProjectAttribution()
   expect(screen.queryByText('Site introduction')).not.toBeInTheDocument()
   expect(screen.queryByText('Unified API access')).not.toBeInTheDocument()
   expect(view.container.querySelector('iframe')).toBeNull()
-  // 隔离变体挂载在 shadow root 中，正文不会进入页面 DOM。
-  const hosts = [...view.container.querySelectorAll('div')]
-  expect(hosts.some((element) => element.shadowRoot !== null)).toBe(true)
+  expect(screen.queryByText('Custom HTML body')).not.toBeInTheDocument()
 
   view.unmount()
   queryClient.clear()
@@ -221,7 +265,7 @@ it('URL 模式保留 iframe sandbox 且保留归属信息', async () => {
     'allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
   )
   expect(screen.queryByText('Site introduction')).not.toBeInTheDocument()
-  expect(attributionLink()).not.toBeNull()
+  expectProjectAttribution()
 
   view.unmount()
   queryClient.clear()
@@ -249,9 +293,7 @@ it('重试按钮在恢复后重新渲染介绍内容', async () => {
   await screen.findByText('Failed to load the about page')
   await user.click(screen.getByRole('button', { name: 'Retry' }))
 
-  expect(
-    await screen.findByText('Recovered introduction.')
-  ).toBeInTheDocument()
+  expect(await screen.findByText('Recovered introduction.')).toBeInTheDocument()
 
   view.unmount()
   queryClient.clear()

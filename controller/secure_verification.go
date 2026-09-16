@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
 )
@@ -27,13 +28,16 @@ func GetVerificationMethods(c *gin.Context) {
 	common.ApiSuccess(c, requirements)
 }
 
-// writeSecurityOperationError only exposes known, fixed business messages.
-// Unexpected errors retain their cause for the existing server-side auth logger.
+// writeSecurityOperationError 将已知认证错误映射为固定业务响应；协议错误附带当前版本，
+// 未知错误仅由服务端日志保留原因，响应不回显内部信息。
 func writeSecurityOperationError(c *gin.Context, err error) {
 	status := http.StatusOK
 	var code, message string
 	var protocolError *protocol.Error
 	switch {
+	case errors.Is(err, system_setting.ErrLegalConsentRequired), errors.Is(err, system_setting.ErrLegalConsentOutdated):
+		writeLegalConsentError(c, err)
+		return
 	case errors.Is(err, service.ErrAccountEmailInvalid), errors.Is(err, service.ErrAccountEmailRestricted):
 		code, message = "EMAIL_ADDRESS_REJECTED", err.Error()
 	case errors.Is(err, model.ErrEmailAlreadyTaken):

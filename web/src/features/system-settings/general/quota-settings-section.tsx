@@ -17,6 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { Link } from '@tanstack/react-router'
+import { ArrowRight } from 'lucide-react'
 import type { ChangeEvent } from 'react'
 import type { Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -56,9 +58,6 @@ const quotaSchema = z.object({
   QuotaForInviter: z.coerce.number().min(0),
   QuotaForInvitee: z.coerce.number().min(0),
   TopUpLink: z.string(),
-  general_setting: z.object({
-    docs_link: z.string(),
-  }),
   quota_setting: z.object({
     enable_free_model_pre_consume: z.boolean(),
   }),
@@ -76,6 +75,7 @@ type QuotaSettingsSectionProps = {
   complianceConfirmed?: boolean
 }
 
+/** 管理额度与奖励配置；文档链接统一由系统公告页维护。 */
 export function QuotaSettingsSection({
   defaultValues,
   complianceConfirmed = true,
@@ -283,25 +283,22 @@ export function QuotaSettingsSection({
               )}
             />
 
-            <FormField
-              control={form.control}
-              name='general_setting.docs_link'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Documentation Link')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder={t('https://docs.example.com')}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('Link to your documentation site')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            <SettingsFormGridItem className='space-y-2'>
+              <p className='text-sm font-medium'>{t('Documentation Link')}</p>
+              <div className='flex flex-wrap items-center gap-1 text-sm'>
+                <span className='text-muted-foreground'>
+                  {t('Configure at:')}
+                </span>
+                <Link
+                  to='/system-settings/site/$section'
+                  params={{ section: 'notice' }}
+                  className='text-primary inline-flex items-center gap-1 underline-offset-4 hover:underline'
+                >
+                  {t('System Notice')}
+                  <ArrowRight aria-hidden='true' className='size-4' />
+                </Link>
+              </div>
+            </SettingsFormGridItem>
           </SettingsFormGrid>
         </SettingsForm>
       </Form>

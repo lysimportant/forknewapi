@@ -3846,7 +3846,7 @@
     "Personal area": "Личный кабинет",
     "Personal Center Area": "Область личного кабинета",
     "Personal info settings": "Настройки личной информации",
-    "Personal information, account details, prompts, and model replies are not sold, rented, or provided to others.": "Персональная информация, данные аккаунта, запросы и ответы моделей не продаются, не сдаются в аренду и не передаются третьим лицам.",
+    "Personal information, account details, prompts, and model replies are not sold or rented. Content is sent to the selected upstream model service only to process your request; its data handling and retention policies apply.": "Персональные данные, сведения об аккаунте, запросы и ответы моделей не продаются и не сдаются в аренду. Содержимое передаётся выбранному внешнему сервису модели только для обработки вашего запроса; действуют его политики обработки и хранения данных.",
     "Personal Settings": "Личные настройки",
     "Personal settings and profile management.": "Персональные настройки и управление профилем.",
     "Personal use": "Личное использование",

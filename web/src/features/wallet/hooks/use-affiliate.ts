@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
@@ -34,6 +34,11 @@ export function useAffiliate() {
   const [affiliateLink, setAffiliateLink] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [transferring, setTransferring] = useState(false)
+  const transferInFlight = useRef(false)
+  const pendingTransfer = useRef<{
+    quota: number
+    idempotency_key: string
+  } | null>(null)
   const { copyToClipboard } = useCopyToClipboard()
 
   // Fetch affiliate code
@@ -60,17 +65,20 @@ export function useAffiliate() {
     copyToClipboard(affiliateLink)
   }, [affiliateLink, copyToClipboard])
 
-  // Transfer affiliate quota to balance.
-  // The idempotency key is generated per submission so a retry of the same
-  // submission cannot credit the wallet twice; a fresh user action gets a new
-  // key and is therefore a distinct, legitimate withdrawal.
+  // 网络失败不能证明未入账，同金额重试必须沿用标识；收到明确结果后才开始下一笔。
   const transferQuota = useCallback(async (quota: number): Promise<boolean> => {
+    if (transferInFlight.current) return false
+    transferInFlight.current = true
     try {
       setTransferring(true)
-      const response = await transferAffiliateQuota({
-        quota,
-        idempotency_key: createIdempotencyKey(),
-      })
+      if (!pendingTransfer.current || pendingTransfer.current.quota !== quota) {
+        pendingTransfer.current = {
+          quota,
+          idempotency_key: createIdempotencyKey(),
+        }
+      }
+      const response = await transferAffiliateQuota(pendingTransfer.current)
+      pendingTransfer.current = null
 
       if (response.success) {
         toast.success(response.message || i18next.t('Transfer successful'))
@@ -83,6 +91,7 @@ export function useAffiliate() {
       toast.error(i18next.t('Transfer failed'))
       return false
     } finally {
+      transferInFlight.current = false
       setTransferring(false)
     }
   }, [])

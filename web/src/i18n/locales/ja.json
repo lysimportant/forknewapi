@@ -3846,7 +3846,7 @@
     "Personal area": "個人エリア",
     "Personal Center Area": "パーソナルセンターエリア",
     "Personal info settings": "個人情報設定",
-    "Personal information, account details, prompts, and model replies are not sold, rented, or provided to others.": "個人情報、アカウント情報、プロンプト、モデルの応答は、販売・貸与・第三者提供を行いません。",
+    "Personal information, account details, prompts, and model replies are not sold or rented. Content is sent to the selected upstream model service only to process your request; its data handling and retention policies apply.": "個人情報、アカウント情報、入力内容、モデルの回答を販売・貸与しません。内容はリクエストの処理に必要な場合に限り、選択された上流モデルサービスに送信され、そのサービスのデータ処理・保持ポリシーが適用されます。",
     "Personal Settings": "個人設定",
     "Personal settings and profile management.": "個人設定とプロフィール管理。",
     "Personal use": "個人利用",

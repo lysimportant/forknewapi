@@ -44,10 +44,15 @@ func newSecurityLoginPasskey(t *testing.T, userID int) *ecdsa.PrivateKey {
 	return key
 }
 
-// loginOAuthFlowPayload 构造带协议确认的登录流程载荷，与服务端发起流程时写入的
-// 字段保持一致；直接建流程的用例必须显式带上确认版本，否则会话建立会被拒绝。
+// oauthTestBrowserToken 是测试浏览器的绑定 Cookie，只用于本地认证夹具。
+const oauthTestBrowserToken = "oauth-test-browser-token"
+
+// loginOAuthFlowPayload 构造带协议确认和测试浏览器绑定的登录流程载荷。
 func loginOAuthFlowPayload() string {
-	payload, err := common.Marshal(oauthFlowPayload{ConsentVersion: system_setting.CurrentLegalConsentVersion})
+	payload, err := common.Marshal(oauthFlowPayload{
+		ConsentVersion:   system_setting.CurrentLegalConsentVersion,
+		BrowserTokenHash: common.GenerateHMACWithKey([]byte(common.SessionSecret), oauthTestBrowserToken),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -366,7 +371,7 @@ func TestSecurityLoginAllPrimaryTransportsRequireAdditionalVerification(t *testi
 			case "telegram":
 				require.NoError(t, model.DB.Model(user).Update("telegram_id", "42").Error)
 				state, code := telegram.authorization(t, "login", service.AuthIdentity{}, "", telegramIdentityClaims(42))
-				response = telegramOAuthCallback(state, code, service.AuthIdentity{})
+				response = telegram.callback(state, code, service.AuthIdentity{})
 			case "wechat":
 				require.NoError(t, model.DB.Model(user).Update("wechat_id", "bound-wechat").Error)
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -404,7 +409,9 @@ func TestSecurityLoginAllPrimaryTransportsRequireAdditionalVerification(t *testi
 				router := gin.New()
 				router.GET("/api/oauth/:provider", HandleOAuth)
 				response = httptest.NewRecorder()
-				router.ServeHTTP(response, httptest.NewRequest("GET", "/api/oauth/"+slug+"?state="+token+"&code=provider-code", nil))
+				request := httptest.NewRequest("GET", "/api/oauth/"+slug+"?state="+token+"&code=provider-code", nil)
+				request.AddCookie(oauthLoginBrowserCookie(token, oauthTestBrowserToken, 600))
+				router.ServeHTTP(response, request)
 			}
 			var result struct {
 				Success bool                   `json:"success"`
@@ -415,7 +422,9 @@ func TestSecurityLoginAllPrimaryTransportsRequireAdditionalVerification(t *testi
 			assert.True(t, result.Data.RequireVerification)
 			assert.Equal(t, []service.VerificationMethodOption{{Method: "passkey", Available: true}}, result.Data.Methods)
 			assert.NotEmpty(t, result.Data.FlowToken)
-			assert.Empty(t, response.Header().Values("Set-Cookie"))
+			for _, cookie := range response.Result().Cookies() {
+				assert.NotEqual(t, service.RefreshCookieName, cookie.Name, "a pending challenge must not issue a session cookie")
+			}
 			count, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
 			require.NoError(t, err)
 			assert.EqualValues(t, 1, count)
@@ -740,6 +749,92 @@ func TestGenerateOAuthCodeBindsFlowToAuthenticatedSession(t *testing.T) {
 	assert.Equal(t, identity.SessionID, flow.SessionId)
 }
 
+// TestOAuthLoginBindsCallbackToBrowser 验证登录 state 与浏览器 Cookie 同时匹配才可建立会话，
+// 并覆盖过期、重放及缺少绑定的旧流程，不访问外部身份服务。
+func TestOAuthLoginBindsCallbackToBrowser(t *testing.T) {
+	for _, scenario := range []string{"normal", "missing cookie", "other browser", "duplicate cookie", "expired", "missing binding"} {
+		t.Run(scenario, func(t *testing.T) {
+			user, _ := setupSecurityEnrollmentTest(t)
+			previousSecure := common.SessionCookieSecure
+			common.SessionCookieSecure = true
+			t.Cleanup(func() { common.SessionCookieSecure = previousSecure })
+			provider := &boundLoginOAuthProvider{userID: user.Id}
+			const slug = "browser-binding-test"
+			oauth.Register(slug, provider)
+			t.Cleanup(func() { oauth.Unregister(slug) })
+			body := fmt.Sprintf(`{"provider":%q,"intent":"login",%s}`, slug, consentJSONFields())
+			started := securityEnrollmentRequest(http.MethodPost, "/api/oauth/state", body, "", service.AuthIdentity{}, GenerateOAuthCode)
+			var result struct {
+				Success bool `json:"success"`
+				Data    struct {
+					FlowToken string `json:"flow_token"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(started.Body.Bytes(), &result))
+			require.True(t, result.Success, started.Body.String())
+			cookies := started.Result().Cookies()
+			require.Len(t, cookies, 1)
+			assert.True(t, cookies[0].HttpOnly)
+			assert.True(t, cookies[0].Secure)
+			assert.Equal(t, http.SameSiteLaxMode, cookies[0].SameSite)
+			assert.Equal(t, "/", cookies[0].Path)
+			assert.Equal(t, 600, cookies[0].MaxAge)
+			assert.Empty(t, cookies[0].Domain)
+			assert.True(t, strings.HasPrefix(cookies[0].Name, "__Host-"))
+			flow, err := model.GetAuthFlow(result.Data.FlowToken, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeOAuth})
+			require.NoError(t, err)
+			assert.NotContains(t, flow.Payload, cookies[0].Value, "the server must persist only the browser-token digest")
+			assert.NotContains(t, started.Body.String(), cookies[0].Value, "the binding token must only be sent as HttpOnly Cookie")
+			request := httptest.NewRequest(http.MethodGet, "/api/oauth/"+slug+"?state="+result.Data.FlowToken+"&code=test", nil)
+			switch scenario {
+			case "other browser":
+				cookies[0].Value = "another-browser"
+			case "duplicate cookie":
+				request.AddCookie(cookies[0])
+			case "expired":
+				require.NoError(t, model.DB.Model(flow).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+			case "missing binding":
+				payload, err := common.Marshal(oauthFlowPayload{ConsentVersion: system_setting.CurrentLegalConsentVersion})
+				require.NoError(t, err)
+				require.NoError(t, model.DB.Model(flow).Update("payload", string(payload)).Error)
+			}
+			if scenario != "missing cookie" {
+				request.AddCookie(cookies[0])
+			}
+			before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			router := gin.New()
+			router.GET("/api/oauth/:provider", HandleOAuth)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			if scenario != "normal" {
+				assert.Equal(t, http.StatusForbidden, response.Code)
+				assert.NotContains(t, response.Body.String(), "access_token")
+				assert.Empty(t, response.Header().Values("Set-Cookie"))
+				assert.Zero(t, provider.exchangeCalls, "reject before sending a callback code to the provider")
+				assert.Equal(t, before, after)
+				return
+			}
+			assert.Contains(t, response.Body.String(), `"access_token":`)
+			assert.Equal(t, before+1, after)
+			assert.Equal(t, 1, provider.exchangeCalls)
+			cleared := false
+			for _, cookie := range response.Result().Cookies() {
+				if cookie.Name == cookies[0].Name {
+					cleared = cookie.MaxAge < 0
+				}
+			}
+			assert.True(t, cleared, "a consumed flow must clear its browser binding")
+			replay := httptest.NewRecorder()
+			router.ServeHTTP(replay, request.Clone(context.Background()))
+			assert.Equal(t, http.StatusForbidden, replay.Code)
+			assert.Equal(t, 1, provider.exchangeCalls, "replay must not exchange the code again")
+		})
+	}
+}
+
 func TestOAuthLoginConsumesFlowOnlyAfterProviderIdentity(t *testing.T) {
 	provider := setupAuthFlowControllerTest(t)
 
@@ -757,13 +852,14 @@ func TestOAuthLoginConsumesFlowOnlyAfterProviderIdentity(t *testing.T) {
 			provider.userInfoErr = test.userInfoErr
 			token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
 				Purpose: model.AuthFlowPurposeOAuth, Provider: "auth-flow-test", Intent: model.AuthFlowIntentLogin,
-				Payload: `{}`, ExpiresAt: time.Now().Add(time.Minute),
+				Payload: loginOAuthFlowPayload(), ExpiresAt: time.Now().Add(time.Minute),
 			})
 			require.NoError(t, err)
 
 			router := gin.New()
 			router.GET("/api/oauth/:provider", HandleOAuth)
 			request := httptest.NewRequest(http.MethodGet, "/api/oauth/auth-flow-test?state="+token+"&code=test", nil)
+			request.AddCookie(oauthLoginBrowserCookie(token, oauthTestBrowserToken, 600))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 
@@ -783,12 +879,13 @@ func TestOAuthLoginConsumesFlowAfterProviderIdentityAndOnProviderError(t *testin
 	provider.userInfoErr = nil
 	successToken, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
 		Purpose: model.AuthFlowPurposeOAuth, Provider: "auth-flow-test", Intent: model.AuthFlowIntentLogin,
-		Payload: `{invalid`, ExpiresAt: time.Now().Add(time.Minute),
+		Payload: loginOAuthFlowPayload(), ExpiresAt: time.Now().Add(time.Minute),
 	})
 	require.NoError(t, err)
 	router := gin.New()
 	router.GET("/api/oauth/:provider", HandleOAuth)
 	request := httptest.NewRequest(http.MethodGet, "/api/oauth/auth-flow-test?state="+successToken+"&code=test", nil)
+	request.AddCookie(oauthLoginBrowserCookie(successToken, oauthTestBrowserToken, 600))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	_, err = model.GetAuthFlow(successToken, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeOAuth})
@@ -798,10 +895,11 @@ func TestOAuthLoginConsumesFlowAfterProviderIdentityAndOnProviderError(t *testin
 
 	providerErrorToken, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
 		Purpose: model.AuthFlowPurposeOAuth, Provider: "auth-flow-test", Intent: model.AuthFlowIntentLogin,
-		Payload: `{}`, ExpiresAt: time.Now().Add(time.Minute),
+		Payload: loginOAuthFlowPayload(), ExpiresAt: time.Now().Add(time.Minute),
 	})
 	require.NoError(t, err)
 	request = httptest.NewRequest(http.MethodGet, "/api/oauth/auth-flow-test?state="+providerErrorToken+"&error=access_denied", nil)
+	request.AddCookie(oauthLoginBrowserCookie(providerErrorToken, oauthTestBrowserToken, 600))
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	_, err = model.GetAuthFlow(providerErrorToken, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeOAuth})
@@ -970,55 +1068,109 @@ func TestLoginConsentEnforcement(t *testing.T) {
 		assert.Equal(t, currentVersion, payload.ConsentVersion, "the confirmed version must be bound to the server-owned flow")
 	})
 
-	t.Run("two factor flow started without consent cannot complete", func(t *testing.T) {
-		user, _ := setupSecurityEnrollmentTest(t)
-		factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
-		require.NoError(t, model.DB.Create(factor).Error)
-		// 直接以空版本启动验证流程，模拟绕过登录入口的旧客户端；建立会话前
-		// 必须复核流程内绑定的协议版本并拒绝。
-		challenge, err := service.StartLoginVerification(user, "password", "")
-		require.NoError(t, err)
-		require.NotNil(t, challenge)
-		code, err := totp.GenerateCode(factor.Secret, time.Now())
-		require.NoError(t, err)
-		before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
-		require.NoError(t, err)
-		body, err := common.Marshal(map[string]string{"flow_token": challenge.FlowToken, "code": code})
-		require.NoError(t, err)
+	for _, version := range []string{"", "2000-01-01"} {
+		t.Run("oauth callback rejects consent version "+version+" before registration", func(t *testing.T) {
+			setupSecurityEnrollmentTest(t)
+			previousRegister := common.RegisterEnabled
+			common.RegisterEnabled = true
+			t.Cleanup(func() { common.RegisterEnabled = previousRegister })
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/token" {
+					_, _ = w.Write([]byte(`{"access_token":"provider-token","token_type":"Bearer"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"sub":"new-external-user","name":"Consent OAuth User"}`))
+			}))
+			t.Cleanup(upstream.Close)
+			const slug = "consent-callback-test"
+			oauth.RegisterCustom(slug, oauth.NewGenericOAuthProvider(&model.CustomOAuthProvider{
+				Id: 42, Slug: slug, Name: "Consent OAuth", Enabled: true, ClientId: "client", ClientSecret: "secret", UserIdField: "sub",
+				TokenEndpoint: upstream.URL + "/token", UserInfoEndpoint: upstream.URL + "/userinfo",
+			}))
+			t.Cleanup(func() { oauth.Unregister(slug) })
+			payload, err := common.Marshal(oauthFlowPayload{ConsentVersion: version, BrowserTokenHash: common.GenerateHMACWithKey([]byte(common.SessionSecret), oauthTestBrowserToken)})
+			require.NoError(t, err)
+			token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
+				Purpose: model.AuthFlowPurposeOAuth, Provider: slug, Intent: model.AuthFlowIntentLogin,
+				Payload: string(payload), ExpiresAt: time.Now().Add(time.Minute),
+			})
+			require.NoError(t, err)
+			var before int64
+			require.NoError(t, model.DB.Model(&model.User{}).Count(&before).Error)
+			router := gin.New()
+			router.GET("/api/oauth/:provider", HandleOAuth)
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/api/oauth/"+slug+"?state="+token+"&code=provider-code", nil)
+			request.AddCookie(oauthLoginBrowserCookie(token, oauthTestBrowserToken, 600))
+			router.ServeHTTP(response, request)
 
-		response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/verify", string(body), "", service.AuthIdentity{}, VerifyLogin)
-
-		assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
-		assert.NotContains(t, response.Body.String(), "access_token")
-		assert.Empty(t, response.Header().Values("Set-Cookie"))
-		after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
-		require.NoError(t, err)
-		assert.Equal(t, before, after)
-	})
-
-	t.Run("passkey flow started without consent cannot complete", func(t *testing.T) {
-		user, _ := setupSecurityEnrollmentTest(t)
-		key := newSecurityLoginPasskey(t, user.Id)
-		pending, err := service.StartLoginVerification(user, "password", "")
-		require.NoError(t, err)
-		token, passkeyChallenge := beginSecurityLoginPasskey(t, pending.FlowToken)
-		before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
-		require.NoError(t, err)
-		body, err := common.Marshal(map[string]any{
-			"flow_token": pending.FlowToken, "passkey_flow_token": token,
-			"credential": securityPasskeyResponse(t, key, passkeyChallenge, false, 0),
+			assert.Contains(t, response.Body.String(), `"code":"legal_consent_outdated"`, response.Body.String())
+			cookies := response.Result().Cookies()
+			require.Len(t, cookies, 1)
+			assert.Equal(t, -1, cookies[0].MaxAge, "a rejected callback only clears its binding cookie")
+			var after, bindings int64
+			require.NoError(t, model.DB.Model(&model.User{}).Count(&after).Error)
+			require.NoError(t, model.DB.Model(&model.UserOAuthBinding{}).Count(&bindings).Error)
+			assert.Equal(t, before, after, "an outdated callback must not register an account")
+			assert.Zero(t, bindings, "an outdated callback must not bind an external identity")
+			_, err = model.GetAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeOAuth})
+			assert.ErrorIs(t, err, model.ErrAuthFlowConsumed, "the callback must remain single use")
 		})
-		require.NoError(t, err)
 
-		response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/passkey/finish", string(body), "", service.AuthIdentity{}, LoginPasskeyFinish)
+		t.Run("two factor rejects consent version "+version, func(t *testing.T) {
+			user, _ := setupSecurityEnrollmentTest(t)
+			factor := &model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}
+			require.NoError(t, model.DB.Create(factor).Error)
+			// 模拟缺少确认的旧流程或协议更新前的流程；建立会话前必须拒绝。
+			challenge, err := service.StartLoginVerification(user, "password", version)
+			require.NoError(t, err)
+			require.NotNil(t, challenge)
+			code, err := totp.GenerateCode(factor.Secret, time.Now())
+			require.NoError(t, err)
+			before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			body, err := common.Marshal(map[string]string{"flow_token": challenge.FlowToken, "code": code})
+			require.NoError(t, err)
 
-		assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
-		assert.NotContains(t, response.Body.String(), "access_token")
-		assert.Empty(t, response.Header().Values("Set-Cookie"))
-		after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
-		require.NoError(t, err)
-		assert.Equal(t, before, after)
-	})
+			response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/verify", string(body), "", service.AuthIdentity{}, VerifyLogin)
+
+			assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+			assert.Contains(t, response.Body.String(), `"code":"legal_consent_outdated"`, response.Body.String())
+			assert.Contains(t, response.Body.String(), `"consent_version":"`+currentVersion+`"`, response.Body.String())
+			assert.NotContains(t, response.Body.String(), "access_token")
+			assert.Empty(t, response.Header().Values("Set-Cookie"))
+			after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+
+		t.Run("passkey rejects consent version "+version, func(t *testing.T) {
+			user, _ := setupSecurityEnrollmentTest(t)
+			key := newSecurityLoginPasskey(t, user.Id)
+			pending, err := service.StartLoginVerification(user, "password", version)
+			require.NoError(t, err)
+			token, passkeyChallenge := beginSecurityLoginPasskey(t, pending.FlowToken)
+			before, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			body, err := common.Marshal(map[string]any{
+				"flow_token": pending.FlowToken, "passkey_flow_token": token,
+				"credential": securityPasskeyResponse(t, key, passkeyChallenge, false, 0),
+			})
+			require.NoError(t, err)
+
+			response := securityEnrollmentRequest(http.MethodPost, "/api/user/login/passkey/finish", string(body), "", service.AuthIdentity{}, LoginPasskeyFinish)
+
+			assert.Contains(t, response.Body.String(), `"success":false`, response.Body.String())
+			assert.Contains(t, response.Body.String(), `"code":"legal_consent_outdated"`, response.Body.String())
+			assert.Contains(t, response.Body.String(), `"consent_version":"`+currentVersion+`"`, response.Body.String())
+			assert.NotContains(t, response.Body.String(), "access_token")
+			assert.Empty(t, response.Header().Values("Set-Cookie"))
+			after, err := model.CountActiveUserSessions(user.Id, time.Now().Unix())
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
 }
 
 // setupRegistrationConsentTest 准备注册路径所需的数据库与 i18n 状态，并打开

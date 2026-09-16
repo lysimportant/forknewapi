@@ -35,7 +35,7 @@ export function AboutPrivacySummary() {
       icon: <ShieldCheck className='size-5' strokeWidth={1.5} />,
       title: t('We do not sell user data'),
       desc: t(
-        'Personal information, account details, prompts, and model replies are not sold, rented, or provided to others.'
+        'Personal information, account details, prompts, and model replies are not sold or rented. Content is sent to the selected upstream model service only to process your request; its data handling and retention policies apply.'
       ),
     },
     {

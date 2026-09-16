@@ -37,6 +37,8 @@ export default defineConfig({
     setupFiles: ['./src/test-setup.ts'],
     clearMocks: true,
     restoreMocks: true,
+    // 限制 JSDOM 并发，避免高核数机器同时编译重型依赖耗尽交互等待窗口。
+    maxWorkers: 4,
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
   },
 })

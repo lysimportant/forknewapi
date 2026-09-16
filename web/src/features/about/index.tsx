@@ -33,6 +33,82 @@ import { AboutHelp } from './components/about-help'
 import { AboutIntro } from './components/about-intro'
 import { AboutPrivacySummary } from './components/about-privacy-summary'
 
+/** 关于页保留完整开源归属，不受管理员内容模式或自定义页脚影响。 */
+function AboutFooter() {
+  const { t } = useTranslation()
+  const currentYear = new Date().getFullYear()
+
+  return (
+    <>
+      <section className='border-border/40 text-muted-foreground relative z-10 border-t px-6 py-8 text-center text-sm'>
+        <div className='mx-auto max-w-6xl space-y-3'>
+          <p>
+            {t('New API Project Repository:')}{' '}
+            <a
+              href='https://github.com/QuantumNous/new-api'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary break-all hover:underline'
+            >
+              {t('https://github.com/QuantumNous/new-api')}
+            </a>
+          </p>
+          <p>
+            <a
+              href='https://github.com/QuantumNous/new-api'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary hover:underline'
+            >
+              {t('NewAPI')}
+            </a>{' '}
+            &copy; {currentYear}{' '}
+            <a
+              href='https://github.com/QuantumNous'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary hover:underline'
+            >
+              {t('QuantumNous')}
+            </a>{' '}
+            {t('| Based on')}{' '}
+            <a
+              href='https://github.com/songquanpeng/one-api'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary hover:underline'
+            >
+              {t('One API')}
+            </a>{' '}
+            &copy; 2023{' '}
+            <a
+              href='https://github.com/songquanpeng'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary hover:underline'
+            >
+              {t('JustSong')}
+            </a>
+          </p>
+          <p>
+            {t('This project must be used in compliance with the')}{' '}
+            <a
+              href='https://github.com/QuantumNous/new-api/blob/main/LICENSE'
+              target='_blank'
+              rel='noopener noreferrer'
+              className='text-primary hover:underline'
+            >
+              {t('AGPL v3.0 License')}
+            </a>
+            .
+          </p>
+        </div>
+      </section>
+      <Footer />
+    </>
+  )
+}
+
 function AboutSkeleton() {
   return (
     <div className='mx-auto flex max-w-4xl flex-col gap-4 py-12'>
@@ -101,6 +177,7 @@ export function About() {
         <div className='px-6 pt-20'>
           <AboutSkeleton />
         </div>
+        <AboutFooter />
       </PublicLayout>
     )
   }
@@ -119,7 +196,7 @@ export function About() {
             }}
           />
         </div>
-        <Footer />
+        <AboutFooter />
       </PublicLayout>
     )
   }
@@ -133,7 +210,7 @@ export function About() {
           title={t('About')}
           sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
         />
-        <Footer />
+        <AboutFooter />
       </PublicLayout>
     )
   }
@@ -147,7 +224,7 @@ export function About() {
           content={rawContent}
           className='prose-neutral dark:prose-invert max-w-none'
         />
-        <Footer />
+        <AboutFooter />
       </PublicLayout>
     )
   }
@@ -158,7 +235,7 @@ export function About() {
       <SiteIntroduction content={rawContent} />
       <AboutPrivacySummary />
       <AboutHelp />
-      <Footer />
+      <AboutFooter />
     </PublicLayout>
   )
 }
