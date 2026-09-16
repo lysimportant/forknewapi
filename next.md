@@ -295,7 +295,7 @@
 - [x] 连点、网络重试、相同请求重放和两个会话并发只产生一次有效入账；失败整笔回滚。（`TestInviteRewardWithdrawIdempotentAndRejectsInvalidInput`、`TestInviteRewardConcurrentWithdrawCreditsOnce`，三数据库）
 - [x] 旧接口不能绕过等待期；越权、负数、零、超可提额、最低额和钱包上限都有覆盖。（原 `/api/user/aff_transfer` 路径即新实现，冻结校验不可绕过；上条用例含全部分支）
 - [x] 部分提现、刷新后明细/余额/缓存一致；历史结转幂等且可对账。（提交后同步缓存增量；`TestInitializeInviteRewardLedgerIsIdempotent` 含账本-汇总对账）
-- [ ] 真实三数据库及独立日志库所需验证通过；环境变量缺失导致的跳过不算通过。（三引擎矩阵已通过且未跳过；**独立日志库配置下的提现路径未单独执行**）
+- [x] 真实三数据库及独立日志库所需验证通过；环境变量缺失导致的跳过不算通过。（三引擎矩阵已通过且未跳过；提现接口在 SQLite/MySQL/PostgreSQL × 共享/独立日志库 六种组合下均通过，见第 9.3 节）
 
 ## 8. 实施顺序、检查与交付
 
@@ -403,13 +403,24 @@ P0 表示必须守住的正确性和发布门槛；界面可以分阶段完成�
 
 **后端**
 
-| 命令                                                                                                     | 结果                                            |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `go build ./...`                                                                                         | 通过（exit 0）                                  |
-| `go vet ./...`                                                                                           | 通过，无输出                                    |
-| `go test ./controller/ ./model/ ./service/... -count=1`                                                  | 全部 `ok`（controller 144.5s、model 11.3s）     |
-| `go test ./model/ -run 'TestInviteReward\|TestInitializeInviteRewardLedger' -count=1 -v`（三数据库 DSN） | 7 个用例 × SQLite/MySQL/PostgreSQL 全 PASS      |
-| `go test ./controller/ -run 'TestLoginConsentEnforcement' -count=1`                                      | 通过，含 4 个密码登录拒绝子用例与注册拒绝子用例 |
+| 命令                                                                                                                                                             | 结果                                                              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `go build ./...`                                                                                                                                                 | 通过（exit 0）                                                    |
+| `go vet ./...`                                                                                                                                                   | 通过，无输出                                                      |
+| `go test ./controller/ ./model/ ./service/... -count=1`                                                                                                          | 全部 `ok`（controller 144.5s、model 11.3s）                       |
+| `go test ./model/ -run 'TestInviteReward\|TestInitializeInviteRewardLedger' -count=1 -v`（三数据库 DSN）                                                         | 7 个用例 × SQLite/MySQL/PostgreSQL 全 PASS                        |
+| `go test ./controller/ -run 'TestLoginConsentEnforcement' -count=1`                                                                                              | 通过，含 4 个密码登录拒绝子用例与注册拒绝子用例                   |
+| `TEST_MANAGE_USER_SEPARATE_LOG_DB=1 TEST_MANAGE_USER_DIALECT=<engine> go test ./controller/ -run 'TestTransferAffQuotaEnforcesFreezeAndIdempotency' -count=1 -v` | 通过；六种组合（SQLite/MySQL/PostgreSQL × 共享/独立日志库），见下 |
+
+**独立日志库（`LOG_SQL_DSN` 指向另一个库）路径**：提现用例在 `TEST_MANAGE_USER_SEPARATE_LOG_DB=1` 下逐个引擎执行，主库与日志库分别建库，实际结果：
+
+| 引擎       | 版本                                     | 共享日志库       | 独立日志库                     |
+| ---------- | ---------------------------------------- | ---------------- | ------------------------------ |
+| SQLite     | 3.50.4                                   | PASS（1 条日志） | PASS（log DB 1 条、主库 0 条） |
+| MySQL      | 8.0.46                                   | PASS（1 条日志） | PASS（log DB 1 条、主库 0 条） |
+| PostgreSQL | 16.15 (x86_64-pc-linux-musl, gcc 15.2.0) | PASS（1 条日志） | PASS（log DB 1 条、主库 0 条） |
+
+用例同时断言 `model.LOG_DB` 与主库在两种配置下分别是「同一连接」和「不同连接」，避免出现日志缺失或同一条日志写两处被误判为通过。
 
 奖励账本覆盖：逐笔冻结 47:59:59 拒绝 / 48:00:00 允许、多笔分别解冻与固定扣减顺序、普通注册与重复回调只发一份、受邀人赠送不顺带改变冻结账本、缺幂等键、零/负数、超可提额、钱包上限、重复 requestId 重放、两个会话并发只入账一次、历史结转幂等（重复执行只生成一笔）与账本-汇总对账、以及真实三库上的表结构第二次迁移零 DDL。
 
@@ -426,7 +437,7 @@ P0 表示必须守住的正确性和发布门槛；界面可以分阶段完成�
 
 ### 9.4 未执行与既有问题
 
-- **未在真实浏览器验收**：1440×900 / 1280×720、深浅主题、窄窗口溢出、遮罩点击关闭与 80vh 滚动布局均未做像素级验证，仅有组件测试与 class 级证据。第 3–7 节的浏览器验收项保持未勾选。
+- **未在真实浏览器验收**：1440×900 / 1280×720、深浅主题、窄窗口溢出、遮罩点击关闭与 80vh 滚动布局均未做像素级验证，仅有组件测试与 class 级证据。第 3–7 节的浏览器验收项保持未勾选，改由项目所有者按清单执行。
 - **既有失败用例（与本次改动无关）**：`web/src/features/system-settings/hooks/__tests__/use-update-option.test.tsx`（11，`sonner` 的 `vi.mock` 未生效，已用 HEAD 版本复现）、`web/src/features/usage-logs/audit/__tests__/viewer.test.tsx`（与 `setup-guide.test.tsx` 同时运行时互相污染，单独运行分别通过/失败）、`web/src/features/models/metadata-editing.test.tsx`（超时）、`web/src/features/dashboard/components/overview/__tests__/setup-guide.test.tsx`（与 viewer 并发时 1 例失败，单独运行 6/6 通过）。
 - **协议正文的事实核查**：第 3 节要求的数据收集/共享/留存核查（`model/log.go`、`service/error.go`、`service/task_polling.go`、Debug 日志、请求体临时文件、反向代理日志）本次未逐项复核，上线前仍需执行；内置正文已按“必要数据处理”如实说明，未声称完全零收集。
 - **2FA 与过期版本**：二次验证流程内版本失效时会被拒绝，但错误映射为通用 `AUTH_INTERNAL_ERROR`，未返回 `legal_consent_outdated`；前端不会触发该路径（不会以过期版本发起流程）。

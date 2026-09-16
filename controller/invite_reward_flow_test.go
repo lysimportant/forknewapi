@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -98,6 +99,39 @@ func TestTransferAffQuotaEnforcesFreezeAndIdempotency(t *testing.T) {
 	var withdrawalCount int64
 	require.NoError(t, db.Model(&model.InviteRewardWithdrawal{}).Where("user_id = ?", user.Id).Count(&withdrawalCount).Error)
 	assert.Equal(t, int64(1), withdrawalCount)
+
+	assertWithdrawalLogPlacement(t, db, user.Id)
+}
+
+// assertWithdrawalLogPlacement 校验提现审计记录的落库位置。
+//
+// 日志库独立配置（LOG_SQL_DSN 指向另一个库）时，主库事务与日志库不具备跨库事务，
+// 因此按配置分别断言：独立日志库必须收到且只收到一条提现日志，而主库不得出现该日志，
+// 避免「日志缺失」或「同一条日志写两处」两种失败被掩盖。
+func assertWithdrawalLogPlacement(t *testing.T, mainDB *gorm.DB, userId int) {
+	t.Helper()
+	logDB := model.LOG_DB
+	require.NotNil(t, logDB)
+	separateLogDB := os.Getenv("TEST_MANAGE_USER_SEPARATE_LOG_DB") == "1"
+	if separateLogDB {
+		require.NotSame(t, mainDB, logDB, "独立日志库配置未生效：LOG_DB 与主库是同一个连接")
+	} else {
+		require.Same(t, mainDB, logDB, "未配置独立日志库时应共用同一连接")
+	}
+
+	var logCount int64
+	require.NoError(t, logDB.Model(&model.Log{}).
+		Where("user_id = ? AND content LIKE ?", userId, "%邀请奖励%").Count(&logCount).Error)
+	assert.Equal(t, int64(1), logCount, "提现必须在日志库留下且只留下一条审计记录")
+
+	if !separateLogDB {
+		return
+	}
+	var mainLogCount int64
+	require.NoError(t, mainDB.Migrator().DropTable(&model.Log{}))
+	require.NoError(t, mainDB.AutoMigrate(&model.Log{}))
+	require.NoError(t, mainDB.Model(&model.Log{}).Where("user_id = ?", userId).Count(&mainLogCount).Error)
+	assert.Zero(t, mainLogCount, "独立日志库配置下主库不得写入日志")
 }
 
 // reloadInviteRewardUser 读取用户最新余额，避免使用过期快照断言。
