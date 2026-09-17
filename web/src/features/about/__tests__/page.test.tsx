@@ -152,17 +152,53 @@ it.each(['network', 'business'])(
   }
 )
 
-it('管理员未配置内容时保留完整介绍版式并说明未配置', async () => {
+it('未配置正文时显示站点原有充值、远程协助和群联系方式', async () => {
   stubAboutResponse({ success: true, message: '', data: '' })
   const { view, queryClient } = renderAbout()
 
   expect(
-    await screen.findByText('Developer-facing API access service')
-  ).toBeInTheDocument()
-  expect(screen.getByText('Unified API access')).toBeInTheDocument()
-  expect(screen.getByText('Get started in three steps')).toBeInTheDocument()
-  expect(screen.getByText('Service scope and privacy')).toBeInTheDocument()
-  expect(screen.getByText('No site introduction yet')).toBeInTheDocument()
+    await screen.findByRole('heading', { name: 'Top-up assistance' })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('heading', { name: 'Remote setup assistance' })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('heading', { name: 'Questions and support' })
+  ).toBeVisible()
+  expect(screen.getByText('hkcustom0928')).toBeVisible()
+  expect(screen.getByText('811481586')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Need help connecting Codex or ChatGPT? Contact the administrator for remote setup assistance.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByText('Get started in three steps')
+  ).not.toBeInTheDocument()
+  expect(screen.queryByText('No site introduction yet')).not.toBeInTheDocument()
+  expectProjectAttribution()
+
+  view.unmount()
+  queryClient.clear()
+})
+
+it('原有运营正文使用优化版式展示，管理员账号和 QQ 群号可复制', async () => {
+  const originalContent =
+    '充值可以找管理：hkcustom0928 不会接入Codex ChatGPT的也可以找管理远程帮忙; 有问题请联系管理员； Q扣群：811481586'
+  stubAboutResponse({ success: true, message: '', data: originalContent })
+  const user = userEvent.setup()
+  const { view, queryClient } = renderAbout()
+
+  await screen.findByRole('heading', { name: 'Top-up assistance' })
+  expect(screen.queryByText(originalContent)).not.toBeInTheDocument()
+  expect(screen.getAllByText('hkcustom0928')).toHaveLength(1)
+  expect(screen.getAllByText('811481586')).toHaveLength(1)
+  await user.click(
+    screen.getByRole('button', { name: 'Copy administrator account' })
+  )
+  expect(await navigator.clipboard.readText()).toBe('hkcustom0928')
+  await user.click(screen.getByRole('button', { name: 'Copy QQ group number' }))
+  expect(await navigator.clipboard.readText()).toBe('811481586')
   expectProjectAttribution()
 
   view.unmount()

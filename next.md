@@ -540,3 +540,34 @@ Chromium `151.0.7922.34` + Playwright，隔离站点 `127.0.0.1:3017` 与最终�
 - [ ] 生产备份、维护窗口和真实库迁移须另行授权。本轮提交/Tag/推送只交付代码和验收记录，不代表已部署。
 
 本轮最后成功检查：前端全量 837/837、typecheck、生产 build、后端全量/build/vet、三库认证/奖励/提现及 24 组迁移。临时依赖无变更，原有用户修改未回退，真实凭据未写入源码、测试或报告。验收证据和隔离数据暂留供复核。
+
+## 11. 2026-09-17 关于页内容纠正检查点
+
+本次为 **P2、关于页局部展示调整**，基线为 `main@33befb11d`。关于页以站点原有运营说明为重点：充值咨询、Codex / ChatGPT 远程接入协助、使用问题联系管理员，以及 QQ 群交流。管理员账号保留为 `hkcustom0928`，QQ 群保留为 `811481586`，不推断管理员账号所属平台。
+
+- 首屏按三项服务和两项联系方式整理，复制交互复用现有 `CopyButton`；删除泛化的 API 接入介绍与三步流程。
+- 未配置正文时显示上述运营说明；原有完整单行运营说明由整理后的版式展示一次。管理员新增的其他文本或 Markdown 继续渲染，HTML / URL 兼容模式、隐私摘要及原始项目归属保留。
+- 七语言各增加 11 个键，没有改动其他翻译；临时 `web/scripts/add-missing-keys.mjs` 已清理。未改依赖、锁文件、接口或数据库。
+
+已核对的检查结果：
+
+| 检查 | 结果与证据 |
+| --- | --- |
+| 关于页测试 | `about-support-after.log` 记录 10/10 用例通过；顶部留白调整后于 08:29 再次运行同一测试文件，10/10 通过，包含原有运营正文不重复展示和两项复制交互 |
+| `bun run typecheck` | 本轮重新执行通过，日志 `about-support-typecheck.log` |
+| `bun run build` | 本轮生产构建通过，Rsbuild 2.1.6，日志 `about-support-build.log` |
+| 改动文件 oxlint / oxfmt | 3 个 TSX 文件按 `.oxlintrc.json` 检查通过（退出码 0，无输出），全部 10 个改动源文件格式检查通过；格式日志 `about-support-format.log` |
+| 七语言同步 | `_sync-report.json` 的 missing / extras / untranslated 均为 0；另逐个核对新增 11 个键在七语言均存在且非空 |
+| `git diff --check` | 通过；没有把第 10 节记录的全仓 lint 存量问题标为已解决 |
+
+日志继续保存在 `.local-tests/next-acceptance/`。当前最新前端预览为 `http://127.0.0.1:3019/about`，仅监听 `127.0.0.1:3019`，使用项目 `bun run preview --host 127.0.0.1 --port 3019 --strict-port` 前台启动，环境变量 `VITE_REACT_APP_SERVER_URL=http://127.0.0.1:3018` 代理至已有隔离后端。页面和 `/api/status`、`/api/about` 均返回 200。已有 `3018` 后端未停止、重启或改动，其内嵌页面仍为第 10 节构建。
+
+首轮浏览器检查后补足首屏顶部留白，为固定导航预留空间；此后重新执行关于页测试、typecheck、生产构建及 TSX lint/format，均通过。
+
+- [x] 最新 `3019` 构建完成桌面浏览器验收：1440×900 浅色、1280×720 深色、900×720 深色截图逐一检查，三项服务和联系方式均清晰可见，没有文字重叠或横向溢出，标题未被固定导航遮挡。
+- [x] 实际点击两项复制按钮并读取剪贴板，分别得到 `hkcustom0928`、`811481586`；浏览器捕获的 error / warn 日志为空。验收后恢复浅色主题及默认视口，保留 `3019/about` 预览页。
+- [x] 最终 diff、`git diff --check`、新增行凭据与调试输出检查通过，改动仅涉及本节记录的 11 个文件。
+
+本轮截图位于 `.local-tests/next-acceptance/screenshots/about-support-{1440-light,1280-dark,900-dark}.jpg`。交付目标为 `main` 的已配置上游 `fork/main`（`https://github.com/lysimportant/forknewapi.git`）；本次局部前端修正按小改动提交，不新增 Tag。提交与远端一致性以最终 Git 核验结果为准。
+
+本检查点不表示已部署生产；第 10.5 节的生产证据与发布门槛继续适用。

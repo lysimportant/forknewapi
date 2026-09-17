@@ -17,10 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
@@ -30,7 +28,7 @@ import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
 
 import { getAboutContent } from './api'
 import { AboutHelp } from './components/about-help'
-import { AboutIntro } from './components/about-intro'
+import { AboutIntro, ORIGINAL_ABOUT_CONTENT } from './components/about-intro'
 import { AboutPrivacySummary } from './components/about-privacy-summary'
 
 /** 关于页保留完整开源归属，不受管理员内容模式或自定义页脚影响。 */
@@ -121,8 +119,7 @@ function AboutSkeleton() {
 }
 
 /**
- * 管理员配置的站点介绍。普通文本与 Markdown 都作为「站点介绍」正文渲染，
- * 因此单行内容也有完整版式；未配置时明确区分于请求失败。
+ * 保留管理员新增的普通文本或 Markdown 正文；原有运营说明已在首屏整理展示。
  */
 function SiteIntroduction(props: { content: string }) {
   const { t } = useTranslation()
@@ -133,25 +130,13 @@ function SiteIntroduction(props: { content: string }) {
         <h2 className='mb-6 text-xl font-bold tracking-tight md:text-2xl'>
           {t('Site introduction')}
         </h2>
-        {props.content ? (
-          <div className='break-words'>
-            <RichContent
-              mode='markdown'
-              content={props.content}
-              className='prose-neutral dark:prose-invert max-w-none'
-            />
-          </div>
-        ) : (
-          <EmptyState
-            icon={Info}
-            bordered
-            className='min-h-0'
-            title={t('No site introduction yet')}
-            description={t(
-              'The administrator has not configured a site introduction yet. It can be set in the site settings.'
-            )}
+        <div className='break-words'>
+          <RichContent
+            mode='markdown'
+            content={props.content}
+            className='prose-neutral dark:prose-invert max-w-none'
           />
-        )}
+        </div>
       </div>
     </section>
   )
@@ -232,7 +217,9 @@ export function About() {
   return (
     <PublicLayout showMainContainer={false}>
       <AboutIntro />
-      <SiteIntroduction content={rawContent} />
+      {hasContent && rawContent !== ORIGINAL_ABOUT_CONTENT && (
+        <SiteIntroduction content={rawContent} />
+      )}
       <AboutPrivacySummary />
       <AboutHelp />
       <AboutFooter />

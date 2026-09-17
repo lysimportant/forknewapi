@@ -16,220 +16,115 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
-import {
-  ArrowRight,
-  BarChart3,
-  BookOpen,
-  KeyRound,
-  Layers,
-  Terminal,
-  UserRound,
-} from 'lucide-react'
-import type { ReactNode } from 'react'
+import { LifeBuoy, MonitorUp, Wallet, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { useStatus } from '@/hooks/use-status'
+import { CopyButton } from '@/components/copy-button'
 import { useSystemConfig } from '@/hooks/use-system-config'
-import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
-/**
- * 关于页的居中介绍版式：标题区、服务卡片与三步接入流程。
- * 文档与模型入口遵守 Header 导航开关与访问权限，未启用的入口不渲染。
- */
+/** 站点原有运营说明；匹配此正文时直接使用整理后的版式，避免重复展示。 */
+export const ORIGINAL_ABOUT_CONTENT =
+  '充值可以找管理：hkcustom0928 不会接入Codex ChatGPT的也可以找管理远程帮忙; 有问题请联系管理员； Q扣群：811481586'
+
+/** 以站点提供的充值、远程接入协助及联系方式组织关于页首屏，不推断联系账号所属平台。 */
 export function AboutIntro() {
   const { t } = useTranslation()
-  const { systemName } = useSystemConfig()
-  const { status } = useStatus()
-  const topNavLinks = useTopNavLinks()
-
-  // 文档链接可能是管理员配置的外部地址，也可能是站内 /docs。
-  const docsLink = topNavLinks.find(
-    (link) => link.external || link.href === '/docs'
-  )
-  const pricingLink = topNavLinks.find((link) => link.href === '/pricing')
-  const registerEnabled =
-    (status?.register_enabled ?? status?.data?.register_enabled ?? true) !==
-    false
-
-  const serviceCards: { key: string; icon: ReactNode; title: string; desc: string }[] =
-    [
-      {
-        key: 'unified-api',
-        icon: <Layers className='size-5' strokeWidth={1.5} />,
-        title: t('Unified API access'),
-        desc: t(
-          'Reach the models this site has enabled through one endpoint. The exact protocols and available scope follow the documentation and the model list.'
-        ),
-      },
-      {
-        key: 'account-usage',
-        icon: <BarChart3 className='size-5' strokeWidth={1.5} />,
-        title: t('Account and usage management'),
-        desc: t(
-          'Manage API keys, and review balance, request history, and usage statistics.'
-        ),
-      },
-      {
-        key: 'onboarding',
-        icon: <BookOpen className='size-5' strokeWidth={1.5} />,
-        title: t('Clear onboarding guidance'),
-        desc: t(
-          'Finish configuration with the documentation, and follow announcements for maintenance and service changes.'
-        ),
-      },
-    ]
-
-  const steps = [
+  const { systemName, logo } = useSystemConfig()
+  const services = [
     {
-      key: 'account',
-      icon: <UserRound className='size-5' strokeWidth={1.5} />,
-      title: t('Register or sign in'),
-      desc: t('Create an account, or sign in to an existing one.'),
+      icon: Wallet,
+      title: t('Top-up assistance'),
+      description: t('Contact the administrator for account top-ups.'),
+      color: 'text-emerald-700 dark:text-emerald-400',
     },
     {
-      key: 'api-key',
-      icon: <KeyRound className='size-5' strokeWidth={1.5} />,
-      title: t('Create an API key'),
-      desc: t('Generate an API key in the console and keep it secure.'),
-    },
-    {
-      key: 'request',
-      icon: <Terminal className='size-5' strokeWidth={1.5} />,
-      title: t('Configure and send requests'),
-      desc: t(
-        'Follow the documentation to configure your client, then start calling the API.'
+      icon: MonitorUp,
+      title: t('Remote setup assistance'),
+      description: t(
+        'Need help connecting Codex or ChatGPT? Contact the administrator for remote setup assistance.'
       ),
+      color: 'text-sky-700 dark:text-sky-400',
+    },
+    {
+      icon: LifeBuoy,
+      title: t('Questions and support'),
+      description: t(
+        'For questions during use, contact the administrator or join the QQ group.'
+      ),
+      color: 'text-rose-700 dark:text-rose-400',
     },
   ]
 
   return (
-    <>
-      <section className='relative z-10 overflow-hidden px-6 pt-24 pb-12 md:pt-32 md:pb-16'>
-        <div
-          aria-hidden
-          className='pointer-events-none absolute inset-0 -z-10 opacity-20 dark:opacity-[0.12]'
-          style={{
-            background: [
-              'radial-gradient(ellipse 60% 50% at 30% 10%, oklch(0.72 0.18 250 / 70%) 0%, transparent 70%)',
-              'radial-gradient(ellipse 45% 40% at 80% 20%, oklch(0.70 0.12 280 / 50%) 0%, transparent 70%)',
-            ].join(', '),
-          }}
-        />
-        <div className='mx-auto max-w-3xl text-center'>
-          <h1 className='text-[clamp(2rem,4vw,2.75rem)] leading-tight font-bold tracking-tight break-words'>
-            {systemName}
-          </h1>
-          <p className='text-muted-foreground mt-3 text-base md:text-lg'>
-            {t('Developer-facing API access service')}
-          </p>
-          <div className='mt-8 flex flex-wrap items-center justify-center gap-3'>
-            {docsLink &&
-              (docsLink.external ? (
-                <Button
-                  className='group h-11 rounded-lg px-5 text-sm font-medium'
-                  render={
-                    <a
-                      href={docsLink.href}
-                      target='_blank'
-                      rel='noopener noreferrer'
-                    />
-                  }
-                >
-                  {t('View API docs')}
-                  <ArrowRight className='ml-1.5 size-4 transition-transform duration-200 group-hover:translate-x-0.5' />
-                </Button>
-              ) : (
-                <Button
-                  className='group h-11 rounded-lg px-5 text-sm font-medium'
-                  render={<Link to={docsLink.href} />}
-                >
-                  {t('View API docs')}
-                  <ArrowRight className='ml-1.5 size-4 transition-transform duration-200 group-hover:translate-x-0.5' />
-                </Button>
-              ))}
-            {pricingLink &&
-              (pricingLink.requiresAuth ? (
-                <Button
-                  variant='outline'
-                  className='h-11 rounded-lg px-5 text-sm font-medium'
-                  render={
-                    <Link
-                      to='/sign-in'
-                      search={{ redirect: pricingLink.href }}
-                    />
-                  }
-                >
-                  {t('Browse models')}
-                </Button>
-              ) : (
-                <Button
-                  variant='outline'
-                  className='h-11 rounded-lg px-5 text-sm font-medium'
-                  render={<Link to={pricingLink.href} />}
-                >
-                  {t('Browse models')}
-                </Button>
-              ))}
+    <section className='px-6 pt-24 pb-12 md:pt-28 md:pb-16'>
+      <div className='mx-auto max-w-5xl'>
+        <div className='flex items-center gap-4'>
+          <img src={logo} alt='' className='size-14 shrink-0 object-contain' />
+          <div className='min-w-0'>
+            <p className='text-muted-foreground mb-1 text-sm'>{t('About')}</p>
+            <h1 className='text-3xl leading-tight font-semibold break-words'>
+              {systemName}
+            </h1>
           </div>
         </div>
-      </section>
+        <p className='text-muted-foreground mt-6 max-w-2xl text-base leading-7'>
+          {t(
+            'Top-ups, remote setup, and help when you need it. Reach out to the administrator below.'
+          )}
+        </p>
 
-      <section className='relative z-10 px-6 pb-16 md:pb-20'>
-        <div className='mx-auto grid max-w-6xl gap-5 md:grid-cols-3'>
-          {serviceCards.map((card) => (
-            <Card key={card.key} className='h-full'>
-              <CardContent className='space-y-3'>
-                <div className='text-muted-foreground border-border/50 bg-muted/30 flex size-10 items-center justify-center rounded-xl border'>
-                  {card.icon}
-                </div>
-                <h2 className='text-sm font-semibold'>{card.title}</h2>
-                <p className='text-muted-foreground text-sm leading-relaxed'>
-                  {card.desc}
-                </p>
-              </CardContent>
-            </Card>
+        <div className='mt-9 grid gap-6 border-y py-7 md:grid-cols-3 md:gap-8'>
+          {services.map((service) => (
+            <div key={service.title} className='min-w-0'>
+              <service.icon
+                aria-hidden='true'
+                className={`mb-4 size-6 ${service.color}`}
+                strokeWidth={1.5}
+              />
+              <h2 className='text-base font-semibold'>{service.title}</h2>
+              <p className='text-muted-foreground mt-2 text-sm leading-6'>
+                {service.description}
+              </p>
+            </div>
           ))}
         </div>
-      </section>
 
-      <section className='border-border/40 relative z-10 border-t px-6 py-16 md:py-20'>
-        <div className='mx-auto max-w-6xl'>
-          <h2 className='text-center text-xl font-bold tracking-tight md:text-2xl'>
-            {t('Get started in three steps')}
-          </h2>
-          <div className='mt-10 grid gap-8 md:grid-cols-3 md:gap-12'>
-            {steps.map((step, index) => (
-              <div
-                key={step.key}
-                className='relative flex flex-col items-center text-center'
-              >
-                <div className='relative mb-5'>
-                  <div className='text-muted-foreground border-border/50 bg-muted/30 flex size-14 items-center justify-center rounded-2xl border'>
-                    {step.icon}
-                  </div>
-                  <div className='bg-foreground text-background absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full text-xs font-bold'>
-                    {index + 1}
-                  </div>
-                </div>
-                <h3 className='mb-2 text-base font-semibold'>{step.title}</h3>
-                <p className='text-muted-foreground max-w-[260px] text-sm leading-relaxed'>
-                  {step.desc}
-                </p>
-              </div>
-            ))}
+        <div className='mt-7 grid gap-6 md:grid-cols-2 md:gap-8'>
+          <div className='flex min-w-0 items-center justify-between gap-4'>
+            <div className='min-w-0'>
+              <p className='text-muted-foreground text-sm'>
+                {t('Administrator')}
+              </p>
+              <p className='mt-1 font-mono text-xl font-medium break-all'>
+                hkcustom0928
+              </p>
+            </div>
+            <CopyButton
+              value='hkcustom0928'
+              variant='outline'
+              className='size-10'
+              tooltip={t('Copy administrator account')}
+            />
           </div>
-          {!registerEnabled && (
-            <p className='text-muted-foreground mx-auto mt-10 max-w-2xl text-center text-sm'>
-              {t(
-                'Registration is currently disabled. Contact the administrator to obtain an account.'
-              )}
-            </p>
-          )}
+          <div className='flex min-w-0 items-center justify-between gap-4 border-t pt-6 md:border-t-0 md:border-l md:pt-0 md:pl-8'>
+            <div className='min-w-0'>
+              <p className='text-muted-foreground flex items-center gap-2 text-sm'>
+                <Users aria-hidden='true' className='size-4' />
+                {t('QQ group')}
+              </p>
+              <p className='mt-1 font-mono text-xl font-medium break-all'>
+                811481586
+              </p>
+            </div>
+            <CopyButton
+              value='811481586'
+              variant='outline'
+              className='size-10'
+              tooltip={t('Copy QQ group number')}
+            />
+          </div>
         </div>
-      </section>
-    </>
+      </div>
+    </section>
   )
 }
