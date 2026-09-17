@@ -25,7 +25,7 @@ export const LEGAL_CONSENT_OUTDATED_CODE = 'legal_consent_outdated'
 export const LEGAL_CONSENT_REQUIRED_CODE = 'legal_consent_required'
 
 export type LegalConsentRequirement = {
-  /** 当前生效的协议版本，登录/注册必须原样回传 */
+  /** 当前生效的协议版本，登录时必须原样回传。 */
   version: string
   /** 是否已从 /api/status 读取到协议版本；未知时不得放开任何登录入口 */
   known: boolean

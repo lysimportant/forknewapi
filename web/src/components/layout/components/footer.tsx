@@ -20,6 +20,7 @@ import { Link } from '@tanstack/react-router'
 import { Fragment, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { LegalDocumentDialog } from '@/features/legal/legal-document-dialog'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { cn } from '@/lib/utils'
@@ -76,26 +77,15 @@ function FooterLinkItem(props: { link: FooterLink }) {
   )
 }
 
-// Renders User Agreement / Privacy Policy links inline with the parent's
-// copyright row when either is configured in System Settings → Site. Emits
-// fragmented siblings so the parent flex container's gap controls spacing.
+/** 按站点配置在版权行提供协议阅读弹窗，保持父级行内间距。 */
 function LegalLinks(props: { leadingSeparator?: boolean }) {
-  const { t } = useTranslation()
   const { status } = useStatus()
-  const items: { key: string; label: string; href: string }[] = []
+  const items: ('user-agreement' | 'privacy-policy')[] = []
   if (status?.user_agreement_enabled) {
-    items.push({
-      key: 'user-agreement',
-      label: t('User Agreement'),
-      href: '/user-agreement',
-    })
+    items.push('user-agreement')
   }
   if (status?.privacy_policy_enabled) {
-    items.push({
-      key: 'privacy-policy',
-      label: t('Privacy Policy'),
-      href: '/privacy-policy',
-    })
+    items.push('privacy-policy')
   }
   if (items.length === 0) {
     return null
@@ -103,18 +93,16 @@ function LegalLinks(props: { leadingSeparator?: boolean }) {
   return (
     <>
       {items.map((item, index) => (
-        <Fragment key={item.key}>
+        <Fragment key={item}>
           {(props.leadingSeparator || index > 0) && (
             <span aria-hidden='true' className='text-muted-foreground/30'>
               ·
             </span>
           )}
-          <Link
-            to={item.href}
-            className='hover:text-foreground transition-colors duration-200'
-          >
-            {item.label}
-          </Link>
+          <LegalDocumentDialog
+            document={item}
+            className='hover:text-foreground text-inherit transition-colors duration-200'
+          />
         </Fragment>
       ))}
     </>
@@ -272,14 +260,14 @@ export function Footer(props: FooterProps) {
           {/* Links columns */}
           {isDemoSiteMode && (
             <div className='grid grid-cols-3 gap-8 md:gap-16'>
-              {displayColumns.map((column, index) => (
-                <div key={index}>
+              {displayColumns.map((column) => (
+                <div key={column.title}>
                   <p className='text-muted-foreground/50 mb-3 text-xs font-medium tracking-wider uppercase'>
                     {t(column.title)}
                   </p>
                   <ul className='space-y-2.5'>
-                    {column.links.map((link, linkIndex) => (
-                      <li key={linkIndex}>
+                    {column.links.map((link) => (
+                      <li key={`${link.href}:${link.text}`}>
                         <FooterLinkItem link={link} />
                       </li>
                     ))}

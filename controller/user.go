@@ -289,13 +289,7 @@ func writeLoginResponse(c *gin.Context, user *model.User, bundle *service.AuthBu
 	})
 }
 
-// registerRequest 在注册用户字段之上携带协议确认，与登录请求使用同一组字段名。
-type registerRequest struct {
-	model.User
-	Consent        bool   `json:"consent"`
-	ConsentVersion string `json:"consent_version"`
-}
-
+// Register 校验并创建账号，不建立登录会话；协议在随后登录时确认。
 func Register(c *gin.Context) {
 	if !common.RegisterEnabled {
 		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
@@ -305,16 +299,11 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
-	// 注册同样必须确认协议：客户端用与登录一致的字段提交同意标记与版本。
-	var request registerRequest
-	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+	var user model.User
+	if err := common.DecodeJson(c.Request.Body, &user); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	if !setAndRequireLoginConsent(c, request.Consent, request.ConsentVersion) {
-		return
-	}
-	user := request.User
 	user.Username = strings.TrimSpace(user.Username)
 	user.Email = model.NormalizeEmail(user.Email)
 	if user.Username == "" {

@@ -102,6 +102,10 @@ export function useNotifications() {
     () => allAnnouncements.slice(0, 20),
     [allAnnouncements]
   )
+  // 旧版站点公告独立于时间轴展示开关，不能因未配置时间轴而漏掉。
+  const noticeContent = noticeResponse?.success
+    ? (noticeResponse.data || '').trim()
+    : ''
 
   // Notification store
   const {
@@ -115,10 +119,10 @@ export function useNotifications() {
     canAutoOpenAnnouncements,
   } = useNotificationStore()
 
-  // 登录后首次进入控制台自动弹出一次时间轴；无公告、展示关闭或读取失败都不弹空弹窗
+  // 公共页面与控制台首次进入时自动展示；两种公告来源都为空时不弹空窗。
   useEffect(() => {
     if (autoOpenHandledRef.current || statusLoading) return
-    if (!announcementsEnabled || allAnnouncements.length === 0) return
+    if (!noticeContent && allAnnouncements.length === 0) return
 
     autoOpenHandledRef.current = true
     // 「今日关闭」与「关闭本次」都不强制重新弹出
@@ -127,15 +131,10 @@ export function useNotifications() {
     setTimelineOpen(true)
   }, [
     statusLoading,
-    announcementsEnabled,
+    noticeContent,
     allAnnouncements.length,
     canAutoOpenAnnouncements,
   ])
-
-  // Extract notice content
-  const noticeContent = noticeResponse?.success
-    ? (noticeResponse.data || '').trim()
-    : ''
 
   // Calculate unread counts
   const unreadCounts = useMemo(() => {

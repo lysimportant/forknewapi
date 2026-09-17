@@ -36,13 +36,15 @@ type AnnouncementTimelineDialogProps = {
   /** 关闭事件：右上角 ×、Esc、点击遮罩与「关闭公告」都走这里 */
   onOpenChange: (open: boolean) => void
   announcements: AnnouncementEntry[]
+  /** 旧版站点公告正文，与结构化时间轴公告共同展示。 */
+  notice?: string
   onCloseForToday: () => void
   /** 本地存储不可写时为 false，提示「今日关闭」无法跨刷新保存 */
   closeTodayPersists?: boolean
 }
 
 /**
- * 系统公告时间轴弹窗：展示全部已配置公告，仅正文区域滚动
+ * 系统公告弹窗：展示站点公告与全部时间轴条目，仅正文区域滚动。
  */
 export function AnnouncementTimelineDialog(
   props: AnnouncementTimelineDialogProps
@@ -84,11 +86,20 @@ export function AnnouncementTimelineDialog(
         </p>
       ) : null}
 
-      {timeline.length === 0 ? (
+      {props.notice ? (
+        <section className='mb-6 text-sm'>
+          <h3 className='mb-2 font-medium'>{t('Notice')}</h3>
+          <RichContent breaks content={props.notice} />
+        </section>
+      ) : null}
+
+      {timeline.length === 0 && !props.notice ? (
         <p className='text-muted-foreground py-8 text-center text-sm'>
           {t('No system announcements')}
         </p>
-      ) : (
+      ) : null}
+
+      {timeline.length > 0 ? (
         <ol className='relative flex flex-col gap-6'>
           <span
             aria-hidden='true'
@@ -149,7 +160,7 @@ export function AnnouncementTimelineDialog(
             )
           })}
         </ol>
-      )}
+      ) : null}
     </Dialog>
   )
 }

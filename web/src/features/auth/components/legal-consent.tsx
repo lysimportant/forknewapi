@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { LegalDocumentDialog } from '@/features/legal/legal-document-dialog'
 import { cn } from '@/lib/utils'
 
 import { getLegalConsentRequirement } from '../lib/legal-consent'
@@ -37,7 +38,7 @@ interface LegalConsentProps {
 }
 
 /**
- * 《API 服务、隐私与使用责任协议》的强制勾选区域，登录与注册页共用。
+ * 登录前《API 服务、隐私与使用责任协议》的强制勾选区域。
  *
  * 协议正文由站点内置并提供默认内容，因此勾选框始终渲染且默认未勾选；
  * 已配置的用户协议与隐私政策合并到同一勾选框，不再出现第二组 checkbox。
@@ -47,22 +48,16 @@ export function LegalConsent(props: LegalConsentProps) {
   const requirement = getLegalConsentRequirement(props.status)
   const hasUserAgreement = Boolean(
     props.status?.user_agreement_enabled ??
-      props.status?.data?.user_agreement_enabled
+    props.status?.data?.user_agreement_enabled
   )
   const hasPrivacyPolicy = Boolean(
     props.status?.privacy_policy_enabled ??
-      props.status?.data?.privacy_policy_enabled
+    props.status?.data?.privacy_policy_enabled
   )
   const hasRelatedDocuments = hasUserAgreement || hasPrivacyPolicy
 
   const handleChange = (value: boolean) => {
     props.onCheckedChange(value === true)
-  }
-
-  // 打开协议正文的新标签页链接位于 <label> 内，阻止冒泡以免点击链接顺带
-  // 切换勾选状态（浏览器对 label 内交互内容的默认行为并不完全一致）。
-  const stopLabelToggle = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    event.stopPropagation()
   }
 
   let requirementHint: string | null = null
@@ -96,15 +91,7 @@ export function LegalConsent(props: LegalConsentProps) {
         >
           <span>
             {t('I have read and agree to the')}{' '}
-            <a
-              href='/api-service-agreement'
-              target='_blank'
-              rel='noopener noreferrer'
-              onClick={stopLabelToggle}
-              className='text-primary hover:underline'
-            >
-              {t('API Service, Privacy and Usage Responsibility Agreement')}
-            </a>
+            <LegalDocumentDialog document='api-service-agreement' />
             {t(
               ', and I undertake to use this platform’s API service in compliance with the law.'
             )}
@@ -116,27 +103,11 @@ export function LegalConsent(props: LegalConsentProps) {
             {t('Related documents')}
             {': '}
             {hasUserAgreement && (
-              <a
-                href='/user-agreement'
-                target='_blank'
-                rel='noopener noreferrer'
-                onClick={stopLabelToggle}
-                className='text-primary hover:underline'
-              >
-                {t('User Agreement')}
-              </a>
+              <LegalDocumentDialog document='user-agreement' />
             )}
             {hasUserAgreement && hasPrivacyPolicy && ' · '}
             {hasPrivacyPolicy && (
-              <a
-                href='/privacy-policy'
-                target='_blank'
-                rel='noopener noreferrer'
-                onClick={stopLabelToggle}
-                className='text-primary hover:underline'
-              >
-                {t('Privacy Policy')}
-              </a>
+              <LegalDocumentDialog document='privacy-policy' />
             )}
           </p>
         )}

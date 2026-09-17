@@ -3915,6 +3915,7 @@
     "Please fix JSON errors before saving": "請先修復 JSON 錯誤再儲存",
     "Please fix the highlighted fields before saving": "請先修復高亮欄位後再儲存",
     "Please log in with the appropriate credentials": "請使用適當的憑證登入",
+    "Please read and agree to the agreement before signing in.": "請先閱讀並同意協議後再登入。",
     "Please return to the sign-in page, read and accept the 《API 服务、隐私与使用责任协议》, then try again.": "請返回登入頁，閱讀並勾選同意《API 服務、隱私與使用責任協議》後重試。",
     "Please select a container": "請選擇一個容器",
     "Please select a payment method": "請選擇支付方式",

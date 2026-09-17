@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils'
 import { useOAuthLogin } from '../hooks/use-oauth-login'
 import type { SystemStatus } from '../types'
 
+/** 第三方登录入口配置；beforeLogin 可阻止认证或引导至协议确认页面。 */
 type OAuthProvidersProps = {
   status: SystemStatus | null
   disabled?: boolean
@@ -39,10 +40,13 @@ type OAuthProvidersProps = {
   onWeChatLogin?: () => void
   isWeChatLoading?: boolean
   redirectTo?: string
-  /** 已确认的协议版本；未确认时所有登录入口保持禁用且不发起流程 */
+  /** 发起任何登录方式前的页面守卫；返回 false 时不调用认证入口。 */
+  beforeLogin?: () => boolean
+  /** 已勾选确认的协议版本；未确认时不能发起登录流程。 */
   consentVersion?: string
 }
 
+/** 提供商按钮展示内容及认证回调。 */
 type ProviderButton = {
   key: string
   label: string
@@ -51,6 +55,7 @@ type ProviderButton = {
   disabled?: boolean
 }
 
+/** 复用第三方登录入口；页面守卫通过后才调用提供商认证流程。 */
 export function OAuthProviders({
   status,
   disabled = false,
@@ -59,6 +64,7 @@ export function OAuthProviders({
   isWeChatLoading = false,
   redirectTo,
   consentVersion,
+  beforeLogin,
 }: OAuthProvidersProps) {
   const { t } = useTranslation()
   const {
@@ -168,7 +174,10 @@ export function OAuthProviders({
               variant='outline'
               type='button'
               disabled={disabled || isLoading || extraDisabled}
-              onClick={onClick}
+              onClick={() => {
+                if (beforeLogin && !beforeLogin()) return
+                onClick()
+              }}
               className='h-11 w-full justify-center gap-2 rounded-lg'
             >
               {icon}

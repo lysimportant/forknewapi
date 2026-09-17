@@ -18,13 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import type { z } from 'zod'
 
-import { Dialog } from '@/components/dialog'
 import { PasswordInput } from '@/components/password-input'
 import { Turnstile } from '@/components/turnstile'
 import { Button } from '@/components/ui/button'
@@ -37,26 +36,20 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { register, wechatLoginByCode } from '@/features/auth/api'
-import { LegalConsent } from '@/features/auth/components/legal-consent'
+import { register } from '@/features/auth/api'
 import { OAuthProviders } from '@/features/auth/components/oauth-providers'
 import { registerFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useEmailVerification } from '@/features/auth/hooks/use-email-verification'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
 import {
-  getLegalConsentRequirement,
-  isLegalConsentSatisfied,
-} from '@/features/auth/lib/legal-consent'
-import {
   getAffiliateCode,
   saveAffiliateCode,
 } from '@/features/auth/lib/storage'
 import { useStatus } from '@/hooks/use-status'
-import { getServerErrorMessageKey } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
+/** 创建密码账号后返回登录；会建立会话的第三方入口先引导至登录页确认协议。 */
 export function SignUpForm({
   className,
   ...props
@@ -64,17 +57,9 @@ export function SignUpForm({
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
   const [verificationCode, setVerificationCode] = useState('')
-  const [agreedToLegal, setAgreedToLegal] = useState(false)
-  const [wechatCode, setWeChatCode] = useState('')
-  const [isWeChatDialogOpen, setIsWeChatDialogOpen] = useState(false)
-  const [isWeChatSubmitting, setIsWeChatSubmitting] = useState(false)
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
-  const legalConsentErrorMessage = t('Please agree to the legal terms first')
-  const legalConsentUnavailableMessage = t(
-    'The agreement requirement could not be loaded. Check your connection and reload the page.'
-  )
 
-  const { status, loading: statusLoading, error: statusError } = useStatus()
+  const { status } = useStatus()
   const {
     isTurnstileEnabled,
     turnstileSiteKey,
@@ -82,7 +67,7 @@ export function SignUpForm({
     setTurnstileToken,
     validateTurnstile,
   } = useTurnstile()
-  const { redirectToLogin, handleLoginResult } = useAuthRedirect()
+  const { redirectToLogin } = useAuthRedirect()
   const {
     isSending: isSendingCode,
     secondsLeft,
@@ -105,32 +90,12 @@ export function SignUpForm({
 
   const emailValue = form.watch('email')
   const emailVerificationRequired = !!status?.email_verification
-  // 注册与登录使用同一份《API 服务、隐私与使用责任协议》确认要求。
-  const consentRequirement = getLegalConsentRequirement(status)
-  const consentSatisfied = isLegalConsentSatisfied(
-    consentRequirement,
-    agreedToLegal
-  )
   const oauthRegisterEnabled =
     status?.oauth_register_enabled ??
     status?.data?.oauth_register_enabled ??
     true
   const hasWeChatLogin = Boolean(status?.wechat_login)
   const turnstileReady = !isTurnstileEnabled || Boolean(turnstileToken)
-
-  const wechatQrCodeUrl = useMemo(() => {
-    return (
-      status?.wechat_qrcode ||
-      status?.wechat_qr_code ||
-      status?.wechat_qrcode_image_url ||
-      status?.wechat_qr_code_image_url ||
-      status?.wechat_account_qrcode_image_url ||
-      status?.WeChatAccountQRCodeImageURL ||
-      status?.data?.wechat_qrcode ||
-      status?.data?.WeChatAccountQRCodeImageURL ||
-      ''
-    )
-  }, [status])
 
   useEffect(() => {
     const aff = new URLSearchParams(window.location.search).get('aff')?.trim()
@@ -139,20 +104,14 @@ export function SignUpForm({
     }
   }, [])
 
-  // 注册入口共用守卫：未确认协议（或协议版本未知）时不发起任何请求。
-  const requireLegalConsent = (): boolean => {
-    if (consentSatisfied) return true
-    toast.error(
-      consentRequirement.known
-        ? legalConsentErrorMessage
-        : legalConsentUnavailableMessage
-    )
+  // 第三方入口会直接建立登录会话，统一回登录页阅读并确认协议后再继续。
+  const requireSignInPage = (): boolean => {
+    redirectToLogin()
+    toast.info(t('Please read and agree to the agreement before signing in.'))
     return false
   }
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
-    if (!requireLegalConsent()) return
-
     // Validate email verification if required
     if (emailVerificationRequired) {
       if (!data.email) {
@@ -176,8 +135,6 @@ export function SignUpForm({
         verification_code: verificationCode || undefined,
         aff_code: getAffiliateCode(),
         turnstile: turnstileToken,
-        consent: true,
-        consent_version: consentRequirement.version,
       })
 
       if (res?.success) {
@@ -197,51 +154,6 @@ export function SignUpForm({
     if (await sendCode(emailValue || '')) {
       setTurnstileToken('')
       setTurnstileWidgetKey((current) => current + 1)
-    }
-  }
-
-  const handleOpenWeChatDialog = () => {
-    if (!requireLegalConsent()) return
-
-    setIsWeChatDialogOpen(true)
-  }
-
-  const handleWeChatDialogChange = (open: boolean) => {
-    setIsWeChatDialogOpen(open)
-    if (!open) {
-      setWeChatCode('')
-      setIsWeChatSubmitting(false)
-    }
-  }
-
-  async function handleWeChatLogin() {
-    if (!requireLegalConsent()) return
-
-    if (!wechatCode.trim()) {
-      toast.error(t('Please enter the verification code'))
-      return
-    }
-
-    setIsWeChatSubmitting(true)
-    try {
-      const res = await wechatLoginByCode(
-        wechatCode,
-        consentRequirement.version
-      )
-      if (res?.success) {
-        handleWeChatDialogChange(false)
-        if (await handleLoginResult(res.data)) {
-          toast.success(t('Signed in via WeChat'))
-        }
-      } else {
-        if (getServerErrorMessageKey(res)) return
-        toast.error(res?.message || t('Login failed'))
-      }
-    } catch (error: unknown) {
-      if (getServerErrorMessageKey(error)) return
-      toast.error(t('Login failed'))
-    } finally {
-      setIsWeChatSubmitting(false)
     }
   }
 
@@ -373,20 +285,11 @@ export function SignUpForm({
           </div>
         )}
 
-        <LegalConsent
-          status={status}
-          checked={agreedToLegal}
-          onCheckedChange={setAgreedToLegal}
-          statusLoading={statusLoading}
-          statusError={Boolean(statusError)}
-          className='mt-1'
-        />
-
         {/* Submit Button */}
         <Button
           type='submit'
           className='mt-2 w-full justify-center gap-2'
-          disabled={isLoading || !consentSatisfied || !turnstileReady}
+          disabled={isLoading || !turnstileReady}
         >
           {isLoading ? <Loader2 className='h-4 w-4 animate-spin' /> : null}
           {t('Create account')}
@@ -395,78 +298,13 @@ export function SignUpForm({
         {oauthRegisterEnabled && (
           <OAuthProviders
             status={status}
-            disabled={isLoading || !consentSatisfied}
-            consentVersion={consentRequirement.version}
-            onWeChatLogin={hasWeChatLogin ? handleOpenWeChatDialog : undefined}
-            isWeChatLoading={isWeChatSubmitting}
+            disabled={isLoading}
+            beforeLogin={requireSignInPage}
+            onWeChatLogin={hasWeChatLogin ? redirectToLogin : undefined}
             className='pt-2'
           />
         )}
       </form>
-
-      {hasWeChatLogin && (
-        <Dialog
-          open={isWeChatDialogOpen}
-          onOpenChange={handleWeChatDialogChange}
-          title={t('WeChat sign in')}
-          description={t(
-            'Scan the QR code to follow the official account and reply with “验证码” to receive your verification code.'
-          )}
-          contentClassName='max-w-sm'
-          headerClassName='text-left'
-          contentHeight='auto'
-          bodyClassName='space-y-4'
-          footer={
-            <>
-              <Button
-                type='button'
-                variant='outline'
-                onClick={() => handleWeChatDialogChange(false)}
-                disabled={isWeChatSubmitting}
-              >
-                {t('Cancel')}
-              </Button>
-              <Button
-                type='button'
-                onClick={handleWeChatLogin}
-                disabled={
-                  isWeChatSubmitting || !wechatCode.trim() || !consentSatisfied
-                }
-                className='gap-2'
-              >
-                {isWeChatSubmitting ? (
-                  <Loader2 className='h-4 w-4 animate-spin' />
-                ) : null}
-                {t('Confirm')}
-              </Button>
-            </>
-          }
-        >
-          {wechatQrCodeUrl ? (
-            <div className='flex justify-center'>
-              <img
-                src={wechatQrCodeUrl}
-                alt={t('WeChat login QR code')}
-                className='h-40 w-40 rounded-md border object-contain'
-              />
-            </div>
-          ) : (
-            <p className='text-muted-foreground text-sm'>
-              {t('QR code is not configured. Please contact support.')}
-            </p>
-          )}
-          <div className='grid gap-2'>
-            <Label htmlFor='wechat-code'>{t('Verification code')}</Label>
-            <Input
-              id='wechat-code'
-              placeholder={t('Enter the verification code')}
-              value={wechatCode}
-              onChange={(event) => setWeChatCode(event.target.value)}
-              autoComplete='one-time-code'
-            />
-          </div>
-        </Dialog>
-      )}
     </Form>
   )
 }

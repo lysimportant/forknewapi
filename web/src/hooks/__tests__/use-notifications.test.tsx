@@ -35,6 +35,7 @@ const announcements = Array.from({ length: 25 }, (_, index) => ({
 
 let client: QueryClient
 let statusBody: Record<string, unknown>
+let noticeContent: string
 
 function setup() {
   /** 为被测钩子提供独立缓存，状态请求由模拟传输层返回 */
@@ -49,12 +50,13 @@ beforeEach(() => {
   useNotificationStore.setState(useNotificationStore.getInitialState(), true)
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   statusBody = { announcements_enabled: true, announcements }
+  noticeContent = ''
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/status') {
       return { data: { data: statusBody } }
     }
     if (url === '/api/notice') {
-      return { data: { success: true, message: '', data: '' } }
+      return { data: { success: true, message: '', data: noticeContent } }
     }
     throw new Error(`Unexpected request: ${url}`)
   })
@@ -67,6 +69,15 @@ afterEach(() => {
 })
 
 describe('公告弹窗自动弹出', () => {
+  it('只配置旧版站点公告时仍自动弹出，不依赖时间轴开关', async () => {
+    statusBody = { announcements_enabled: false, announcements: [] }
+    noticeContent = 'Account top-ups: contact the administrator.'
+    const { result } = setup()
+
+    await waitFor(() => expect(result.current.timelineOpen).toBe(true))
+    expect(result.current.notice).toBe(noticeContent)
+  })
+
   it('进入控制台后自动弹出一次，并保留通知列表的前 20 条截断', async () => {
     const { result } = setup()
 
@@ -109,6 +120,12 @@ describe('公告弹窗自动弹出', () => {
     expect(useNotificationStore.getState().canAutoOpenAnnouncements()).toBe(
       false
     )
+
+    first.unmount()
+    const navigated = setup()
+    await waitFor(() => expect(navigated.result.current.loading).toBe(false))
+    expect(navigated.result.current.timelineOpen).toBe(false)
+    navigated.unmount()
 
     await act(async () => {
       useNotificationStore.setState(

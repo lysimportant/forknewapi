@@ -934,14 +934,14 @@ func TestOAuthBindProviderErrorConsumesSessionBoundFlow(t *testing.T) {
 }
 
 // consentJSONFields 返回当前生效协议版本的同意字段片段，供测试构造满足协议的
-// 登录/注册请求体，避免在多处重复版本字面量。
+// 登录请求体，避免在多处重复版本字面量。
 func consentJSONFields() string {
 	return fmt.Sprintf(`"consent":true,"consent_version":%q`, system_setting.CurrentLegalConsentVersion)
 }
 
 // TestLoginConsentEnforcement 覆盖《API 服务、隐私与使用责任协议》在服务端的
-// 强制校验：缺失、未勾选或版本过期的请求都必须在建立会话或账号之前被拒绝，
-// 当前版本正常放行，二次验证流程也不能绕过发起登录时的协议确认。
+// 强制校验：缺失、未勾选或版本过期的登录请求必须在建立会话前被拒绝；注册
+// 只创建账号，不要求协议确认，也不建立会话。二次验证不能绕过登录协议确认。
 func TestLoginConsentEnforcement(t *testing.T) {
 	currentVersion := system_setting.CurrentLegalConsentVersion
 	credentials := `"username":"enrollment-user","password":"enrollment-password"`
@@ -1007,20 +1007,23 @@ func TestLoginConsentEnforcement(t *testing.T) {
 		assert.Equal(t, before+1, after, "an accepted login issues exactly one session")
 	})
 
-	t.Run("registration rejects missing consent", func(t *testing.T) {
+	t.Run("registration accepts missing consent without creating a login session", func(t *testing.T) {
 		setupRegistrationConsentTest(t)
 		// 显式禁用测试助手的同意注入，确保请求真的不带同意标记。
 		response := securityEnrollmentRequest(http.MethodPost, "/api/user/register", noConsentInjection+`{"username":"consent-new-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, Register)
 
-		assert.Contains(t, response.Body.String(), `"code":"legal_consent_required"`, response.Body.String())
-		assert.NotContains(t, response.Body.String(), `"success":true`, "被拒绝的注册不能返回成功")
-		// 拒绝发生在任何写库之前：注册被拒时不会再查询用户是否存在，因此这里
-		// 只在请求真的成功时才回查，避免在清理后的数据库上访问全局 DB。
-		if strings.Contains(response.Body.String(), `"success":true`) {
-			exists, err := model.CheckUserExistOrDeleted("consent-new-user", "")
-			require.NoError(t, err)
-			assert.False(t, exists, "a rejected registration must not create the account")
-		}
+		require.Contains(t, response.Body.String(), `"success":true`, response.Body.String())
+		var registeredUser model.User
+		require.NoError(t, model.DB.Where("username = ?", "consent-new-user").First(&registeredUser).Error)
+		count, err := model.CountActiveUserSessions(registeredUser.Id, time.Now().Unix())
+		require.NoError(t, err)
+		assert.Zero(t, count, "registration must not create a login session")
+		assert.Empty(t, response.Header().Values("Set-Cookie"))
+		assert.NotContains(t, response.Body.String(), "access_token")
+
+		loginResponse := securityEnrollmentRequest(http.MethodPost, "/api/user/login", noConsentInjection+`{"username":"consent-new-user","password":"enrollment-password"}`, "", service.AuthIdentity{}, Login)
+		assert.Contains(t, loginResponse.Body.String(), `"code":"legal_consent_required"`, loginResponse.Body.String())
+		assert.Empty(t, loginResponse.Header().Values("Set-Cookie"))
 	})
 
 	t.Run("registration accepts the current consent version", func(t *testing.T) {
@@ -1174,7 +1177,7 @@ func TestLoginConsentEnforcement(t *testing.T) {
 }
 
 // setupRegistrationConsentTest 准备注册路径所需的数据库与 i18n 状态，并打开
-// 密码注册、关闭邮箱验证，使注册只受协议确认一个变量影响。
+// 密码注册、关闭邮箱验证，用于验证创建账号与建立登录会话的协议边界。
 func setupRegistrationConsentTest(t *testing.T) {
 	t.Helper()
 	setupSecurityEnrollmentTest(t)

@@ -16,14 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
 import { Eye, Scale, ShieldCheck, Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Card, CardContent } from '@/components/ui/card'
+import { LegalDocumentDialog } from '@/features/legal/legal-document-dialog'
 
 /**
- * 服务边界与隐私摘要：逐条引用登录页协议的既有承诺，并链接到协议全文。
+ * 服务边界与隐私摘要：逐条引用登录页协议的既有承诺，并在弹窗展示协议全文。
  * 只陈述协议已写明的内容，不新增任何未经确认的隐私承诺。
  */
 export function AboutPrivacySummary() {
@@ -95,12 +95,12 @@ export function AboutPrivacySummary() {
         </div>
 
         <p className='mt-8 text-center text-sm'>
-          <Link
-            to='/api-service-agreement'
-            className='text-primary hover:underline'
+          <LegalDocumentDialog
+            document='api-service-agreement'
+            className='text-sm'
           >
             {t('Read the full agreement')}
-          </Link>
+          </LegalDocumentDialog>
         </p>
       </div>
     </section>

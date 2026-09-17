@@ -61,6 +61,7 @@ import {
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
+/** 展示登录方式；确认协议后才允许请求认证，成功后保留二次验证与重定向流程。 */
 export function UserAuthForm({
   className,
   redirectTo,
@@ -75,7 +76,9 @@ export function UserAuthForm({
   const [isWeChatDialogOpen, setIsWeChatDialogOpen] = useState(false)
   const [isWeChatSubmitting, setIsWeChatSubmitting] = useState(false)
   const [turnstileWidgetKey, setTurnstileWidgetKey] = useState(0)
-  const legalConsentErrorMessage = t('Please agree to the legal terms first')
+  const legalConsentErrorMessage = t(
+    'Please read and agree to the agreement before signing in.'
+  )
   const legalConsentUnavailableMessage = t(
     'The agreement requirement could not be loaded. Check your connection and reload the page.'
   )
@@ -102,15 +105,13 @@ export function UserAuthForm({
   } = useTurnstile()
   const { handleLoginResult } = useAuthRedirect()
 
-  // 《API 服务、隐私与使用责任协议》始终强制勾选；协议版本未知（状态加载中或
-  // 请求失败）时保持所有登录入口禁用，不允许短暂放开。
+  // 登录按钮允许点击以显示提示；所有登录流程仍需先确认已知版本的协议。
   const consentRequirement = getLegalConsentRequirement(status)
   const consentSatisfied = isLegalConsentSatisfied(
     consentRequirement,
     agreedToLegal
   )
-  const passkeyButtonDisabled =
-    isPasskeyLoading || !passkeySupported || !consentSatisfied
+  const passkeyButtonDisabled = isPasskeyLoading || !passkeySupported
   const hasWeChatLogin = Boolean(status?.wechat_login)
   const hasOAuthLogin = Boolean(
     status?.github_oauth ||
@@ -340,8 +341,11 @@ export function UserAuthForm({
       <OAuthProviders
         status={status}
         redirectTo={redirectTo}
-        disabled={isLoading || !consentSatisfied}
-        consentVersion={consentRequirement.version}
+        disabled={isLoading}
+        beforeLogin={requireLegalConsent}
+        consentVersion={
+          consentSatisfied ? consentRequirement.version : undefined
+        }
         onWeChatLogin={hasWeChatLogin ? handleOpenWeChatDialog : undefined}
         isWeChatLoading={isWeChatSubmitting}
       />
@@ -351,7 +355,10 @@ export function UserAuthForm({
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit(onSubmit)}
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (requireLegalConsent()) void form.handleSubmit(onSubmit)(event)
+        }}
         className={cn('grid gap-4', className)}
         {...props}
       >
@@ -405,7 +412,7 @@ export function UserAuthForm({
             <Button
               type='submit'
               className='mt-2 w-full justify-center gap-2'
-              disabled={isLoading || !consentSatisfied}
+              disabled={isLoading}
             >
               {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
               {t('Sign in')}
@@ -462,9 +469,7 @@ export function UserAuthForm({
               <Button
                 type='button'
                 onClick={handleWeChatLogin}
-                disabled={
-                  isWeChatSubmitting || !wechatCode.trim() || !consentSatisfied
-                }
+                disabled={isWeChatSubmitting || !wechatCode.trim()}
                 className='gap-2'
               >
                 {isWeChatSubmitting ? (

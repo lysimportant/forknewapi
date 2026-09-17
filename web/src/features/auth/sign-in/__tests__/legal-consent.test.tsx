@@ -30,8 +30,9 @@ import type { AxiosAdapter } from 'axios'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { UserAuthForm } from '../components/user-auth-form'
 import { api } from '@/lib/api'
+
+import { UserAuthForm } from '../components/user-auth-form'
 
 /** 保存请求适配器，测试只替换网络边界并在结束时恢复。 */
 const originalAdapter = api.defaults.adapter
@@ -85,10 +86,7 @@ async function renderSignIn(status: Record<string, unknown>) {
 }
 
 async function fillCredentials(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(
-    screen.getByLabelText('Username or Email'),
-    'enrollment-user'
-  )
+  await user.type(screen.getByLabelText('Username or Email'), 'enrollment-user')
   await user.type(screen.getByLabelText('Password'), 'enrollment-password')
 }
 
@@ -102,20 +100,33 @@ beforeEach(() => {
 
 afterEach(() => {
   api.defaults.adapter = originalAdapter
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
-it('登录页默认未勾选协议且提交按钮禁用', async () => {
+it('登录页默认未勾选协议，点击登录先提示同意且不发请求', async () => {
+  const errorToast = vi.spyOn(toast, 'error')
+  const adapter = vi.fn<AxiosAdapter>()
+  api.defaults.adapter = adapter
   const { view, queryClient } = await renderSignIn({})
+  const user = userEvent.setup()
 
   expect(screen.getByRole('checkbox')).not.toBeChecked()
-  expect(signInButton()).toBeDisabled()
+  expect(signInButton()).toBeEnabled()
+  await user.click(signInButton())
+  expect(errorToast).toHaveBeenCalledWith(
+    'Please read and agree to the agreement before signing in.'
+  )
+  expect(adapter).not.toHaveBeenCalled()
 
   view.unmount()
   queryClient.clear()
 })
 
-it('勾选协议后启用提交，取消勾选后再次禁用', async () => {
+it('勾选后取消协议，再次点击登录仍提示同意且不发请求', async () => {
+  const errorToast = vi.spyOn(toast, 'error')
+  const adapter = vi.fn<AxiosAdapter>()
+  api.defaults.adapter = adapter
   const { view, queryClient } = await renderSignIn({})
   const user = userEvent.setup()
 
@@ -125,23 +136,35 @@ it('勾选协议后启用提交，取消勾选后再次禁用', async () => {
 
   await user.click(screen.getByRole('checkbox'))
   expect(screen.getByRole('checkbox')).not.toBeChecked()
-  expect(signInButton()).toBeDisabled()
+  expect(signInButton()).toBeEnabled()
+  await user.click(signInButton())
+  expect(errorToast).toHaveBeenCalledWith(
+    'Please read and agree to the agreement before signing in.'
+  )
+  expect(adapter).not.toHaveBeenCalled()
 
   view.unmount()
   queryClient.clear()
 })
 
-it('协议要求未知时保持禁用并提示重新加载页面', async () => {
+it('协议要求未知时点击登录提示重新加载且不发请求', async () => {
+  const errorToast = vi.spyOn(toast, 'error')
+  const adapter = vi.fn<AxiosAdapter>()
+  api.defaults.adapter = adapter
   const { view, queryClient } = await renderSignIn({ legal_consent: undefined })
 
   expect(screen.getByText(AGREEMENT_UNAVAILABLE)).toBeInTheDocument()
-  expect(signInButton()).toBeDisabled()
+  expect(signInButton()).toBeEnabled()
+  await userEvent.setup().click(signInButton())
+  expect(errorToast).toHaveBeenCalledWith(AGREEMENT_UNAVAILABLE)
+  expect(adapter).not.toHaveBeenCalled()
 
   view.unmount()
   queryClient.clear()
 })
 
 it('未勾选协议时回车不会发起登录请求', async () => {
+  const errorToast = vi.spyOn(toast, 'error')
   const adapter = vi.fn<AxiosAdapter>(async (config) => ({
     config,
     data: { success: false, message: 'unused' },
@@ -156,6 +179,9 @@ it('未勾选协议时回车不会发起登录请求', async () => {
   await fillCredentials(user)
   await user.keyboard('{Enter}')
 
+  expect(errorToast).toHaveBeenCalledWith(
+    'Please read and agree to the agreement before signing in.'
+  )
   expect(adapter).not.toHaveBeenCalled()
 
   view.unmount()
@@ -191,20 +217,53 @@ it('勾选协议后回车提交，登录请求携带 consent 与 consent_version
   queryClient.clear()
 })
 
-it('未勾选协议时第三方登录按钮禁用，勾选后启用', async () => {
+it('未勾选协议时第三方与微信登录提示同意且不发请求', async () => {
+  const errorToast = vi.spyOn(toast, 'error')
+  const adapter = vi.fn<AxiosAdapter>()
+  api.defaults.adapter = adapter
   const { view, queryClient } = await renderSignIn({
     github_oauth: true,
     github_client_id: 'client-id',
+    wechat_login: true,
   })
   const user = userEvent.setup()
 
   const githubButton = await screen.findByRole('button', {
     name: /Continue with GitHub/,
   })
-  expect(githubButton).toBeDisabled()
+  expect(githubButton).toBeEnabled()
+  await user.click(githubButton)
+  await user.click(screen.getByRole('button', { name: /Continue with WeChat/ }))
+  expect(errorToast).toHaveBeenCalledTimes(2)
+  expect(errorToast).toHaveBeenLastCalledWith(
+    'Please read and agree to the agreement before signing in.'
+  )
+  expect(adapter).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
   await user.click(screen.getByRole('checkbox'))
   expect(githubButton).toBeEnabled()
+
+  view.unmount()
+  queryClient.clear()
+})
+
+it('设备支持 Passkey 但未同意协议时，点击仅提示且不请求认证', async () => {
+  vi.stubGlobal('PublicKeyCredential', class {})
+  const errorToast = vi.spyOn(toast, 'error')
+  const adapter = vi.fn<AxiosAdapter>()
+  api.defaults.adapter = adapter
+  const { view, queryClient } = await renderSignIn({ passkey_login: true })
+  const passkeyButton = screen.getByRole('button', {
+    name: 'Sign in with Passkey',
+  })
+  await waitFor(() => expect(passkeyButton).toBeEnabled())
+
+  await userEvent.setup().click(passkeyButton)
+  expect(errorToast).toHaveBeenCalledWith(
+    'Please read and agree to the agreement before signing in.'
+  )
+  expect(adapter).not.toHaveBeenCalled()
 
   view.unmount()
   queryClient.clear()

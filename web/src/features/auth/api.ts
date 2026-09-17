@@ -273,7 +273,7 @@ export async function telegramLogin(
 // Registration
 // ----------------------------------------------------------------------------
 
-// User registration. RegisterPayload carries the same consent fields as login.
+/** 提交账号注册信息；成功后仍需回到登录页确认协议并认证，不创建登录会话。 */
 export async function register(payload: RegisterPayload): Promise<ApiResponse> {
   const res = await api.post(`/api/user/register`, payload, {
     params: { turnstile: payload.turnstile ?? '' },

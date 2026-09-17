@@ -24,7 +24,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError, type AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -60,14 +60,17 @@ function stubAboutResponse(data: unknown) {
   return adapter
 }
 
-function renderAbout() {
+function renderAbout(statusOverrides: Record<string, unknown> = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  // 关于页夹具没有公告，避免将正文接口的桩响应误用为公共 Header 公告。
+  queryClient.setQueryData(['notice'], { success: true, data: '' })
   queryClient.setQueryData(['status'], {
     system_name: 'Example Gateway',
     register_enabled: true,
     docs_link: 'https://docs.example.com',
+    ...statusOverrides,
   })
   const rootRoute = createRootRoute()
   // PublicLayout 的 Header/Footer 会链接到导航目标，测试树必须包含这些路径。
@@ -103,7 +106,7 @@ function renderAbout() {
       <RouterProvider router={router} />
     </QueryClientProvider>
   )
-  return { view, queryClient }
+  return { view, queryClient, router }
 }
 
 /** 每个归属链接都必须可见、保持原目标并隔离新窗口。 */
@@ -125,6 +128,59 @@ afterEach(() => {
   api.defaults.adapter = originalAdapter
   vi.restoreAllMocks()
 })
+
+it.each([
+  [
+    'Read the full agreement',
+    'API Service, Privacy and Usage Responsibility Agreement',
+    '/api/api-service-agreement',
+  ],
+  ['User Agreement', 'User Agreement', '/api/user-agreement'],
+  ['Privacy Policy', 'Privacy Policy', '/api/privacy-policy'],
+])(
+  '关于页的 %s 入口在当前页面弹窗阅读，关闭后仍保留页面和焦点',
+  async (label, title, endpoint) => {
+    const requests: string[] = []
+    api.defaults.adapter = async (config) => {
+      requests.push(config.url ?? '')
+      return {
+        config,
+        data: {
+          success: true,
+          data: config.url === endpoint ? 'Full legal document text.' : '',
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+      }
+    }
+    const { view, queryClient, router } = renderAbout({
+      user_agreement_enabled: true,
+      privacy_policy_enabled: true,
+    })
+    const user = userEvent.setup()
+    await screen.findByText('Service scope and privacy')
+    const trigger = screen.getByRole('button', { name: label })
+    expect(requests).not.toContain(endpoint)
+    await user.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: title })
+    expect(
+      await within(dialog).findByText('Full legal document text.')
+    ).toBeVisible()
+    expect(requests.filter((url) => url === endpoint)).toHaveLength(1)
+    expect(router.state.location.pathname).toBe('/')
+    await user.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    )
+    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(screen.getByText('Service scope and privacy')).toBeVisible()
+
+    view.unmount()
+    queryClient.clear()
+  }
+)
 
 it.each(['network', 'business'])(
   '%s 加载失败时显示错误与重试并保留完整归属，而不是空状态',

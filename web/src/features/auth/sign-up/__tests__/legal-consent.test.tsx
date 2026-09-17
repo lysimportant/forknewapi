@@ -29,8 +29,10 @@ import userEvent from '@testing-library/user-event'
 import type { AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { SignUpForm } from '../components/sign-up-form'
+import { UserAuthForm } from '@/features/auth/sign-in/components/user-auth-form'
 import { api } from '@/lib/api'
+
+import { SignUpForm } from '../components/sign-up-form'
 
 /** 保存请求适配器，测试只替换网络边界并在结束时恢复。 */
 const originalAdapter = api.defaults.adapter
@@ -56,7 +58,7 @@ async function renderSignUp(status: Record<string, unknown> = {}) {
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/sign-in',
-      component: () => null,
+      component: UserAuthForm,
     }),
   ])
   const router = createRouter({
@@ -69,7 +71,7 @@ async function renderSignUp(status: Record<string, unknown> = {}) {
     </QueryClientProvider>
   )
   // RouterProvider 首次渲染是异步的，先等待表单挂载再使用同步查询。
-  await screen.findByRole('checkbox')
+  await screen.findByRole('button', { name: 'Create account' })
   return { view, queryClient }
 }
 
@@ -92,35 +94,32 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('注册页默认未勾选协议且提交按钮禁用', async () => {
+it('注册页无需协议勾选即可提交', async () => {
   const { view, queryClient } = await renderSignUp({
     oauth_register_enabled: false,
   })
 
-  expect(screen.getByRole('checkbox')).not.toBeChecked()
-  expect(createAccountButton()).toBeDisabled()
-
-  view.unmount()
-  queryClient.clear()
-})
-
-it('勾选协议后启用注册，取消勾选后再次禁用', async () => {
-  const { view, queryClient } = await renderSignUp({
-    oauth_register_enabled: false,
-  })
-  const user = userEvent.setup()
-
-  await user.click(screen.getByRole('checkbox'))
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   expect(createAccountButton()).toBeEnabled()
 
-  await user.click(screen.getByRole('checkbox'))
-  expect(createAccountButton()).toBeDisabled()
+  view.unmount()
+  queryClient.clear()
+})
+
+it('协议状态缺失不阻断注册入口', async () => {
+  const { view, queryClient } = await renderSignUp({
+    oauth_register_enabled: false,
+    legal_consent: undefined,
+  })
+
+  expect(createAccountButton()).toBeEnabled()
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
 
   view.unmount()
   queryClient.clear()
 })
 
-it('未勾选协议时回车不会发起注册请求', async () => {
+it('无需勾选协议即可回车提交注册请求', async () => {
   const adapter = vi.fn<AxiosAdapter>(async (config) => ({
     config,
     data: { success: false, message: 'unused' },
@@ -137,13 +136,14 @@ it('未勾选协议时回车不会发起注册请求', async () => {
   await fillRegistration(user)
   await user.keyboard('{Enter}')
 
-  expect(adapter).not.toHaveBeenCalled()
+  await waitFor(() => expect(adapter).toHaveBeenCalledTimes(1))
+  expect(adapter.mock.calls[0][0].url).toBe('/api/user/register')
 
   view.unmount()
   queryClient.clear()
 })
 
-it('勾选协议后注册成功，请求携带 consent 与 consent_version', async () => {
+it('注册成功后返回登录且协议默认未选，注册请求不暗中同意协议', async () => {
   const adapter = vi.fn<AxiosAdapter>(async (config) => ({
     config,
     data: { success: true, message: 'ok' },
@@ -158,7 +158,6 @@ it('勾选协议后注册成功，请求携带 consent 与 consent_version', asy
   const user = userEvent.setup()
 
   await fillRegistration(user)
-  await user.click(screen.getByRole('checkbox'))
   await user.click(createAccountButton())
 
   await waitFor(() => expect(adapter).toHaveBeenCalledTimes(1))
@@ -167,9 +166,35 @@ it('勾选协议后注册成功，请求携带 consent 与 consent_version', asy
   const body = JSON.parse(String(call.data)) as Record<string, unknown>
   expect(body.username).toBe('enrollment-user')
   expect(body.password).toBe(REGISTER_PASSWORD)
-  expect(body.consent).toBe(true)
-  expect(body.consent_version).toBe(CONSENT_VERSION)
+  expect(body).not.toHaveProperty('consent')
+  expect(body).not.toHaveProperty('consent_version')
+  expect(await screen.findByRole('checkbox')).not.toBeChecked()
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
 
   view.unmount()
   queryClient.clear()
 })
+
+it.each(['Continue with GitHub', 'Continue with WeChat'])(
+  '注册页点击 %s 返回登录先阅读协议，不发起认证请求',
+  async (provider) => {
+    const adapter = vi.fn<AxiosAdapter>()
+    api.defaults.adapter = adapter
+    const { view, queryClient } = await renderSignUp({
+      oauth_register_enabled: true,
+      github_oauth: true,
+      github_client_id: 'client-id',
+      wechat_login: true,
+    })
+
+    await userEvent
+      .setup()
+      .click(screen.getByRole('button', { name: new RegExp(provider) }))
+    expect(await screen.findByRole('checkbox')).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    expect(adapter).not.toHaveBeenCalled()
+
+    view.unmount()
+    queryClient.clear()
+  }
+)

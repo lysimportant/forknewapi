@@ -40,6 +40,7 @@ export interface TwoFAPayload {
   flow_token: string
 }
 
+/** 注册只创建账号；协议确认在随后建立登录会话时提交。 */
 export interface RegisterPayload {
   username: string
   password: string
@@ -47,9 +48,6 @@ export interface RegisterPayload {
   verification_code?: string
   aff_code?: string
   turnstile?: string
-  /** 注册与登录使用同一组协议确认字段 */
-  consent: boolean
-  consent_version: string
 }
 
 export interface PasswordResetPayload {
@@ -107,7 +105,7 @@ export interface ApiResponse<T = unknown> {
  * 协议为站点内置内容，因此 required 始终为 true，前端必须按版本回传同意标记。
  */
 export interface LegalConsentStatus {
-  /** 当前生效的协议版本，登录/注册必须原样回传 */
+  /** 当前生效的协议版本，登录时必须原样回传。 */
   version?: string
   /** 服务端是否强制要求同意 */
   required?: boolean

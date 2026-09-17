@@ -9,7 +9,7 @@ import (
 
 // CurrentLegalConsentVersion 是《API 服务、隐私与使用责任协议》当前生效的版本号。
 //
-// 登录与注册流程必须携带该版本号，服务端据此拒绝缺失、未同意和过期版本的请求。
+// 登录流程必须携带该版本号，服务端据此拒绝缺失、未同意和过期版本的请求。
 // 修订协议正文时必须同步递增版本号，否则已经确认旧版正文的客户端会被错误放行。
 const CurrentLegalConsentVersion = "2026-09-16"
 
@@ -45,7 +45,7 @@ func GetLegalSettings() *LegalSettings {
 type ConsentRequirement struct {
 	// Version 是当前生效的协议版本，客户端确认后必须原样回传。
 	Version string `json:"version"`
-	// Required 为 true 表示登录与注册必须携带匹配版本的同意标记。
+	// Required 为 true 表示登录必须携带匹配版本的同意标记。
 	Required bool `json:"required"`
 }
 

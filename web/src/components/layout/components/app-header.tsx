@@ -148,10 +148,10 @@ export function AppHeader({
         )}
       </Header>
 
-      {/* 时间轴弹窗只在控制台布局挂载：登录页不会自动遮挡登录流程 */}
       <AnnouncementTimelineDialog
         open={notifications.timelineOpen}
         onOpenChange={notifications.setTimelineOpen}
+        notice={notifications.notice}
         announcements={notifications.allAnnouncements}
         onCloseForToday={notifications.closeTimelineForToday}
         closeTodayPersists={notifications.closeTodayPersists}
