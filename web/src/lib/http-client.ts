@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
-import { toast } from '@/lib/toast'
 
 import {
   applyAuthRotation,
@@ -27,6 +26,7 @@ import {
   refreshAuthentication,
 } from '@/lib/auth-session'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { toast } from '@/lib/toast'
 import { useAuthStore } from '@/stores/auth-store'
 
 declare module 'axios' {
@@ -101,6 +101,8 @@ api.interceptors.response.use(
     return response
   },
   async (error) => {
+    // 查询失效时主动取消旧请求，不把正常取消提示为网络故障。
+    if (axios.isCancel(error)) throw error
     const config = error?.config as ApiRequestConfig | undefined
     const skipErrorHandler = config?.skipErrorHandler
     const status = error?.response?.status

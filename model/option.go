@@ -227,6 +227,8 @@ func validateOptionValue(key string, value string) error {
 	return nil
 }
 
+// UpdateOption 按配置键保存字符串值，持久化成功后发布到内存配置。
+// 返回校验、数据库或内存配置更新错误；数据库事务失败时不发布新值。
 func UpdateOption(key string, value string) error {
 	if IsModelPricingOption(key) {
 		return UpdateModelPricingOptions(map[string]string{key: value})
@@ -234,18 +236,17 @@ func UpdateOption(key string, value string) error {
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
-	// Save to database first
-	option := Option{
-		Key: key,
+	// 在同一事务中完成查找/插入与保存；任一步失败都回滚，避免留下空配置行。
+	option := Option{Key: key}
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+			return err
+		}
+		option.Value = value
+		return tx.Save(&option).Error
+	}); err != nil {
+		return err
 	}
-	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
-	option.Value = value
-	// Save is a combination function.
-	// If save value does not contain primary key, it will execute Create,
-	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
-	// Update OptionMap
 	return updateOptionMap(key, value)
 }
 

@@ -1,6 +1,6 @@
 # 下一阶段功能计划
 
-更新时间：2026-09-17。状态：**五项需求的本地验收及公告、协议、注册登录反馈修复已完成；生产发布验收仍有前置条件**。本轮最新行为与证据见第 12 节；第 9–11 节保留各轮记录，生产发布门槛继续见第 10.5 节。
+更新时间：2026-09-17。状态：**公告保存与弹窗来源反馈修复已完成本地验收；生产发布仍有前置条件**。最新行为、验收与 agent 分工见第 13 节；第 9–12 节保留各轮记录，生产发布门槛继续见第 10.5 节。
 
 本次交付为根目录 `next.md`，对应登录协议、公告弹窗、关于页面、文档链接、推荐奖励提现五项需求。第 1–7 节保留原始规划与业务规则（其中阶段 A 需要确认的三项规则按推荐默认值落地，见第 9.1 节），第 9 节记录实际实施、验证证据、未实施事项与剩余风险。
 
@@ -14,7 +14,7 @@
 | 文档链接配置（第 6 节）         | 已实施 | 是         | 校验、刷新及唯一编辑入口通过                | 通过                            |
 | 推荐奖励 48 小时冻结（第 7 节） | 已实施 | 是         | 三库账本、迁移、重试及接口用例通过          | 通过                            |
 
-**结论口径**：第 10 节的全量前端测试为当轮 837/837；第 12 节最新相关测试为 128/128，并完成桌面浏览器及三数据库认证回归。修改文件 lint 无 error，全仓 lint 仍有存量问题。生产日志留存、外部身份提供方和运营隐私声明尚未验收，不得据此认为整体发布验收完成。
+**结论口径**：第 13 节最新前端全量测试为 860/860，公告持久化完成真实三库及桌面浏览器验收；第 10、12 节的 837/837 与 128/128 属各轮历史结果。修改文件 lint 无 error，全仓 lint 仍有存量问题。生产日志留存、外部身份提供方和运营隐私声明尚未验收，不得据此认为整体发布验收完成。
 
 ## 1. 范围、基线与优先级
 
@@ -137,7 +137,7 @@
 - 保留旧字段 `id`、`content`、`publishDate`、`type`、`extra`，仅补充必要的 `pinned`。旧数据缺少 `pinned` 时按 `false` 读取；前后端均校验类型。
 - 默认支持多条置顶。排序为“置顶优先 → 各组发布时间倒序 → 时间相同时保持稳定顺序”；弹窗、通知列表和仪表盘保持一致。
 - 保留现有限制：最多 100 条，正文 500 字，额外说明 100 字，时间使用 RFC3339。若以后确需长公告再单独调整限制，不在本轮隐式放宽。
-- 沿用手动保存即发布，发布时间用于展示，不额外增加定时发布、附件或草稿审批系统。
+- 添加/编辑弹窗确认、置顶和删除确认即写入服务端，无需再点“保存设置”；只有收到成功才显示完成，失败保留编辑内容和旧列表。发布时间用于展示，不增加定时发布、附件或草稿审批系统。
 - 原内容设置页保留导航到统一编辑入口。旧 `Notice` 文本保留在兼容区域，继续维持已有读取契约；如管理员选择迁入列表，必须保留原文并避免重复展示，不自动覆盖或删除。
 - 管理权限沿用 `/api/option/` 的 `RootAuth`；公开读取接口仅返回可公开的公告数据。保存失败保留草稿，保存成功刷新公告和 status 缓存。
 
@@ -168,7 +168,7 @@
 
 | 操作或场景                           | 计划行为                                                                         |
 | ------------------------------------ | -------------------------------------------------------------------------------- |
-| 自动弹出                             | 首页、关于页等公共页面或控制台首次进入时弹出；支持旧 Notice 正文与启用的时间轴公告。登录页不自动遮挡登录流程 |
+| 自动弹出                             | 首页、关于页等公共页面或控制台首次进入时，仅对已启用且非空的系统公告列表弹出。旧 Notice 只在通知面板展示，登录页不自动遮挡登录流程 |
 | 右上角 × / 关闭公告 / Esc / 点击遮罩 | 关闭本次；当前标签页的本次页面会话不因路由切换反复弹出，刷新或下次进入可再次弹出 |
 | 今日关闭                             | 持久化至当前浏览器本地日期结束，刷新和重新进入仍不自动弹出；次日首次进入恢复     |
 | 当天新增或置顶公告                   | 尊重已选择的“今日关闭”，不强制打断用户                                           |
@@ -622,3 +622,43 @@ Chromium `151.0.7922.34` + Playwright，隔离站点 `127.0.0.1:3017` 与最终�
 证据保存在 `.local-tests/next-acceptance/`：`entry-browser-results.json`、`screenshots/entry-{notice-1440,login-message-1440,agreement-1280,register-1280,footer-dialog-1280}.jpg`。隔离服务日志为 `entry-server-final.log`；二进制为 `new-api-entry-final.exe`，仅本地 overlay `entry-loopback-overlay.json` 将监听地址限制到 loopback，仓库 `main.go` 未改。启动时必须指定本节隔离 SQLite 路径、清空其他 SQL/Redis DSN，并在进程环境生成独立会话/加密密钥；重新生成密钥会使本地测试会话失效。不得不带隔离环境直接启动到其他库。
 
 最后成功阶段：128/128、typecheck、生产构建、三库认证、Go build/vet、最新构建浏览器烟测和修改文件检查。交付至 `fork/main`，按跨模块接口行为变更创建中文 annotated Tag；提交、Tag 和远端一致性以最终 Git 核验为准。第 10.5 节生产待办继续保留，另需注意管理员配置的外部协议 URL 若禁止 iframe 嵌入，不能在 Dialog 内强制加载，建议配置正文。
+
+## 13. 2026-09-17 公告保存与内容来源修复验收
+
+本轮为 **P1、前后端配置保存修复**，从 `main@9ffa60abd` 的未提交改动继续，上游为 `fork/main`。Node `24.12.0`、本地 Bun `1.4.2`、Go `1.26.0`，依赖已存在，未安装或升级。验收目标为添加、编辑、置顶、单条及批量删除确认后立即持久化，失败保留输入和旧值，时间轴 Dialog 只显示系统公告列表，PC Web 刷新及重新启动后结果一致。
+
+不改变数据库结构、配置格式、认证或计费规则，不操作生产数据。数据库验证使用独立 SQLite/MySQL/PostgreSQL；失败事务不得留下空配置行或更新内存。回滚仅需回退本轮代码，无数据迁移。本轮覆盖第 12 节的旧 Notice 混入时间轴行为，旧 Notice 仍可通过通知面板阅读。
+
+### 13.1 原任务与 agent 分工核对
+
+原任务 `01a0aa79-8dbb-70d2-848d-70b0ae3afd1c` 的最后公告反馈轮中断，不能以此前第 12 节的完成记录替代本次验收。
+
+| 责任方 | 已核实工作 | 状态与缺口 |
+| --- | --- | --- |
+| 原主 agent | 确认新增只更新页面草稿；从公共及控制台 Header、时间轴 Dialog、自动弹出钩子移除旧 Notice，调整相关测试 | 未完成整体验证、检查点、提交和推送 |
+| 原 `notice_entry_fix` sub agent (`01a0ad55-5dd1-7250-b5bd-af1b4725dab2`) | 先只读定位双重保存与旧查询竞争；随后负责公告管理及其测试，改为立即保存、失败保留、保存中禁止冲突操作，删除复用 ConfirmDialog | 早期 5 用例和 typecheck 曾通过；最后扩至 8 用例时仍有 2 失败，不能沿用旧通过结论 |
+| 原 `auth_consent_flow` sub agent (`01a0ad55-fb04-70e1-bd32-4c726464a8f8`) | 本反馈轮转为负责 `model/option.go` 和集中测试，事务检查数据库错误后才更新内存 | SQLite 通过；MySQL/PostgreSQL 因未配置 DSN 被 SKIP |
+| 本轮主 agent | 读取上述主/子任务工具记录、实际差异与检查点；修正失败测试，补 AbortSignal 和设置查询去重边界、取消提示处理；完成前端全量、浏览器真实保存/刷新/重启验证与 Git 交付 | 验收完成；提交、Tag 和推送以最终 Git 核验为准 |
+| 本轮 `option_persistence` sub agent | 修正 MySQL 保留字测试查询，补成功更新/清空/重复保存与连接失败测试，执行真实三库、Go 全量测试及 build/vet | 已交付，主 agent 已核对源码哈希与日志 |
+| 本轮 `announcement_review` sub agent | 只读复现取消查询后再次回读复用旧 HTTP Promise 的竞态，提出设置查询传递 signal 并交由 React Query 去重；最终复审无阻塞发现 | 已交付，没有修改文件 |
+
+### 13.2 验收结果与交付边界
+
+- [x] 前端恢复基线：5 文件，25 通过、2 失败，并有 JSDOM `getAnimations` 缺失异常；证据 `announcement-recovery-baseline.log`。失败分别涉及 Sonner 包装后监听失效和同一错误断言等待超时。
+- [x] 三库保存/回滚：SQLite `3.50.4`、MySQL `8.0.46`、PostgreSQL `16.15` 无 SKIP；Go build/vet 与配置相关回归通过。证据前缀 `announcement-backend-20260917150129714-`。
+- [x] 最终后端全量 `GOWORK=off go test ./... -p 1 -count=1` 通过，耗时 294.9 秒；日志 `announcement-backend-20260917160712360-go-test-full.log`，独立三库配置由验收脚本注入。controller 完整包通过，未把该结果表述为所有测试都覆盖三库。
+- [x] 最终前端全量 113 文件、860/860 通过，日志 `announcement-frontend-final.log`；公告管理 9/9，typecheck、修改文件 lint/format 和生产构建通过。公共通知测试的 `getAnimations` 适配限定该文件并恢复原属性。第一次全量检查 859/860，API Key 抽屉出现一处即时断言失败；收窄测试环境后专项 5/5 与最终全量均通过，没有改动 API Key 功能代码。
+- [x] 最新隔离构建 `http://127.0.0.1:3021/about` 的 10 项浏览器检查通过：新增、编辑、置顶/取消置顶、单条/批量删除立即保存；重新加载与进程重启保持公告；写入失败保留输入与数据库旧值并可重试；旧 Notice 只在通知面板；普通关闭刷新重开、今日关闭抑制自动但允许手动查看。浏览器未处理异常及 error 控制台为空（匿名初始化 401 属预期请求，单独排除）。
+- [x] 最终证据、完整 diff、修改文件格式与敏感信息检查通过。交付目标为 `fork/main`（`https://github.com/lysimportant/forknewapi.git`），按共享数据库写入行为变更创建中文 annotated Tag `v1.0.0-rc.35.custom.12`；提交和远端一致性由最终 Git 输出核验。本轮不授权生产部署。
+
+范围外记录：`TestUpdateOptionAliasBillingExprUsesPluginSchema` 单独运行因夹具未初始化 `commonKeyCol` 生成缺列查询；用 HEAD 原始 `option.go` overlay 同样复现，日志 `announcement-backend-20260917153727203-baseline-controller.log`。完整 controller 包最终通过，但独立运行夹具问题仍应单独治理，未修改计费模块。全仓 lint 存量问题及第 10.5 节生产待办继续保留。
+
+可复核命令：`bun run test`、`bun run typecheck`、`bun run build`；触及 TS/TSX 文件使用 `node node_modules/oxlint/bin/oxlint -c .oxlintrc.json <文件>` 和 `node node_modules/oxfmt/bin/oxfmt --check <文件>`。后端执行 `GOWORK=off go build ./...`、`go vet ./...` 及上述全量测试；三库专项为 `go test ./model/ -run '^TestUpdateOptionPersistsAndPropagatesDatabaseErrors$' -count=1 -v`，必须提供独立 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN`。本地脚本 `announcement-backend-verify.ps1 -Mode all` 与 `-Mode full` 保存对应脱敏证据。
+
+### 13.3 隔离运行与界面证据
+
+浏览器脚本为 `.local-tests/next-acceptance/announcement-browser.cjs`，结果为 `announcement-browser-results.json`，服务日志为 `announcement-server.log`。后端二进制 `new-api-announcement.exe` 嵌入最新前端，复用仅本地 `entry-loopback-overlay.json` 绑定 `127.0.0.1:3021`；仓库监听代码未修改。测试专用数据库为 `announcement-site-1789632159953/site.db`，与此前 3018/3019/3020 和生产库隔离，测试账号及会话密钥运行时生成，没有写入代码或报告。
+
+1440×900 的管理页、编辑失败状态、公告 Dialog 与 1280×720 的 Dialog 截图均已逐张检查，正文与按钮无重叠或横向溢出，弹窗保持原有布局和关闭入口。截图为 `screenshots/announcement-{settings-1440,edit-failure-1440,timeline-1440,timeline-1280}.png`。组件继续复用 `Dialog`、`ConfirmDialog`、`StaticDataTable`、`StaticRowActions`、`DateTimePicker`，没有新增通用 UI。49 个触及文件中的翻译键在七语言均存在且非空，未修改 locale、依赖或锁文件。
+
+另补中文默认画面 `screenshots/announcement-timeline-zh-1440.png`：系统公告、关闭公告、今日关闭与置顶标记均正常，实测 Dialog 宽 720px、高 239.75px。源代码及验收日志未检出凭据或新增调试输出；本地生成账号只用于隔离验收，不用于生产。

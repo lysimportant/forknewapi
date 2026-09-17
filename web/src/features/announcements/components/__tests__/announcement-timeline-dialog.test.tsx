@@ -37,7 +37,6 @@ const announcements: AnnouncementEntry[] = [
 
 function renderDialog(overrides?: {
   items?: AnnouncementEntry[]
-  notice?: string
   onCloseForToday?: () => void
   closeTodayPersists?: boolean
 }) {
@@ -47,7 +46,6 @@ function renderDialog(overrides?: {
       open
       onOpenChange={onOpenChange}
       announcements={overrides?.items ?? announcements}
-      notice={overrides?.notice}
       onCloseForToday={overrides?.onCloseForToday ?? vi.fn()}
       closeTodayPersists={overrides?.closeTodayPersists}
     />
@@ -56,15 +54,6 @@ function renderDialog(overrides?: {
 }
 
 describe('公告时间轴弹窗', () => {
-  it('只有旧版站点公告时展示正文，不显示空公告提示', () => {
-    renderDialog({ items: [], notice: 'Please contact **the administrator**.' })
-
-    expect(screen.getByText('the administrator')).toBeVisible()
-    expect(
-      screen.queryByText('No system announcements')
-    ).not.toBeInTheDocument()
-  })
-
   it('按置顶优先、发布时间倒序展示公告并标出置顶项', () => {
     renderDialog()
 

@@ -417,7 +417,6 @@ export function PublicHeader(props: PublicHeaderProps) {
         <AnnouncementTimelineDialog
           open={notifications.timelineOpen}
           onOpenChange={notifications.setTimelineOpen}
-          notice={notifications.notice}
           announcements={notifications.allAnnouncements}
           onCloseForToday={notifications.closeTimelineForToday}
           closeTodayPersists={notifications.closeTodayPersists}

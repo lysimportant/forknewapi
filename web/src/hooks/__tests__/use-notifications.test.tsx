@@ -69,12 +69,13 @@ afterEach(() => {
 })
 
 describe('公告弹窗自动弹出', () => {
-  it('只配置旧版站点公告时仍自动弹出，不依赖时间轴开关', async () => {
+  it('只有旧 Notice 正文时不触发时间轴弹窗，通知面板仍可读取旧正文', async () => {
     statusBody = { announcements_enabled: false, announcements: [] }
     noticeContent = 'Account top-ups: contact the administrator.'
     const { result } = setup()
 
-    await waitFor(() => expect(result.current.timelineOpen).toBe(true))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.timelineOpen).toBe(false)
     expect(result.current.notice).toBe(noticeContent)
   })
 

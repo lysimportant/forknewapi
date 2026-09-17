@@ -17,28 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Pin, PinOff, Plus, Trash2, Save } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Pin, PinOff, Plus, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
 import { DateTimePicker } from '@/components/datetime-picker'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -72,6 +64,7 @@ import {
 } from '../components/settings-form-layout'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import type { SystemOptionsResponse } from '../types'
 
 type Announcement = {
   id: number
@@ -138,15 +131,18 @@ const typeOptions = [
   },
 ]
 
+/** 管理系统公告；每次确认操作立即保存，失败保留输入和已保存列表供重试。 */
 export function AnnouncementsSection({
   enabled,
   data,
 }: AnnouncementsSectionProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const updateOption = useUpdateOption()
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
   const [isEnabled, setIsEnabled] = useState(enabled)
-  const [hasChanges, setHasChanges] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const savingRef = useRef(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [showDialog, setShowDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -166,6 +162,7 @@ export function AnnouncementsSection({
   })
 
   useEffect(() => {
+    if (savingRef.current) return
     try {
       const parsed = JSON.parse(data || '[]')
       if (Array.isArray(parsed)) {
@@ -184,23 +181,73 @@ export function AnnouncementsSection({
   }, [data])
 
   useEffect(() => {
+    if (savingRef.current) return
     setIsEnabled(enabled)
   }, [enabled])
 
   const handleToggleEnabled = async (checked: boolean) => {
+    if (savingRef.current) return
+    savingRef.current = true
+    setIsSaving(true)
     try {
       await updateOption.mutateAsync({
         key: 'console_setting.announcements_enabled',
         value: checked,
       })
       setIsEnabled(checked)
-      // Success toast is handled by useUpdateOption
     } catch {
-      // Error toast is handled by useUpdateOption
+      // 保存失败由公共钩子提示，开关保留原值。
+    } finally {
+      savingRef.current = false
+      setIsSaving(false)
+    }
+  }
+
+  /** 公告操作只有收到服务端成功后才更新列表，失败保留编辑内容供重试。 */
+  const persistAnnouncements = async (
+    next: Announcement[]
+  ): Promise<boolean> => {
+    if (savingRef.current) return false
+    savingRef.current = true
+    setIsSaving(true)
+    const value = JSON.stringify(next)
+    try {
+      await updateOption.mutateAsync({
+        key: 'console_setting.announcements',
+        value,
+        silent: true,
+      })
+      // 共享钩子会触发回读；取消仍在途的旧响应，使用刚确认写入的值更新缓存。
+      await queryClient.cancelQueries({ queryKey: ['system-options'] })
+      queryClient.setQueryData<SystemOptionsResponse>(
+        ['system-options'],
+        (previous) => {
+          if (!previous) return previous
+          return {
+            ...previous,
+            data: [
+              ...previous.data.filter(
+                (option) => option.key !== 'console_setting.announcements'
+              ),
+              { key: 'console_setting.announcements', value },
+            ],
+          }
+        }
+      )
+      setAnnouncements(next)
+      toast.success(t('Announcements saved successfully'))
+      return true
+    } catch {
+      // useUpdateOption 已显示服务端错误；此处不清空输入、不宣告保存成功。
+      return false
+    } finally {
+      savingRef.current = false
+      setIsSaving(false)
     }
   }
 
   const handleAdd = () => {
+    if (savingRef.current) return
     setEditingAnnouncement(null)
     form.reset({
       content: '',
@@ -213,6 +260,7 @@ export function AnnouncementsSection({
   }
 
   const handleEdit = (announcement: Announcement) => {
+    if (savingRef.current) return
     setEditingAnnouncement(announcement)
     form.reset({
       content: announcement.content,
@@ -224,23 +272,23 @@ export function AnnouncementsSection({
     setShowDialog(true)
   }
 
-  // 置顶/取消置顶：与编辑表单一致，保存后统一生效
-  const handleTogglePin = (id: number) => {
-    setAnnouncements((prev) =>
-      prev.map((item) =>
+  const handleTogglePin = async (id: number) => {
+    await persistAnnouncements(
+      announcements.map((item) =>
         item.id === id ? { ...item, pinned: item.pinned !== true } : item
       )
     )
-    setHasChanges(true)
   }
 
   const handleDelete = (announcement: Announcement) => {
+    if (savingRef.current) return
     setEditingAnnouncement(announcement)
     setDeleteTarget('single')
     setShowDeleteDialog(true)
   }
 
   const handleBatchDelete = () => {
+    if (savingRef.current) return
     if (selectedIds.length === 0) {
       toast.error(t('Please select items to delete'))
       return
@@ -249,57 +297,30 @@ export function AnnouncementsSection({
     setShowDeleteDialog(true)
   }
 
-  const confirmDelete = () => {
-    if (deleteTarget === 'single' && editingAnnouncement) {
-      setAnnouncements((prev) =>
-        prev.filter((item) => item.id !== editingAnnouncement.id)
-      )
-      setHasChanges(true)
-      toast.success(t('Announcement deleted. Click "Save Settings" to apply.'))
-    } else if (deleteTarget === 'batch') {
-      setAnnouncements((prev) =>
-        prev.filter((item) => !selectedIds.includes(item.id))
-      )
+  const confirmDelete = async () => {
+    const deletedIds =
+      deleteTarget === 'single' ? [editingAnnouncement?.id] : selectedIds
+    const next = announcements.filter((item) => !deletedIds.includes(item.id))
+    if (await persistAnnouncements(next)) {
       setSelectedIds([])
-      setHasChanges(true)
-      toast.success(
-        t('{{count}} announcements deleted. Click "Save Settings" to apply.', {
-          count: selectedIds.length,
-        })
-      )
+      setShowDeleteDialog(false)
+      setEditingAnnouncement(null)
     }
-    setShowDeleteDialog(false)
-    setEditingAnnouncement(null)
   }
 
-  const handleSubmitForm = (values: AnnouncementFormValues) => {
+  const handleSubmitForm = async (values: AnnouncementFormValues) => {
+    let next: Announcement[]
     if (editingAnnouncement) {
-      setAnnouncements((prev) =>
-        prev.map((item) =>
-          item.id === editingAnnouncement.id ? { ...item, ...values } : item
-        )
+      next = announcements.map((item) =>
+        item.id === editingAnnouncement.id ? { ...item, ...values } : item
       )
-      toast.success(t('Announcement updated. Click "Save Settings" to apply.'))
     } else {
       const newId = Math.max(...announcements.map((item) => item.id), 0) + 1
-      setAnnouncements((prev) => [...prev, { id: newId, ...values }])
-      toast.success(t('Announcement added. Click "Save Settings" to apply.'))
+      next = [...announcements, { id: newId, ...values }]
     }
-    setHasChanges(true)
-    setShowDialog(false)
-  }
-
-  const handleSaveAll = async () => {
-    try {
-      await updateOption.mutateAsync({
-        key: 'console_setting.announcements',
-        value: JSON.stringify(announcements),
-        silent: true,
-      })
-      setHasChanges(false)
-      toast.success(t('Announcements saved successfully'))
-    } catch {
-      // Error toast is handled by useUpdateOption
+    if (await persistAnnouncements(next)) {
+      setShowDialog(false)
+      setEditingAnnouncement(null)
     }
   }
 
@@ -337,7 +358,7 @@ export function AnnouncementsSection({
       <div className='space-y-4'>
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <div className='flex flex-wrap items-center gap-2'>
-            <Button onClick={handleAdd} size='sm'>
+            <Button onClick={handleAdd} size='sm' disabled={isSaving}>
               <Plus className='mr-2 h-4 w-4' />
               {t('Add Announcement')}
             </Button>
@@ -345,24 +366,16 @@ export function AnnouncementsSection({
               onClick={handleBatchDelete}
               size='sm'
               variant='destructive'
-              disabled={selectedIds.length === 0}
+              disabled={selectedIds.length === 0 || isSaving}
             >
               <Trash2 className='mr-2 h-4 w-4' />
               {t('Delete (')}
               {selectedIds.length})
             </Button>
-            <Button
-              onClick={handleSaveAll}
-              size='sm'
-              variant='secondary'
-              disabled={!hasChanges || updateOption.isPending}
-            >
-              <Save className='mr-2 h-4 w-4' />
-              {updateOption.isPending ? t('Saving...') : t('Save Settings')}
-            </Button>
           </div>
           <SettingsSwitchField
             checked={isEnabled}
+            disabled={isSaving}
             onCheckedChange={handleToggleEnabled}
             label={t('Enabled')}
             className='py-0'
@@ -385,12 +398,14 @@ export function AnnouncementsSection({
                     announcements.length > 0
                   }
                   onCheckedChange={toggleSelectAll}
+                  disabled={isSaving}
                 />
               ),
               className: 'w-12',
               cell: (announcement) => (
                 <Checkbox
                   checked={selectedIds.includes(announcement.id)}
+                  disabled={isSaving}
                   onCheckedChange={(checked) =>
                     toggleSelectOne(announcement.id, checked as boolean)
                   }
@@ -412,6 +427,7 @@ export function AnnouncementsSection({
                     aria-label={announcement.pinned ? t('Unpin') : t('Pin')}
                     title={announcement.pinned ? t('Unpin') : t('Pin')}
                     onClick={() => handleTogglePin(announcement.id)}
+                    disabled={isSaving}
                   >
                     {announcement.pinned ? <PinOff /> : <Pin />}
                   </Button>
@@ -473,6 +489,8 @@ export function AnnouncementsSection({
                   menuLabel={t('Open menu')}
                   onEdit={() => handleEdit(announcement)}
                   onDelete={() => handleDelete(announcement)}
+                  editDisabled={isSaving}
+                  deleteDisabled={isSaving}
                 />
               ),
             },
@@ -482,7 +500,10 @@ export function AnnouncementsSection({
 
       <Dialog
         open={showDialog}
-        onOpenChange={setShowDialog}
+        onOpenChange={(open) => {
+          if (!savingRef.current) setShowDialog(open)
+        }}
+        showCloseButton={!isSaving}
         title={
           editingAnnouncement ? t('Edit Announcement') : t('Add Announcement')
         }
@@ -498,11 +519,17 @@ export function AnnouncementsSection({
               type='button'
               variant='outline'
               onClick={() => setShowDialog(false)}
+              disabled={isSaving}
             >
               {t('Cancel')}
             </Button>
-            <Button type='submit' form={ANNOUNCEMENT_FORM_ID}>
-              {editingAnnouncement ? t('Update') : t('Add')}
+            <Button
+              type='submit'
+              form={ANNOUNCEMENT_FORM_ID}
+              disabled={isSaving}
+            >
+              {isSaving && t('Saving...')}
+              {!isSaving && (editingAnnouncement ? t('Update') : t('Add'))}
             </Button>
           </>
         }
@@ -511,6 +538,7 @@ export function AnnouncementsSection({
           <form
             id={ANNOUNCEMENT_FORM_ID}
             onSubmit={form.handleSubmit(handleSubmitForm)}
+            inert={isSaving}
             className='space-y-4'
           >
             <FormField
@@ -521,6 +549,7 @@ export function AnnouncementsSection({
                   <FormLabel>{t('Content')}</FormLabel>
                   <FormControl>
                     <Textarea
+                      disabled={isSaving}
                       placeholder={t(
                         'Enter announcement content (supports Markdown/HTML)'
                       )}
@@ -544,9 +573,11 @@ export function AnnouncementsSection({
                   <FormControl>
                     <DateTimePicker
                       value={field.value ? new Date(field.value) : undefined}
-                      onChange={(date) =>
-                        field.onChange(date ? date.toISOString() : '')
-                      }
+                      onChange={(date) => {
+                        if (!savingRef.current) {
+                          field.onChange(date ? date.toISOString() : '')
+                        }
+                      }}
                       placeholder={t('Select publish date')}
                     />
                   </FormControl>
@@ -566,6 +597,7 @@ export function AnnouncementsSection({
                 <FormItem>
                   <FormLabel>{t('Type')}</FormLabel>
                   <Select
+                    disabled={isSaving}
                     items={typeOptions.map((option) => ({
                       value: option.value,
                       label: (
@@ -614,6 +646,7 @@ export function AnnouncementsSection({
                   <FormLabel>{t('Extra Notes (Optional)')}</FormLabel>
                   <FormControl>
                     <Input
+                      disabled={isSaving}
                       placeholder={t('Additional information')}
                       {...field}
                     />
@@ -640,6 +673,7 @@ export function AnnouncementsSection({
                   </SettingsSwitchContent>
                   <FormControl>
                     <Switch
+                      disabled={isSaving}
                       checked={field.value === true}
                       onCheckedChange={field.onChange}
                     />
@@ -651,26 +685,24 @@ export function AnnouncementsSection({
         </Form>
       </Dialog>
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('Are you sure?')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {deleteTarget === 'single'
-                ? t('This announcement will be removed from the list.')
-                : t('{{count}} announcements will be removed from the list.', {
-                    count: selectedIds.length,
-                  })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
-            <AlertDialogAction variant='destructive' onClick={confirmDelete}>
-              {t('Delete')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={(open) => {
+          if (!savingRef.current) setShowDeleteDialog(open)
+        }}
+        title={t('Are you sure?')}
+        desc={
+          deleteTarget === 'single'
+            ? t('This announcement will be removed from the list.')
+            : t('{{count}} announcements will be removed from the list.', {
+                count: selectedIds.length,
+              })
+        }
+        destructive
+        isLoading={isSaving}
+        confirmText={isSaving ? t('Saving...') : t('Delete')}
+        handleConfirm={confirmDelete}
+      />
     </SettingsSection>
   )
 }

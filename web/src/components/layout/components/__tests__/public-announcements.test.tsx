@@ -26,7 +26,16 @@ import {
 } from '@tanstack/react-router'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 import { api } from '@/lib/api'
 import { useNotificationStore } from '@/stores/notification-store'
@@ -35,6 +44,31 @@ import { PublicHeader } from '../public-header'
 
 /** 每个用例独立创建网络边界与查询缓存，直接运行公共导航的公告交互。 */
 let client: QueryClient
+
+/** 通知面板的滚动组件会查询动画；JSDOM 不运行动画，仅在本测试提供空列表。 */
+const animationDescriptor = Object.getOwnPropertyDescriptor(
+  Element.prototype,
+  'getAnimations'
+)
+
+beforeAll(() => {
+  Object.defineProperty(Element.prototype, 'getAnimations', {
+    configurable: true,
+    value: () => [],
+  })
+})
+
+afterAll(() => {
+  if (animationDescriptor) {
+    Object.defineProperty(
+      Element.prototype,
+      'getAnimations',
+      animationDescriptor
+    )
+  } else {
+    Reflect.deleteProperty(Element.prototype, 'getAnimations')
+  }
+})
 
 /** 渲染与首页、关于页相同的公共导航，不模拟公告钩子或弹窗。 */
 function renderPublicHeader(path: '/' | '/about') {
@@ -80,7 +114,7 @@ beforeEach(() => {
       }
     }
     if (url === '/api/notice') {
-      return { data: { success: true, data: '' } }
+      return { data: { success: true, data: 'Legacy top-up contact notice' } }
     }
     throw new Error(`Unexpected request: ${url}`)
   })
@@ -104,6 +138,9 @@ describe('公共页面公告入口', () => {
       expect(
         within(dialog).getByText('Public entry announcement')
       ).toBeVisible()
+      expect(
+        within(dialog).queryByText('Legacy top-up contact notice')
+      ).not.toBeInTheDocument()
     }
   )
 

@@ -31,8 +31,15 @@ import type {
   UpstreamRatiosResponse,
 } from './types'
 
-export async function getSystemOptions() {
-  const res = await api.get<SystemOptionsResponse>('/api/option/')
+/**
+ * 读取系统配置；取消信号由查询缓存传入，失败或取消时保留请求错误。
+ * React Query 负责去重，避免再次回读时复用保存前尚未结束的 HTTP 请求。
+ */
+export async function getSystemOptions(signal?: AbortSignal) {
+  const res = await api.get<SystemOptionsResponse>('/api/option/', {
+    signal,
+    disableDuplicate: true,
+  })
   return res.data
 }
 

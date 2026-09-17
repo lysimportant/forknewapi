@@ -119,22 +119,17 @@ export function useNotifications() {
     canAutoOpenAnnouncements,
   } = useNotificationStore()
 
-  // 公共页面与控制台首次进入时自动展示；两种公告来源都为空时不弹空窗。
+  // 公共页面与控制台首次进入时只展示系统公告时间轴；旧 Notice 仍在通知面板显示。
   useEffect(() => {
     if (autoOpenHandledRef.current || statusLoading) return
-    if (!noticeContent && allAnnouncements.length === 0) return
+    if (allAnnouncements.length === 0) return
 
     autoOpenHandledRef.current = true
     // 「今日关闭」与「关闭本次」都不强制重新弹出
     if (!canAutoOpenAnnouncements()) return
 
     setTimelineOpen(true)
-  }, [
-    statusLoading,
-    noticeContent,
-    allAnnouncements.length,
-    canAutoOpenAnnouncements,
-  ])
+  }, [statusLoading, allAnnouncements.length, canAutoOpenAnnouncements])
 
   // Calculate unread counts
   const unreadCounts = useMemo(() => {

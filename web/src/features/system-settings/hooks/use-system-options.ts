@@ -20,10 +20,11 @@ import { useQuery } from '@tanstack/react-query'
 
 import { getSystemOptions } from '../api'
 
+/** 缓存系统配置并向 HTTP 层传递取消信号，保存后的回读不会复用旧请求。 */
 export function useSystemOptions() {
   return useQuery({
     queryKey: ['system-options'],
-    queryFn: getSystemOptions,
+    queryFn: ({ signal }) => getSystemOptions(signal),
     staleTime: 5 * 60 * 1000,
   })
 }
