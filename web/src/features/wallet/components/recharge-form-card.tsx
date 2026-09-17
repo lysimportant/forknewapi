@@ -39,6 +39,7 @@ import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { WALLET_SHOP_URL } from '../constants'
+import { extractRedemptionKey } from '../hooks/use-redemption'
 import {
   formatCurrency,
   getDiscountLabel,
@@ -240,6 +241,13 @@ export function RechargeFormCard({
               id='redemption-code'
               value={redemptionCode}
               onChange={(e) => onRedemptionCodeChange(e.target.value)}
+              onPaste={(event) => {
+                const text = event.clipboardData.getData('text/plain')
+                if (!/[\r\n\t]/.test(text)) return
+                // 单行输入会先移除换行，须在默认粘贴前提取第一条兑换码。
+                event.preventDefault()
+                onRedemptionCodeChange(extractRedemptionKey(text))
+              }}
               placeholder={t('Enter your redemption code')}
               className='h-9 min-w-0'
             />
@@ -307,7 +315,7 @@ export function RechargeFormCard({
           <iframe
             src={WALLET_SHOP_URL}
             title={t('My Shop')}
-            className='h-[420px] w-full border-0 bg-background sm:h-[520px]'
+            className='bg-background h-[420px] w-full border-0 sm:h-[520px]'
             sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin'
             referrerPolicy='no-referrer-when-downgrade'
             loading='lazy'
@@ -601,7 +609,6 @@ export function RechargeFormCard({
             />
           </div>
         )}
-
     </TitledCard>
   )
 }

@@ -81,41 +81,47 @@ export function deletePasskey(
 }
 
 /**
- * Passkey 登录没有用户名环节，服务端要求在发起流程时绑定协议确认，
- * 并在会话建立前复核该版本，因此这里必须携带登录前已勾选的协议版本。
+ * 发起指定兼容域名的 Passkey 登录，绑定已勾选的协议版本。
+ * 未指定 RP ID 时由服务端选择；失败抛出认证错误，可通过 signal 取消请求。
  */
-export async function beginPasskeyLogin(
-  consentVersion: string
-): Promise<ApiResponse<PasskeyOptionsPayload>> {
-  const res = await api.post<ApiResponse<PasskeyOptionsPayload>>(
-    '/api/user/passkey/login/begin',
-    { consent: true, consent_version: consentVersion },
-    { skipAuthRefresh: true }
+export function beginPasskeyLogin(
+  consentVersion: string,
+  rpID?: string,
+  signal?: AbortSignal
+): Promise<PasskeyOptionsPayload> {
+  return authResult(
+    api.post<ApiResponse<PasskeyOptionsPayload>>(
+      '/api/user/passkey/login/begin',
+      { consent: true, consent_version: consentVersion, rp_id: rpID },
+      { ...authRequestOptions, signal, skipAuthRefresh: true }
+    )
   )
-  return res.data
 }
 
 export async function finishPasskeyLogin(
   flowToken: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<ApiResponse> {
   const res = await api.post<ApiResponse>(
     '/api/user/passkey/login/finish',
     { flow_token: flowToken, credential: payload },
-    { skipAuthRefresh: true }
+    { skipAuthRefresh: true, signal }
   )
   return res.data
 }
 
 export function beginPasskeyVerification(
   operation: VerificationOperation,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  rpID?: string
 ): Promise<PasskeyOptionsPayload> {
   return authResult(
     api.post(
       '/api/user/passkey/verify/begin',
       {
         scope: operation.scope,
+        ...(rpID ? { rp_id: rpID } : {}),
         ...(operation.context ? { context: operation.context } : {}),
       },
       { ...authRequestOptions, signal }

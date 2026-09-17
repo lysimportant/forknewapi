@@ -16,8 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  act,
+  render as renderView,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -30,6 +38,20 @@ import { TwoFABackupDialog } from '../components/dialogs/two-fa-backup-dialog'
 import { TwoFADisableDialog } from '../components/dialogs/two-fa-disable-dialog'
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
+
+/** 为安全操作提供独立的站点状态缓存，与实际页面的查询上下文一致。 */
+function render(ui: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  })
+  client.setQueryData(['status'], {})
+  return renderView(ui, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  })
+}
+
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => navigate,

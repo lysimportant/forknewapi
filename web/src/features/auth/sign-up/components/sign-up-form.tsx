@@ -47,6 +47,9 @@ import {
   saveAffiliateCode,
 } from '@/features/auth/lib/storage'
 import { useStatus } from '@/hooks/use-status'
+import { handleServerError } from '@/lib/handle-server-error'
+import { AuthOperationError } from '@/lib/secure-verification'
+import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 /** 创建密码账号后返回登录；会建立会话的第三方入口先引导至登录页确认协议。 */
@@ -141,10 +144,12 @@ export function SignUpForm({
         toast.success(t('Account created! Please sign in'))
         redirectToLogin()
       } else {
-        toast.error(res?.message || t('Failed to create account'))
+        handleServerError(createServerError(res, t('Failed to create account')))
       }
-    } catch {
-      // Errors are handled by global interceptor
+    } catch (error) {
+      handleServerError(
+        AuthOperationError.from(error, t('Failed to create account'))
+      )
     } finally {
       setIsLoading(false)
     }

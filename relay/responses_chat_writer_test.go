@@ -92,7 +92,7 @@ func TestResponsesChatWriterText(t *testing.T) {
 	assert.Equal(t, int64(3), last.Get("response.usage.output_tokens").Int())
 	assert.Equal(t, int64(2), last.Get("response.usage.input_tokens_details.cached_tokens").Int())
 	assert.Equal(t, int64(1), last.Get("response.usage.output_tokens_details.reasoning_tokens").Int())
-	assert.JSONEq(t, `{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}`, last.Get("response.usage").Raw)
+	assert.JSONEq(t, `{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2,"text_tokens":0,"image_tokens":0,"audio_tokens":0},"output_tokens_details":{"reasoning_tokens":1,"text_tokens":0,"image_tokens":0,"audio_tokens":0}}`, last.Get("response.usage").Raw)
 	assert.Equal(t, "fixture-state", recorder.Header().Get("X-Codex-Turn-State"))
 	assert.Empty(t, recorder.Header().Get("Content-Length"))
 	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
@@ -167,6 +167,60 @@ func TestResponsesChatWriterBufferedJSON(t *testing.T) {
 			assert.Equal(t, "think", reasoning.Get("summary.0.text").String())
 			assert.False(t, reasoning.Get("content").Exists())
 		})
+	}
+}
+
+// TestResponsesChatWriterUsageModalities 保护三种响应路径的标准模态明细和显式零值，且不泄露或改写内部计费快照。
+func TestResponsesChatWriterUsageModalities(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage string
+		want  string
+	}{
+		{
+			name:  "modalities",
+			usage: `{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":2,"text_tokens":400,"image_tokens":600,"audio_tokens":0,"cached_tokens_details":{"text_tokens":100,"image_tokens":200,"audio_tokens":0}},"completion_tokens_details":{"reasoning_tokens":10,"text_tokens":80,"image_tokens":20,"audio_tokens":0}}`,
+			want:  `{"input_tokens":1000,"output_tokens":100,"total_tokens":1100,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":2,"text_tokens":400,"image_tokens":600,"audio_tokens":0,"cached_tokens_details":{"text_tokens":100,"image_tokens":200,"audio_tokens":0}},"output_tokens_details":{"reasoning_tokens":10,"text_tokens":80,"image_tokens":20,"audio_tokens":0}}`,
+		},
+		{
+			name:  "explicit-zero-only",
+			usage: `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"prompt_tokens_details":{"cached_tokens_details":{"image_tokens":0}}}`,
+			want:  `{"input_tokens":0,"output_tokens":0,"total_tokens":0,"input_tokens_details":{"cached_tokens":0,"text_tokens":0,"image_tokens":0,"audio_tokens":0,"cached_tokens_details":{"image_tokens":0}},"output_tokens_details":{"reasoning_tokens":0,"text_tokens":0,"image_tokens":0,"audio_tokens":0}}`,
+		},
+	} {
+		for _, mode := range []string{"json", "sdk-json-to-sse", "stream"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				w, recorder, _ := responsesWriterFixture(t, mode != "json")
+				body := `{"choices":[{"index":0,"message":{"content":"OK"},"finish_reason":"stop"}]}`
+				if mode == "stream" {
+					body = "data: " + `{"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}]}` + "\n\n"
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				_, err := w.WriteString(body)
+				require.NoError(t, err)
+				var usage dto.Usage
+				require.NoError(t, common.UnmarshalJsonStr(tc.usage, &usage))
+				usage.BillingUsage = dto.NewOpenAIChatBillingUsage(&usage)
+				original, err := common.Marshal(usage)
+				require.NoError(t, err)
+				snapshot := usage.BillingUsage
+				require.Nil(t, w.Finish(&usage, nil))
+				require.Same(t, snapshot, usage.BillingUsage)
+				after, err := common.Marshal(usage)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(original), string(after))
+				response := gjson.Parse(recorder.Body.String())
+				if mode != "json" {
+					events := responsesWriterEvents(t, recorder.Body.String())
+					require.NotEmpty(t, events)
+					assert.Equal(t, "response.completed", events[len(events)-1].Get("type").String())
+					response = events[len(events)-1].Get("response")
+				}
+				assert.JSONEq(t, tc.want, response.Get("usage").Raw)
+				assert.NotContains(t, recorder.Body.String(), "billing_usage")
+			})
+		}
 	}
 }
 
@@ -323,7 +377,7 @@ func TestResponsesChatWriterClaudeUsage(t *testing.T) {
 			}
 			assert.Equal(t, int64(18), response.Get("usage.input_tokens").Int())
 			assert.Equal(t, int64(21), response.Get("usage.total_tokens").Int())
-			assert.JSONEq(t, `{"input_tokens":18,"output_tokens":3,"total_tokens":21,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":2},"output_tokens_details":{"reasoning_tokens":0}}`, response.Get("usage").Raw)
+			assert.JSONEq(t, `{"input_tokens":18,"output_tokens":3,"total_tokens":21,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":2,"text_tokens":0,"image_tokens":0,"audio_tokens":0},"output_tokens_details":{"reasoning_tokens":0,"text_tokens":0,"image_tokens":0,"audio_tokens":0}}`, response.Get("usage").Raw)
 		})
 	}
 }
@@ -357,7 +411,7 @@ func TestResponsesChatWriterOpenAIUsageTerminal(t *testing.T) {
 	assert.Equal(t, "read_file", last.Get("response.output.0.name").String())
 	assert.Equal(t, "call_fixture", last.Get("response.output.0.call_id").String())
 	assert.Equal(t, `{"path":"README.md"}`, last.Get("response.output.0.arguments").String())
-	assert.JSONEq(t, `{"input_tokens":374,"output_tokens":78,"total_tokens":452,"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":12},"output_tokens_details":{"reasoning_tokens":42}}`, last.Get("response.usage").Raw)
+	assert.JSONEq(t, `{"input_tokens":374,"output_tokens":78,"total_tokens":452,"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":12,"text_tokens":0,"image_tokens":0,"audio_tokens":0},"output_tokens_details":{"reasoning_tokens":42,"text_tokens":0,"image_tokens":0,"audio_tokens":0}}`, last.Get("response.usage").Raw)
 	assert.False(t, info.StreamStatus.HasErrors())
 }
 

@@ -31,6 +31,7 @@ import type { PropsWithChildren } from 'react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
+import { handleServerError } from '@/lib/handle-server-error'
 import { api } from '@/lib/http-client'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -127,6 +128,11 @@ describe('保存配置兼容官方刷新与定制提示', () => {
     'console_setting.api_info',
     'general_setting.docs_link',
     'server_address',
+    'ServerAddress',
+    'passkey.enabled',
+    'passkey.rp_id',
+    'passkey.legacy_rp_ids',
+    'passkey.origins',
   ])('配置 %s 同步失效查询与旧公开状态缓存', async (key) => {
     localStorage.setItem('status', 'stale')
     const { result, invalidate } = setup()
@@ -171,7 +177,7 @@ describe('保存配置兼容官方刷新与定制提示', () => {
 })
 
 describe('真实拦截器下的保存错误归属', () => {
-  test('保存请求保留认证、缓存及 JSON headers，不影响其他 API 的错误提示', async () => {
+  test('保存请求保留认证、缓存及 JSON headers，其他 API 由调用方统一提示错误', async () => {
     useAuthStore.setState((state) => ({
       auth: { ...state.auth, accessToken: 'test-only-token' },
     }))
@@ -191,7 +197,11 @@ describe('真实拦截器下的保存错误归属', () => {
     )
     expect(request.skipAuthRefresh).toBeUndefined()
     responseBody = { success: false, message: 'Other request rejected' }
-    await api.post('/test-unrelated-api')
+    const response = await api.post('/test-unrelated-api')
+    expect(response.data).toEqual(responseBody)
+    expect(toast.error).not.toHaveBeenCalled()
+    handleServerError(response.data)
+    handleServerError(response.data)
     expect(toast.error).toHaveBeenCalledExactlyOnceWith(
       'Other request rejected'
     )

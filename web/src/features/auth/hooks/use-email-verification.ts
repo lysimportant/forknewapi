@@ -4,7 +4,9 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { useCountdown } from '@/hooks/use-countdown'
+import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
+import { createServerError } from '@/lib/server-error-message'
 
 import { sendEmailVerification } from '../api'
 import { EMAIL_VERIFICATION_COUNTDOWN } from '../constants'
@@ -59,9 +61,7 @@ export function useEmailVerification(options?: UseEmailVerificationOptions) {
         toast.success(i18next.t('Verification email sent'))
         return true
       }
-      throw new AuthOperationError(
-        res?.message || 'Failed to send verification email'
-      )
+      throw createServerError(res, 'Failed to send verification email')
     } catch (error) {
       // 网络异常没有服务端文案，使用可翻译的重试提示。
       const message =
@@ -69,13 +69,17 @@ export function useEmailVerification(options?: UseEmailVerificationOptions) {
           ? 'Failed to send verification email'
           : AuthOperationError.from(error, 'Failed to send verification email')
               .message
-      toast.error(
-        message ===
-          "This email address is not allowed by the administrator's email policy."
-          ? i18next.t(
-              'This email address is not supported. Please use a QQ email address (e.g. 123456@qq.com).'
-            )
-          : i18next.t(message)
+      handleServerError(
+        new AuthOperationError(
+          message ===
+            "This email address is not allowed by the administrator's email policy."
+            ? i18next.t(
+                'This email address is not supported. Please use a QQ email address (e.g. 123456@qq.com).'
+              )
+            : i18next.t(message),
+          undefined,
+          { cause: error }
+        )
       )
       return false
     } finally {

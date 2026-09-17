@@ -16,17 +16,15 @@ export const meta = {
     resolution: {
       enum: ["720P", "1080P"],
       description: {
-        en: "Requested mode: std corresponds to 720P, pro to 1080P. Model mode restrictions still apply.",
-        zh: "请求模式对应清晰度：std为720P，pro为1080P；仍受型号支持的模式限制。",
+        en: "Output video resolution",
+        zh: "输出视频分辨率",
       },
     },
+    // 可灵资源包消耗：提交时估算，完成时使用上游实际扣量。
     units: {
       type: "number",
       unit: "credit",
-      description: {
-        en: "Kling final unit deduction (estimated at submit, actual on completion).",
-        zh: "可灵最终单位消耗（提交时预估，完成后按实际值）。",
-      },
+      description: { en: "Kling credit unit price", zh: "可灵资源包单位单价" },
     },
   },
   usageExamples: [

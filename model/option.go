@@ -1,6 +1,7 @@
 package model
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -188,22 +189,28 @@ func InitOptionMap() {
 
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()
-	for k, v := range modelConfigs {
-		common.OptionMap[k] = v
-	}
+	maps.Copy(common.OptionMap, modelConfigs)
 
 	common.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
 
 func loadOptionsFromDatabase() {
+	passkeyOptionMutex.Lock()
+	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
+	passkeyOptions := make(map[string]string)
 	for _, option := range options {
+		if IsPasskeyDomainOption(option.Key) {
+			passkeyOptions[option.Key] = option.Value
+			continue
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
 	}
+	applyPasskeyDomainOptions(passkeyOptions)
 }
 
 func SyncOptions(frequency int) {
@@ -230,6 +237,10 @@ func validateOptionValue(key string, value string) error {
 // UpdateOption 按配置键保存字符串值，持久化成功后发布到内存配置。
 // 返回校验、数据库或内存配置更新错误；数据库事务失败时不发布新值。
 func UpdateOption(key string, value string) error {
+	if IsPasskeyDomainOption(key) {
+		_, err := UpdatePasskeyDomainOptions(map[string]string{key: value}, false, "")
+		return err
+	}
 	if IsModelPricingOption(key) {
 		return UpdateModelPricingOptions(map[string]string{key: value})
 	}
@@ -258,6 +269,12 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for key := range values {
+		if IsPasskeyDomainOption(key) {
+			_, err := UpdatePasskeyDomainOptions(values, false, "")
+			return err
+		}
 	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {

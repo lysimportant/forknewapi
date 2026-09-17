@@ -350,8 +350,12 @@ it('URL 模式保留 iframe sandbox 且保留归属信息', async () => {
   })
   const { view, queryClient } = renderAbout()
 
-  const frame = await screen.findByTitle('About')
-  expect(frame).toHaveAttribute('src', 'https://example.com/about-page')
+  await waitFor(() => {
+    expect(
+      view.container.querySelector('iframe[title="About"]')
+    ).toHaveAttribute('src', 'https://example.com/about-page')
+  })
+  const frame = view.container.querySelector('iframe[title="About"]')
   expect(frame).toHaveAttribute(
     'sandbox',
     'allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'

@@ -304,3 +304,56 @@ it('协议已更新时提示刷新页面重新同意，而不是通用失败', a
   view.unmount()
   queryClient.clear()
 })
+
+it('已同意协议的 Passkey 登录携带协议版本和域名，旧域名失效重试仍保留确认', async () => {
+  vi.stubGlobal('PublicKeyCredential', class {})
+  const credentialGet = vi
+    .fn()
+    .mockRejectedValue(new DOMException('Cancelled', 'NotAllowedError'))
+  vi.stubGlobal('navigator', { credentials: { get: credentialGet } })
+  window.localStorage.setItem(
+    'passkey:last-successful-rp-id',
+    'old.example.com'
+  )
+  const adapter = vi.fn<AxiosAdapter>(async (config) => {
+    const request = JSON.parse(String(config.data))
+    const data = request.rp_id
+      ? { success: false, code: 'PASSKEY_RP_ID_UNAVAILABLE', message: '' }
+      : {
+          success: true,
+          data: {
+            flow_token: 'domain-login',
+            rp_ids: ['example.com'],
+            options: { publicKey: { challenge: 'AQID', rpId: 'example.com' } },
+          },
+        }
+    return { config, data, status: 200, statusText: 'OK', headers: {} }
+  })
+  api.defaults.adapter = adapter
+  const { view, queryClient } = await renderSignIn({ passkey_login: true })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('checkbox'))
+  await user.click(screen.getByRole('button', { name: 'Sign in with Passkey' }))
+  await waitFor(() => expect(credentialGet).toHaveBeenCalledOnce())
+  expect(adapter).toHaveBeenCalledTimes(2)
+  for (const [config] of adapter.mock.calls) {
+    expect(config.url).toBe('/api/user/passkey/login/begin')
+    expect(JSON.parse(String(config.data))).toMatchObject({
+      consent: true,
+      consent_version: CONSENT_VERSION,
+    })
+  }
+  expect(JSON.parse(String(adapter.mock.calls[0][0].data)).rp_id).toBe(
+    'old.example.com'
+  )
+  expect(
+    JSON.parse(String(adapter.mock.calls[1][0].data)).rp_id
+  ).toBeUndefined()
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Sign in with Passkey' })
+    ).toBeEnabled()
+  )
+  view.unmount()
+  queryClient.clear()
+})

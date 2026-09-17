@@ -23,6 +23,7 @@ import { sortAnnouncements } from '@/features/announcements/lib/announcement-sor
 import type { AnnouncementEntry } from '@/features/announcements/types'
 import { useStatus } from '@/hooks/use-status'
 import { getNotice } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { useNotificationStore } from '@/stores/notification-store'
 
 function hashString(input: string): string {
@@ -82,7 +83,7 @@ export function useNotifications() {
     refetch: refetchNotice,
   } = useQuery({
     queryKey: ['notice'],
-    queryFn: getNotice,
+    queryFn: async () => requireServerSuccess(await getNotice()),
     staleTime: 1000 * 60 * 5, // 5 minutes
   })
 

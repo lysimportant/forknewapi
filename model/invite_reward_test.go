@@ -171,6 +171,11 @@ func TestInviteRewardGrantIsIdempotentPerSource(t *testing.T) {
 			inviteeAfter := reloadInviteRewardTestUser(t, invitee.Id)
 			assert.Equal(t, 100, inviteeAfter.Quota, "受邀人赠送直接计入余额")
 			assert.Zero(t, inviteeAfter.AffQuota, "受邀人赠送不进入邀请人冻结账本")
+			inviteeSummary, err := GetInviteRewardSummary(invitee.Id)
+			require.NoError(t, err)
+			assert.Zero(t, inviteeSummary.FrozenQuota)
+			assert.Zero(t, inviteeSummary.WithdrawableQuota)
+			assert.Empty(t, inviteeSummary.Rewards, "受邀人赠送来源不展示为邀请人奖励")
 
 			var rewards []InviteReward
 			require.NoError(t, DB.Where("user_id = ?", inviter.Id).Find(&rewards).Error)
@@ -200,17 +205,20 @@ func TestInviteRewardFreezeBoundary(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {
 			openInviteRewardTestDB(t, dialect)
-			user := newInviteRewardTestUser(t, 0, 0)
+			user := newInviteRewardTestUser(t, inviteRewardTestQuotaPerUnit, 0)
 			createdAt := int64(1_800_000_000)
 			seedInviteReward(t, user.Id, InviteRewardKindInviter, inviteRewardTestQuotaPerUnit, createdAt)
+			claimed, err := ClaimInviteReward(DB, user.Id, inviteRewardSourceKey(InviteRewardKindInvitee, user.Id), InviteRewardKindInvitee, inviteRewardTestQuotaPerUnit, createdAt-inviteRewardTestFreeze)
+			require.NoError(t, err)
+			require.True(t, claimed)
 
 			beforeDeadline := createdAt + inviteRewardTestFreeze - 1
-			_, err := WithdrawInviteRewardsAt(user.Id, "boundary-early", inviteRewardTestQuotaPerUnit, beforeDeadline)
+			_, err = WithdrawInviteRewardsAt(user.Id, "boundary-early", inviteRewardTestQuotaPerUnit, beforeDeadline)
 			var frozen *InviteRewardFrozenError
 			require.Error(t, err)
 			require.True(t, errors.As(err, &frozen), "冻结期内的提现必须报告最近可提现时间")
 			assert.Equal(t, createdAt+inviteRewardTestFreeze, frozen.NextAvailableAt)
-			assert.Zero(t, reloadInviteRewardTestUser(t, user.Id).Quota, "被拒绝的提现不得改变余额")
+			assert.Equal(t, inviteRewardTestQuotaPerUnit, reloadInviteRewardTestUser(t, user.Id).Quota, "被拒绝的提现不得改变已经入账的赠送余额")
 
 			atDeadline := createdAt + inviteRewardTestFreeze
 			quota, err := WithdrawInviteRewardsAt(user.Id, "boundary-exact", inviteRewardTestQuotaPerUnit, atDeadline)
@@ -218,13 +226,16 @@ func TestInviteRewardFreezeBoundary(t *testing.T) {
 			assert.Equal(t, inviteRewardTestQuotaPerUnit, quota)
 
 			after := reloadInviteRewardTestUser(t, user.Id)
-			assert.Equal(t, inviteRewardTestQuotaPerUnit, after.Quota)
+			assert.Equal(t, 2*inviteRewardTestQuotaPerUnit, after.Quota)
 			assert.Zero(t, after.AffQuota)
 
 			// 到期本身不会自动划转：未点击提现时余额保持不变。
 			var reward InviteReward
-			require.NoError(t, DB.Where("user_id = ?", user.Id).First(&reward).Error)
+			require.NoError(t, DB.Where("user_id = ? AND kind = ?", user.Id, InviteRewardKindInviter).First(&reward).Error)
 			assert.Zero(t, reward.RemainingQuota)
+			var gifted InviteReward
+			require.NoError(t, DB.Where("user_id = ? AND kind = ?", user.Id, InviteRewardKindInvitee).First(&gifted).Error)
+			assert.Equal(t, inviteRewardTestQuotaPerUnit, gifted.RemainingQuota, "提现不得消耗赠送去重记录")
 		})
 	}
 }
@@ -407,6 +418,8 @@ func TestInitializeInviteRewardLedgerIsIdempotent(t *testing.T) {
 			openInviteRewardTestDB(t, dialect)
 			legacy := newInviteRewardTestUser(t, 0, 3*inviteRewardTestQuotaPerUnit)
 			zero := newInviteRewardTestUser(t, 0, 0)
+			frozen := newInviteRewardTestUser(t, 0, 0)
+			seedInviteReward(t, frozen.Id, InviteRewardKindInviter, inviteRewardTestQuotaPerUnit, common.GetTimestamp())
 
 			require.NoError(t, InitializeInviteRewardLedger())
 			require.NoError(t, InitializeInviteRewardLedger())
@@ -420,6 +433,13 @@ func TestInitializeInviteRewardLedgerIsIdempotent(t *testing.T) {
 			var zeroCarryovers int64
 			require.NoError(t, DB.Model(&InviteReward{}).Where("user_id = ?", zero.Id).Count(&zeroCarryovers).Error)
 			assert.Zero(t, zeroCarryovers, "余额为零的用户无需结转")
+			var frozenRewards []InviteReward
+			require.NoError(t, DB.Where("user_id = ?", frozen.Id).Find(&frozenRewards).Error)
+			require.Len(t, frozenRewards, 1, "已有冻结账本不得再次结转为可立即提现的历史余额")
+			assert.Equal(t, InviteRewardKindInviter, frozenRewards[0].Kind)
+			_, err := WithdrawInviteRewardsAt(frozen.Id, "restart-preserves-freeze", inviteRewardTestQuotaPerUnit, common.GetTimestamp())
+			var frozenErr *InviteRewardFrozenError
+			require.ErrorAs(t, err, &frozenErr)
 
 			// 历史结转是可提现例外：产生即可提取，不受 48 小时冻结约束。
 			summary, err := GetInviteRewardSummary(legacy.Id)

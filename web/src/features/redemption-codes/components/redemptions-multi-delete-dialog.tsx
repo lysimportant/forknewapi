@@ -16,95 +16,82 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useMutation } from '@tanstack/react-query'
 import type { Table } from '@tanstack/react-table'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { handleServerError } from '@/lib/handle-server-error'
+import { createServerError } from '@/lib/server-error-message'
 import { toast } from '@/lib/toast'
 
-import { deleteRedemption } from '../api'
-import { ERROR_MESSAGES } from '../constants'
+import { batchDeleteRedemptions } from '../api'
 import type { Redemption } from '../types'
 import { useRedemptions } from './redemptions-provider'
 
-type RedemptionsMultiDeleteDialogProps<TData> = {
+type RedemptionsMultiDeleteDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  table: Table<TData>
+  table: Table<Redemption>
+  targets: Redemption[]
 }
 
-export function RedemptionsMultiDeleteDialog<TData>({
-  open,
-  onOpenChange,
-  table,
-}: RedemptionsMultiDeleteDialogProps<TData>) {
+/** 删除打开确认框时选中的兑换码；批量请求失败时保留目标和选择，供用户重试。 */
+export function RedemptionsMultiDeleteDialog(
+  props: RedemptionsMultiDeleteDialogProps
+) {
   const { t } = useTranslation()
   const { triggerRefresh } = useRedemptions()
-  const [isDeleting, setIsDeleting] = useState(false)
-  const selectedRows = table.getFilteredSelectedRowModel().rows
-
-  const handleConfirm = async () => {
-    if (selectedRows.length === 0 || isDeleting) return
-
-    setIsDeleting(true)
-    try {
-      let successCount = 0
-      for (const row of selectedRows) {
-        const redemption = row.original as Redemption
-        try {
-          const result = await deleteRedemption(redemption.id, {
-            skipBusinessError: true,
-            skipErrorHandler: true,
-          })
-          if (result.success) {
-            successCount += 1
-          }
-        } catch {
-          // 单条失败不影响其余选中项，结束时统一提示。
-        }
-      }
-
-      const failedCount = selectedRows.length - successCount
-      if (successCount > 0) {
-        toast.success(
-          t('Successfully deleted {{count}} redemption code(s)', {
-            count: successCount,
-          })
-        )
-        table.resetRowSelection()
-        triggerRefresh()
-        onOpenChange(false)
-      }
-      if (failedCount > 0) {
-        toast.error(t(ERROR_MESSAGES.BATCH_DELETE_FAILED))
-      }
-    } finally {
-      setIsDeleting(false)
-    }
-  }
+  const deletion = useMutation({
+    mutationFn: async (targets: Redemption[]) => {
+      const result = await batchDeleteRedemptions(
+        targets.map((code) => code.id)
+      )
+      if (!result.success) throw createServerError(result)
+      return result.data ?? 0
+    },
+    onSuccess: (count, targets) => {
+      toast.success(
+        t('Successfully deleted {{count}} redemption codes', { count })
+      )
+      props.table.setRowSelection((previous) => {
+        const next = { ...previous }
+        for (const code of targets) delete next[String(code.id)]
+        return next
+      })
+      props.onOpenChange(false)
+      triggerRefresh()
+    },
+    onError: (error, targets) => {
+      handleServerError(
+        error,
+        t('Failed to delete {{count}} redemption codes', {
+          count: targets.length,
+        })
+      )
+    },
+  })
 
   return (
     <ConfirmDialog
       destructive
-      open={open}
-      onOpenChange={onOpenChange}
-      handleConfirm={handleConfirm}
-      isLoading={isDeleting}
+      open={props.open}
+      onOpenChange={(open) => {
+        if (!deletion.isPending) props.onOpenChange(open)
+      }}
+      handleConfirm={() => {
+        if (props.targets.length && !deletion.isPending) {
+          deletion.mutate(props.targets)
+        }
+      }}
+      isLoading={deletion.isPending}
+      disabled={props.targets.length === 0}
       className='max-w-md'
-      title={t('Delete {{count}} redemption code(s)?', {
-        count: selectedRows.length,
+      title={t('Delete {{count}} redemption codes?', {
+        count: props.targets.length,
       })}
-      desc={
-        <>
-          {t('You are about to delete {{count}} redemption code(s).', {
-            count: selectedRows.length,
-          })}{' '}
-          <br />
-          {t('This action cannot be undone.')}
-        </>
-      }
-      confirmText={t('Delete')}
+      desc={t('This action cannot be undone.')}
+      confirmText={deletion.isPending ? t('Deleting...') : t('Delete')}
     />
   )
 }

@@ -224,6 +224,7 @@ func ClaimInviteReward(tx *gorm.DB, userId int, sourceKey, kind string, quota in
 // WithdrawInviteRewardsAt 是提现的核心实现，now 为服务端当前时间戳（秒）。
 // 校验归属与到期状态，按到期时间、记录 ID 升序扣减账本，然后增加站内余额并写入
 // 提现记录；显式传入 now 便于测试覆盖 47:59:59 与 48:00:00 边界。
+// 受邀人赠送已直接入账，其去重记录不参与奖励提现。
 func WithdrawInviteRewardsAt(userId int, requestId string, requested int, now int64) (int, error) {
 	if requested <= 0 {
 		return 0, ErrInviteRewardQuotaNotPositive
@@ -259,7 +260,7 @@ func WithdrawInviteRewardsAt(userId int, requestId string, requested int, now in
 		}
 
 		var candidates []InviteReward
-		if err := tx.Where("user_id = ? AND remaining_quota > 0", userId).
+		if err := tx.Where("user_id = ? AND kind <> ? AND remaining_quota > 0", userId, InviteRewardKindInvitee).
 			Order("created_at ASC, id ASC").Find(&candidates).Error; err != nil {
 			return err
 		}
@@ -373,6 +374,7 @@ func WithdrawInviteRewards(userId int, requestId string, requested int) (int, er
 }
 
 // GetInviteRewardSummary 汇总当前用户的奖励状态，供钱包页面展示冻结与可提金额。
+// 已直接入账的受邀人赠送不属于邀请人奖励，不计入冻结、可提金额或奖励明细。
 func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 	user, err := GetUserById(userId, false)
 	if err != nil {
@@ -380,7 +382,7 @@ func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 	}
 
 	var rewards []InviteReward
-	if err := DB.Where("user_id = ?", userId).
+	if err := DB.Where("user_id = ? AND kind <> ?", userId, InviteRewardKindInvitee).
 		Order("created_at DESC, id DESC").Limit(inviteRewardListLimit).Find(&rewards).Error; err != nil {
 		return nil, err
 	}
@@ -434,7 +436,8 @@ func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 // InitializeInviteRewardLedger 把账本引入之前的汇总余额结转为一笔历史记录。
 //
 // 历史余额无法可靠还原每笔产生时间，因此按明确的历史例外处理：结转记录产生即可
-// 提现。SourceKey 固定为 "history:<用户ID>"，重复启动不会产生第二笔结转。
+// 提现。仅为没有邀请人账本的用户结转，已有冻结奖励不得在重启后变成历史余额。
+// SourceKey 固定为 "history:<用户ID>"，重复启动不会产生第二笔结转。
 func InitializeInviteRewardLedger() error {
 	var users []User
 	if err := DB.Select("id", "aff_quota").Where("aff_quota > 0").Order("id ASC").Find(&users).Error; err != nil {
@@ -442,18 +445,23 @@ func InitializeInviteRewardLedger() error {
 	}
 	for _, user := range users {
 		sourceKey := fmt.Sprintf("%s:%d", InviteRewardKindHistory, user.Id)
-		var existing InviteReward
-		err := DB.Where("user_id = ? AND source_key = ?", user.Id, sourceKey).First(&existing).Error
-		if err == nil {
-			// 已结转：余额只能由提现减少，出现增长说明汇总与账本不一致，显式记录而不猜测。
-			if existing.RemainingQuota != user.AffQuota {
+		var ledger struct {
+			Count          int64
+			RemainingQuota int
+		}
+		if err := DB.Model(&InviteReward{}).
+			Where("user_id = ? AND kind <> ?", user.Id, InviteRewardKindInvitee).
+			Select("COUNT(*) AS count, COALESCE(SUM(remaining_quota), 0) AS remaining_quota").
+			Scan(&ledger).Error; err != nil {
+			return err
+		}
+		if ledger.Count > 0 {
+			// 注册赠送直接进入余额，不属于邀请人账本；其余已有记录只对账，不再次结转。
+			if ledger.RemainingQuota != user.AffQuota {
 				common.SysError(fmt.Sprintf("invite reward ledger mismatch for user %d: ledger=%d summary=%d",
-					user.Id, existing.RemainingQuota, user.AffQuota))
+					user.Id, ledger.RemainingQuota, user.AffQuota))
 			}
 			continue
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
 		}
 		carryover := InviteReward{
 			UserId:         user.Id,

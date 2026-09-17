@@ -44,7 +44,7 @@ type ChatToResponsesStreamState struct {
 	hostedByID         map[string]*chatToResponsesHostedTool
 	outputOrder        []chatToResponsesOutputRef
 	text               strings.Builder
-	annotations        []interface{}
+	annotations        []any
 	reasoning          strings.Builder
 }
 
@@ -732,7 +732,7 @@ func (s *ChatToResponsesStreamState) reasoningID() string {
 func (s *ChatToResponsesStreamState) messageOutput(status string) *dto.ResponsesOutput {
 	annotations := s.annotations
 	if annotations == nil {
-		annotations = []interface{}{}
+		annotations = []any{}
 	}
 	return &dto.ResponsesOutput{
 		Type:   responsesOutputTypeMessage,

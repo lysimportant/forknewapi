@@ -1,12 +1,61 @@
 package oairesponses
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	oaichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_chat"
+	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestResponsesUsagePreservesCachedModalities 验证原生归一化及双向转换保留缓存模态的零值、缺失和独立副本。
+func TestResponsesUsagePreservesCachedModalities(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		input        string
+		wantSnapshot bool
+	}{
+		{"modalities", `{"input_tokens":1000,"input_tokens_details":{"cached_tokens":300,"text_tokens":400,"image_tokens":600,"cached_tokens_details":{"text_tokens":100,"image_tokens":200,"audio_tokens":0}}}`, true},
+		{"explicit-zero-only", `{"input_tokens_details":{"cached_tokens_details":{"image_tokens":0}}}`, false},
+	} {
+		for _, convert := range []struct {
+			name     string
+			apply    func(*dto.Usage) *dto.Usage
+			snapshot bool
+		}{
+			{"native", NormalizeResponsesUsage, false},
+			{"chat-conversion", UsageFromResponsesUsage, true},
+		} {
+			t.Run(tc.name+"/"+convert.name, func(t *testing.T) {
+				var source dto.Usage
+				require.NoError(t, kitutil.Unmarshal([]byte(tc.input), &source))
+				usage := convert.apply(&source)
+				require.NotNil(t, usage.PromptTokensDetails.CachedTokensDetails)
+				assert.Equal(t, *source.InputTokensDetails, usage.PromptTokensDetails)
+				if convert.snapshot && tc.wantSnapshot {
+					require.NotNil(t, usage.BillingUsage)
+				} else {
+					assert.Nil(t, usage.BillingUsage)
+				}
+
+				responseUsage := oaichat.UsageFromChatUsage(usage)
+				require.NotNil(t, responseUsage.InputTokensDetails)
+				assert.Equal(t, *source.InputTokensDetails, *responseUsage.InputTokensDetails)
+				*responseUsage.InputTokensDetails.CachedTokensDetails.ImageTokens = 11
+				assert.Equal(t, *source.InputTokensDetails, usage.PromptTokensDetails)
+
+				*usage.PromptTokensDetails.CachedTokensDetails.ImageTokens = 22
+				assert.NotEqual(t, 22, *source.InputTokensDetails.CachedTokensDetails.ImageTokens)
+				if usage.BillingUsage != nil {
+					assert.Equal(t, source.InputTokensDetails, usage.BillingUsage.OpenAIUsage.InputTokensDetails)
+				}
+			})
+		}
+	}
+}
 
 func TestResponsesResponseToChatCompletionsPreservesTextAndToolCalls(t *testing.T) {
 	resp := &dto.OpenAIResponsesResponse{
@@ -332,7 +381,7 @@ func TestResponsesStreamEventToChatChunksDoesNotResendToolOnTerminalOutput(t *te
 		},
 	})...)
 
-	totalArgs := ""
+	var totalArgs strings.Builder
 	toolIndexes := map[int]bool{}
 	var finishReason string
 	for _, chunk := range chunks {
@@ -340,7 +389,7 @@ func TestResponsesStreamEventToChatChunksDoesNotResendToolOnTerminalOutput(t *te
 			for _, tc := range choice.Delta.ToolCalls {
 				require.NotNil(t, tc.Index)
 				toolIndexes[*tc.Index] = true
-				totalArgs += tc.Function.Arguments
+				totalArgs.WriteString(tc.Function.Arguments)
 			}
 			if choice.FinishReason != nil {
 				finishReason = *choice.FinishReason
@@ -349,7 +398,7 @@ func TestResponsesStreamEventToChatChunksDoesNotResendToolOnTerminalOutput(t *te
 	}
 
 	assert.Equal(t, map[int]bool{0: true}, toolIndexes)
-	assert.Equal(t, `{"q":"x"}`, totalArgs)
+	assert.Equal(t, `{"q":"x"}`, totalArgs.String())
 	assert.Equal(t, "tool_calls", finishReason)
 }
 

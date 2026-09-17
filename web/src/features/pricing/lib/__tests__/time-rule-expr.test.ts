@@ -223,9 +223,7 @@ describe('reasoning effort request rules', () => {
   test('builds and parses max multiplier', () => {
     const groups: RequestRuleGroup[] = [
       {
-        conditions: [
-          { source: SOURCE_EFFORT, mode: MATCH_EQ, value: 'max' },
-        ],
+        conditions: [{ source: SOURCE_EFFORT, mode: MATCH_EQ, value: 'max' }],
         multiplier: '2',
       },
     ]
@@ -239,9 +237,7 @@ describe('reasoning effort request rules', () => {
   test('builds and parses effort exists', () => {
     const groups: RequestRuleGroup[] = [
       {
-        conditions: [
-          { source: SOURCE_EFFORT, mode: MATCH_EXISTS, value: '' },
-        ],
+        conditions: [{ source: SOURCE_EFFORT, mode: MATCH_EXISTS, value: '' }],
         multiplier: '1.5',
       },
     ]
@@ -250,4 +246,3 @@ describe('reasoning effort request rules', () => {
     expect(tryParseRequestRuleExpr(expr)).toEqual(groups)
   })
 })
-

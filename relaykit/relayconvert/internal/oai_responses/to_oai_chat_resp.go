@@ -192,6 +192,7 @@ func NormalizeResponsesUsage(src *dto.Usage) *dto.Usage {
 	return usageFromResponsesUsage(src, false)
 }
 
+// usageFromResponsesUsage 返回独立的统一用量，nil 输入返回空值；按参数决定是否补充原始计费快照。
 func usageFromResponsesUsage(src *dto.Usage, createBillingSnapshot bool) *dto.Usage {
 	usage := &dto.Usage{}
 	if src == nil {
@@ -218,12 +219,7 @@ func usageFromResponsesUsage(src *dto.Usage, createBillingSnapshot bool) *dto.Us
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	if src.InputTokensDetails != nil {
-		usage.PromptTokensDetails.CachedTokens = src.InputTokensDetails.CachedTokens
-		usage.PromptTokensDetails.CachedCreationTokens = src.InputTokensDetails.CachedCreationTokens
-		usage.PromptTokensDetails.CacheWriteTokens = src.InputTokensDetails.CacheWriteTokens
-		usage.PromptTokensDetails.TextTokens = src.InputTokensDetails.TextTokens
-		usage.PromptTokensDetails.ImageTokens = src.InputTokensDetails.ImageTokens
-		usage.PromptTokensDetails.AudioTokens = src.InputTokensDetails.AudioTokens
+		usage.PromptTokensDetails = src.InputTokensDetails.Clone()
 	}
 	if src.CompletionTokenDetails.ReasoningTokens != 0 ||
 		src.CompletionTokenDetails.TextTokens != 0 ||

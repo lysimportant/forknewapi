@@ -497,11 +497,19 @@ func normalizeResponsesChatOutput(response map[string]any) {
 	if usage, ok := response["usage"].(map[string]any); ok {
 		inputDetails := map[string]any{"cached_tokens": 0}
 		if details, ok := usage["input_tokens_details"].(map[string]any); ok {
-			if cached, exists := details["cached_tokens"]; exists {
-				inputDetails["cached_tokens"] = cached
+			for _, key := range []string{"cached_tokens", "cache_write_tokens", "text_tokens", "image_tokens", "audio_tokens"} {
+				if value, exists := details[key]; exists {
+					inputDetails[key] = value
+				}
 			}
-			if written, exists := details["cache_write_tokens"]; exists {
-				inputDetails["cache_write_tokens"] = written
+			if cached, ok := details["cached_tokens_details"].(map[string]any); ok {
+				modalities := make(map[string]any)
+				for _, key := range []string{"text_tokens", "image_tokens", "audio_tokens"} {
+					if value, exists := cached[key]; exists {
+						modalities[key] = value
+					}
+				}
+				inputDetails["cached_tokens_details"] = modalities
 			}
 		}
 		outputDetails := map[string]any{"reasoning_tokens": 0}
@@ -509,8 +517,10 @@ func normalizeResponsesChatOutput(response map[string]any) {
 		if !ok {
 			details, _ = usage["completion_tokens_details"].(map[string]any)
 		}
-		if reasoning, exists := details["reasoning_tokens"]; exists {
-			outputDetails["reasoning_tokens"] = reasoning
+		for _, key := range []string{"reasoning_tokens", "text_tokens", "image_tokens", "audio_tokens"} {
+			if value, exists := details[key]; exists {
+				outputDetails[key] = value
+			}
 		}
 		response["usage"] = map[string]any{
 			"input_tokens": usage["input_tokens"], "input_tokens_details": inputDetails,

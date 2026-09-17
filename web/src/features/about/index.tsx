@@ -25,6 +25,7 @@ import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getAboutContent } from './api'
 import { AboutHelp } from './components/about-help'
@@ -146,7 +147,7 @@ export function About() {
   const { t } = useTranslation()
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['about-content'],
-    queryFn: getAboutContent,
+    queryFn: async () => requireServerSuccess(await getAboutContent()),
   })
 
   const rawContent = data?.data?.trim() ?? ''

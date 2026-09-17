@@ -1,6 +1,7 @@
 package ratio_setting
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -419,9 +420,7 @@ func GetDefaultPricingMaps() map[string]map[string]float64 {
 	result := make(map[string]map[string]float64, len(defaults))
 	for key, values := range defaults {
 		result[key] = make(map[string]float64, len(values))
-		for name, value := range values {
-			result[key][name] = value
-		}
+		maps.Copy(result[key], values)
 	}
 	return result
 }
@@ -436,14 +435,7 @@ func UpdateCompletionRatioByJSONString(jsonStr string) error {
 
 // GetCompletionRatio 返回模型输出倍率；管理员配置（包括显式零值）优先，缺失时使用内置默认值。
 func GetCompletionRatio(name string) float64 {
-	name = FormatMatchingModelName(name)
-
-	// 内置值仅作默认值，不得覆盖管理员的显式定价。
-	if ratio, ok := completionRatioMap.Get(name); ok {
-		return ratio
-	}
-	hardCodedRatio, _ := getHardcodedCompletionModelRatio(name)
-	return hardCodedRatio
+	return GetCompletionRatioInfo(name).Ratio
 }
 
 type CompletionRatioInfo struct {
@@ -454,11 +446,19 @@ type CompletionRatioInfo struct {
 // GetCompletionRatioInfo 返回实际输出倍率及可编辑状态；管理员始终可以覆盖内置价格。
 func GetCompletionRatioInfo(name string) CompletionRatioInfo {
 	name = FormatMatchingModelName(name)
-
-	// 保留用户定制：不向前端报告价格锁定。
+	var configured *float64
 	if ratio, ok := completionRatioMap.Get(name); ok {
+		configured = &ratio
+	}
+	return ResolveCompletionRatio(name, configured)
+}
+
+// ResolveCompletionRatio 解析配置快照或草稿的输出倍率，不读取当前保存值；显式零值有效，缺失时使用内置默认值。
+func ResolveCompletionRatio(name string, configured *float64) CompletionRatioInfo {
+	name = FormatMatchingModelName(name)
+	if configured != nil {
 		return CompletionRatioInfo{
-			Ratio:  ratio,
+			Ratio:  *configured,
 			Locked: false,
 		}
 	}
@@ -645,10 +645,12 @@ func UpdateImageRatioByJSONString(jsonStr string) error {
 	return types.LoadFromJsonString(imageRatioMap, jsonStr)
 }
 
+const DefaultImageRatio = 1.0
+
 func GetImageRatio(name string) (float64, bool) {
 	ratio, ok := imageRatioMap.Get(name)
 	if !ok {
-		return 1, false // Default to 1 if not found
+		return DefaultImageRatio, false
 	}
 	return ratio, true
 }

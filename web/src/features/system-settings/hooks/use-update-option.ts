@@ -17,14 +17,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { isAxiosError } from 'axios'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 
-import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { handleServerError } from '@/lib/handle-server-error'
+import {
+  createServerError,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 
-import { updateSystemOption } from '../api'
-import type { UpdateOptionRequest } from '../types'
+import { updatePasskeyDomains, updateSystemOption } from '../api'
+import type { UpdateOptionRequest, UpdatePasskeyDomainsRequest } from '../types'
 
 /** 连续保存共用提示标识，避免重复显示成功消息。 */
 const SETTING_UPDATED_TOAST_ID = 'system-setting-updated'
@@ -60,6 +63,11 @@ const STATUS_RELATED_KEYS = new Set([
   'console_setting.faq_enabled',
   'console_setting.api_info_enabled',
   'console_setting.uptime_kuma_enabled',
+  'ServerAddress',
+  'passkey.enabled',
+  'passkey.rp_id',
+  'passkey.legacy_rp_ids',
+  'passkey.origins',
 ])
 
 /** 保存配置的输入；silent 仅控制本地提示，不发送至 API。 */
@@ -84,12 +92,7 @@ export function useUpdateOption() {
       }
       const response = await updateSystemOption(payload)
       if (!response.success) {
-        const messageKey = getServerErrorMessageKey(response)
-        throw new Error(
-          messageKey
-            ? i18next.t(messageKey)
-            : response.message || i18next.t('Failed to update setting')
-        )
+        throw createServerError(response, i18next.t('Failed to update setting'))
       }
       return response
     },
@@ -111,18 +114,36 @@ export function useUpdateOption() {
       }
     },
     onError: (error: Error) => {
-      // 保存 API 关闭全局错误提示，由此处保留服务端原因与翻译且只提示一次。
-      const messageKey = getServerErrorMessageKey(error)
-      const serverMessage = isAxiosError<{ message?: string }>(error)
-        ? error.response?.data?.message
-        : undefined
-      toast.error(
-        messageKey
-          ? i18next.t(messageKey)
-          : serverMessage ||
-              error.message ||
-              i18next.t('Failed to update setting')
-      )
+      handleServerError(error, i18next.t('Failed to update setting'))
     },
+  })
+}
+
+export function useUpdatePasskeyDomains() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (request: UpdatePasskeyDomainsRequest) => {
+      const result = await updatePasskeyDomains(request)
+      if (
+        result.code === 'PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED' &&
+        result.data
+      ) {
+        return result
+      }
+      return requireServerSuccess(result)
+    },
+    onSuccess: (result, request) => {
+      if (request.preview || !result.success) return
+      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      queryClient.invalidateQueries({ queryKey: ['status'] })
+      try {
+        window.localStorage.removeItem('status')
+      } catch {
+        /* Storage may be disabled. */
+      }
+      toast.success(i18next.t('Setting updated successfully'))
+    },
+    onError: (error: Error) =>
+      handleServerError(error, i18next.t('Failed to update setting')),
   })
 }

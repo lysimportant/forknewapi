@@ -26,6 +26,7 @@ type passkeyFinishRequest struct {
 }
 
 type passkeyVerifyBeginRequest struct {
+	RPID    string          `json:"rp_id"`
 	Scope   string          `json:"scope"`
 	Context json.RawMessage `json:"context,omitempty"`
 }
@@ -42,7 +43,7 @@ func parsePasskeyFinishRequest(c *gin.Context) (*passkeyFinishRequest, error) {
 }
 
 func PasskeyRegisterBegin(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -118,7 +119,7 @@ func PasskeyRegisterBegin(c *gin.Context) {
 }
 
 func PasskeyRegisterFinish(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -137,12 +138,6 @@ func PasskeyRegisterFinish(c *gin.Context) {
 		return
 	}
 	parsedCredential, err := protocol.ParseCredentialCreationResponseBytes(request.Credential)
-	if err != nil {
-		writeSecurityOperationError(c, err)
-		return
-	}
-
-	wa, err := passkeysvc.BuildWebAuthn(c.Request)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -171,6 +166,12 @@ func PasskeyRegisterFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
+	wa, err := passkeysvc.BuildWebAuthnForRPID(c.Request, sessionData.RelyingPartyID)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	c.Set("passkey_rp_id", sessionData.RelyingPartyID)
 	if sessionData.UserVerification != protocol.VerificationRequired {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
 		return
@@ -193,6 +194,7 @@ func PasskeyRegisterFinish(c *gin.Context) {
 		return
 	}
 
+	passkeyCredential.RPID = &sessionData.RelyingPartyID
 	if err := model.RegisterPasskeyForSession(identity, passkeyCredential); err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -281,7 +283,7 @@ func PasskeyStatus(c *gin.Context) {
 }
 
 func PasskeyLoginBegin(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -301,7 +303,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 		return
 	}
 
-	wa, err := passkeysvc.BuildWebAuthn(c.Request)
+	wa, rpIDs, err := passkeysvc.BuildLoginWebAuthn(c.Request, request.RPID, "")
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -328,6 +330,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 		"message": "",
 		"data": gin.H{
 			"options":    assertion,
+			"rp_ids":     rpIDs,
 			"flow_token": flowToken,
 			"expires_at": expiresAt,
 		},
@@ -335,7 +338,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 }
 
 func PasskeyLoginFinish(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -354,12 +357,6 @@ func PasskeyLoginFinish(c *gin.Context) {
 		return
 	}
 
-	wa, err := passkeysvc.BuildWebAuthn(c.Request)
-	if err != nil {
-		writeSecurityOperationError(c, err)
-		return
-	}
-
 	sessionData, security, err := passkeysvc.PopSessionDataFlow(
 		request.FlowToken,
 		model.AuthFlowPurposePasskeyLogin,
@@ -369,6 +366,12 @@ func PasskeyLoginFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
+	wa, err := passkeysvc.BuildWebAuthnForRPID(c.Request, sessionData.RelyingPartyID)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	c.Set("passkey_rp_id", sessionData.RelyingPartyID)
 	if sessionData.UserVerification != protocol.VerificationRequired {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
 		return
@@ -388,6 +391,10 @@ func PasskeyLoginFinish(c *gin.Context) {
 		credential, err := model.GetPasskeyByCredentialID(rawID)
 		if err != nil {
 			return nil, fmt.Errorf("未找到 Passkey 凭证: %w", err)
+		}
+
+		if credential.RPID != nil && *credential.RPID != "" && *credential.RPID != sessionData.RelyingPartyID {
+			return nil, service.ErrVerificationFailed
 		}
 
 		// 通过凭证获取用户
@@ -436,7 +443,7 @@ func PasskeyLoginFinish(c *gin.Context) {
 		return
 	}
 
-	if err := model.UpdatePasskeyAssertionState(modelUser.Id, credential, time.Now()); err != nil {
+	if err := model.UpdatePasskeyAssertionState(modelUser.Id, credential, time.Now(), sessionData.RelyingPartyID); err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}
@@ -445,8 +452,9 @@ func PasskeyLoginFinish(c *gin.Context) {
 	setupLoginAtAuthVersion(modelUser, modelUser.AuthVersion, c)
 }
 
-// passkeyLoginBeginRequest 是 Passkey 登录发起请求，携带登录前勾选的协议确认。
+// passkeyLoginBeginRequest 携带协议确认及可选 RP ID；空 RP ID 由服务器选择兼容域名。
 type passkeyLoginBeginRequest struct {
+	RPID           string `json:"rp_id"`
 	Consent        bool   `json:"consent"`
 	ConsentVersion string `json:"consent_version"`
 }
@@ -490,7 +498,7 @@ func AdminResetPasskey(c *gin.Context) {
 		return
 	}
 
-	recordManageAuditFor(c, user.Id, "user.reset_passkey", map[string]interface{}{
+	recordManageAuditFor(c, user.Id, "user.reset_passkey", map[string]any{
 		"username": user.Username,
 		"id":       user.Id,
 	})
@@ -501,7 +509,7 @@ func AdminResetPasskey(c *gin.Context) {
 }
 
 func PasskeyVerifyBegin(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -543,7 +551,11 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		return
 	}
 
-	wa, err := passkeysvc.BuildWebAuthn(c.Request)
+	credentialRPID := ""
+	if credential.RPID != nil {
+		credentialRPID = *credential.RPID
+	}
+	wa, rpIDs, err := passkeysvc.BuildLoginWebAuthn(c.Request, request.RPID, credentialRPID)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -571,6 +583,7 @@ func PasskeyVerifyBegin(c *gin.Context) {
 		"message": "",
 		"data": gin.H{
 			"options":    assertion,
+			"rp_ids":     rpIDs,
 			"flow_token": flowToken,
 			"expires_at": expiresAt,
 		},
@@ -578,7 +591,7 @@ func PasskeyVerifyBegin(c *gin.Context) {
 }
 
 func PasskeyVerifyFinish(c *gin.Context) {
-	if !system_setting.GetPasskeySettings().Enabled {
+	if !system_setting.PasskeySettingsSnapshot().Enabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "管理员未启用 Passkey 登录",
@@ -598,12 +611,6 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 	parsedCredential, err := protocol.ParseCredentialRequestResponseBytes(request.Credential)
-	if err != nil {
-		writeSecurityOperationError(c, err)
-		return
-	}
-
-	wa, err := passkeysvc.BuildWebAuthn(c.Request)
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -632,11 +639,21 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
+	wa, err := passkeysvc.BuildWebAuthnForRPID(c.Request, sessionData.RelyingPartyID)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	c.Set("passkey_rp_id", sessionData.RelyingPartyID)
 	if sessionData.UserVerification != protocol.VerificationRequired {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
 		return
 	}
 
+	if credential.RPID != nil && *credential.RPID != "" && *credential.RPID != sessionData.RelyingPartyID {
+		writeSecurityOperationError(c, service.ErrVerificationFailed)
+		return
+	}
 	waUser := passkeysvc.NewWebAuthnUser(user, credential)
 	validatedCredential, err := wa.ValidateLogin(waUser, *sessionData, parsedCredential)
 	if err != nil {
@@ -644,7 +661,7 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 
-	if err := model.UpdatePasskeyAssertionState(user.Id, validatedCredential, time.Now()); err != nil {
+	if err := model.UpdatePasskeyAssertionState(user.Id, validatedCredential, time.Now(), sessionData.RelyingPartyID); err != nil {
 		writeSecurityOperationError(c, err)
 		return
 	}
@@ -655,7 +672,7 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		return
 	}
 
-	recordUserSecurityAudit(c, user.Id, "user.security_verify", map[string]interface{}{"method": proof.Method, "scope": proof.Scope})
+	recordUserSecurityAudit(c, user.Id, "user.security_verify", map[string]any{"method": proof.Method, "scope": proof.Scope})
 	common.ApiSuccess(c, proof)
 }
 

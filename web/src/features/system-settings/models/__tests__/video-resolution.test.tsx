@@ -84,10 +84,10 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       const fullHd = values.find((value) => value.toLowerCase() === '1080p')
       if (!fullHd) throw new Error('测试配置缺少1080p')
       await userEvent.click(screen.getByRole('tab', { name: fullHd }))
-      const input = screen.getByRole('spinbutton', {
-        name: `seconds: ${fullHd}`,
+      const input = screen.getByRole('textbox', {
+        name: `Unit price: seconds: resolution: ${fullHd}`,
       })
-      expect(input).toHaveValue(values.indexOf(fullHd) + 1)
+      expect(input).toHaveValue(String(values.indexOf(fullHd) + 1))
       expect(onChange).not.toHaveBeenCalled()
       fireEvent.change(input, { target: { value: '9' } })
       expect(
@@ -125,8 +125,10 @@ describe('视频清晰度浏览与原始计费隔离', () => {
     for (const value of ['720P', '1080P']) {
       await userEvent.click(screen.getByRole('tab', { name: value }))
       expect(
-        screen.getByRole('spinbutton', { name: `units: ${value}` })
-      ).toHaveValue(0.14)
+        screen.getByRole('textbox', {
+          name: `Unit price: units: resolution: ${value}`,
+        })
+      ).toHaveValue('0.14')
     }
   })
 
@@ -151,13 +153,17 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       '1080p',
     ])
     expect(
-      screen.getByRole('spinbutton', { name: 'seconds: 360p' })
-    ).toHaveValue(0.4)
+      screen.getByRole('textbox', {
+        name: 'Unit price: seconds: resolution: 360p',
+      })
+    ).toHaveValue('0.4')
     for (const value of ['720p', '1080p']) {
       await userEvent.click(screen.getByRole('tab', { name: value }))
       expect(
-        screen.getByRole('spinbutton', { name: `seconds: ${value}` })
-      ).toHaveValue(0.4)
+        screen.getByRole('textbox', {
+          name: `Unit price: seconds: resolution: ${value}`,
+        })
+      ).toHaveValue('0.4')
     }
   })
 
@@ -191,10 +197,17 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       screen.getByRole('button', { name: 'Additional provider specifications' })
     )
     expect(onChange).not.toHaveBeenCalled()
-    expect(screen.getByRole('spinbutton', { name: 'count: 4k' })).toHaveValue(5)
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'count: 4k' }), {
-      target: { value: '9' },
-    })
+    expect(
+      screen.getByRole('textbox', { name: 'Unit price: count: resolution: 4k' })
+    ).toHaveValue('5')
+    fireEvent.change(
+      screen.getByRole('textbox', {
+        name: 'Unit price: count: resolution: 4k',
+      }),
+      {
+        target: { value: '9' },
+      }
+    )
     const saved = tryParseTaskMatrixConfig(onChange.mock.lastCall?.[0], schema)
     expect(saved?.rows).toEqual(
       rows.map((row, index) =>
@@ -206,10 +219,10 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       screen.getByRole('button', { name: 'Provider default specifications' })
     )
     expect(
-      screen.getByRole('spinbutton', {
-        name: 'count: Provider default (not specified)',
+      screen.getByRole('textbox', {
+        name: 'Unit price: count: Provider default (not specified)',
       })
-    ).toHaveValue(1)
+    ).toHaveValue('1')
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.queryByText(/^unspecified$/)).not.toBeInTheDocument()
   })
@@ -255,8 +268,10 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       for (const value of expected) {
         await user.click(screen.getByRole('tab', { name: value }))
         expect(
-          screen.getByRole('spinbutton', { name: `seconds: ${value}` })
-        ).toHaveValue(0.4)
+          screen.getByRole('textbox', {
+            name: `Unit price: seconds: ${field}: ${value}`,
+          })
+        ).toHaveValue('0.4')
       }
       expect(onChange).not.toHaveBeenCalled()
     }
@@ -274,7 +289,7 @@ describe('视频清晰度浏览与原始计费隔离', () => {
         seconds: { type: 'number', unit: 'second' },
         product: { enum: ['v30_720p', 'v30_pro'] },
       },
-      priceLabel: 'seconds: v30_720p',
+      priceLabel: 'Unit price: seconds: product: v30_720p',
     },
   ] as { name: string; schema: BillingUsageSchema; priceLabel: string }[])(
     '$name无清晰度声明时保留原生价格，不虚构档位',
@@ -292,13 +307,13 @@ describe('视频清晰度浏览与原始计费隔离', () => {
       )
       expect(screen.queryByRole('tab')).not.toBeInTheDocument()
       if (priceLabel.includes(':')) {
-        expect(
-          screen.getByRole('spinbutton', { name: priceLabel })
-        ).toHaveValue(0.4)
+        expect(screen.getByRole('textbox', { name: priceLabel })).toHaveValue(
+          '0.4'
+        )
       } else {
         expect(
           screen
-            .getAllByRole('spinbutton')
+            .getAllByRole('textbox')
             .some((input) => (input as HTMLInputElement).value === '0.4')
         ).toBe(true)
       }
@@ -331,18 +346,24 @@ test('超过五档仍可编辑额外规格，Enter沿可见行移动且不改价
     '4k',
   ])
   await user.click(
-    screen.getByRole('spinbutton', { name: 'seconds: true·480p' })
+    screen.getByRole('textbox', {
+      name: 'Unit price: seconds: audio: true · resolution: 480p',
+    })
   )
   await user.keyboard('{Enter}')
   expect(
-    screen.getByRole('spinbutton', { name: 'seconds: false·480p' })
+    screen.getByRole('textbox', {
+      name: 'Unit price: seconds: audio: false · resolution: 480p',
+    })
   ).toHaveFocus()
   await user.click(
     screen.getByRole('button', { name: 'Additional provider specifications' })
   )
   expect(
-    screen.getByRole('spinbutton', { name: 'seconds: true·8k' })
-  ).toHaveValue(0.4)
+    screen.getByRole('textbox', {
+      name: 'Unit price: seconds: audio: true · resolution: 8k',
+    })
+  ).toHaveValue('0.4')
   expect(onChange).not.toHaveBeenCalled()
 })
 
@@ -379,7 +400,9 @@ test('预览规格按原生值排序且默认值末尾，选择只改变预览�
   ])
   await user.click(screen.getByRole('option', { name: /^768P$/ }))
   expect(resolution).toHaveValue('768P')
-  expect(screen.getByText(/Hit tier.*768P/)).toBeInTheDocument()
+  expect(
+    screen.getByText(/Current pricing conditions.*768P/)
+  ).toBeInTheDocument()
   expect(
     screen
       .getAllByRole('spinbutton')

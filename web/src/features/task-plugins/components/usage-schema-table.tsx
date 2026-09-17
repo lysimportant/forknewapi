@@ -34,6 +34,10 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
+  taskEnumLabel,
+  taskUsageUnitLabel,
+} from '@/features/pricing/lib/task-price-display'
+import {
   getVideoResolutions,
   getPrimaryVideoResolutions,
   getVideoModeResolutionNote,
@@ -118,13 +122,27 @@ export function UsageSchemaTable(props: UsageSchemaTableProps) {
         <TableBody>
           {entries.map(([name, definition]) => (
             <TableRow key={name}>
-              <TableCell className='font-mono'>{name}</TableCell>
+              <TableCell className='max-w-64 font-mono text-xs break-words whitespace-normal'>
+                {name}
+              </TableCell>
               <TableCell>{t(getUsageTypeLabelKey(definition.type))}</TableCell>
-              <TableCell>{formatUsageUnit(definition.unit, t)}</TableCell>
-              <TableCell className='font-mono'>
+              <TableCell>
+                {taskUsageUnitLabel(
+                  definition,
+                  i18n.language,
+                  formatUsageUnit(definition.unit, t)
+                )}
+              </TableCell>
+              <TableCell className='max-w-64 font-mono text-xs break-words whitespace-normal'>
                 {name === resolutionField ? (
                   <div className='space-y-2'>
-                    <span>{primaryResolutions.join(', ') || '—'}</span>
+                    <span>
+                      {primaryResolutions
+                        .map((value) =>
+                          taskEnumLabel(definition, value, i18n.language)
+                        )
+                        .join(', ') || '—'}
+                    </span>
                     {additionalResolutions.length > 0 && (
                       <Collapsible>
                         <CollapsibleTrigger
@@ -135,7 +153,11 @@ export function UsageSchemaTable(props: UsageSchemaTableProps) {
                           {t('Additional provider specifications')}
                         </CollapsibleTrigger>
                         <CollapsibleContent>
-                          {additionalResolutions.join(', ')}
+                          {additionalResolutions
+                            .map((value) =>
+                              taskEnumLabel(definition, value, i18n.language)
+                            )
+                            .join(', ')}
                         </CollapsibleContent>
                       </Collapsible>
                     )}
@@ -156,11 +178,21 @@ export function UsageSchemaTable(props: UsageSchemaTableProps) {
                   </div>
                 ) : (
                   definition.enum
-                    ?.map((value) => formatTaskSpecificationLabel(value, t))
+                    ?.map((value) => {
+                      const label = taskEnumLabel(
+                        definition,
+                        value,
+                        i18n.language
+                      )
+                      return formatTaskSpecificationLabel(
+                        label === value ? value : `${value} → ${label}`,
+                        t
+                      )
+                    })
                     .join(', ') || '—'
                 )}
               </TableCell>
-              <TableCell className='min-w-48 whitespace-normal'>
+              <TableCell className='min-w-48 break-words whitespace-normal'>
                 {resolveLocalizedText(definition.description, i18n.language) ||
                   '—'}
               </TableCell>

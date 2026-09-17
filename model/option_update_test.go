@@ -141,3 +141,81 @@ func TestUpdateOptionPersistsAndPropagatesDatabaseErrors(t *testing.T) {
 		})
 	}
 }
+
+// legacyOptionWithoutPrimaryKey 模拟旧 options 表缺少键唯一约束的数据库结构。
+type legacyOptionWithoutPrimaryKey struct {
+	Key   string `gorm:"size:191"`
+	Value string
+}
+
+// TestOptionPrimaryKeyMigrationPreservesRows 验证健康表保持不变、旧表修复保留原始备份及重复启动稳定。
+func TestOptionPrimaryKeyMigrationPreservesRows(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := openOptionUpdateTestDB(t, dialect)
+			before, err := db.Migrator().GetTables()
+			require.NoError(t, err)
+			require.NoError(t, migrateOptionPrimaryKey(db))
+			after, err := db.Migrator().GetTables()
+			require.NoError(t, err)
+			assert.ElementsMatch(t, before, after, "健康 options 表不得被重建")
+
+			require.NoError(t, db.Migrator().DropTable(&Option{}))
+			require.NoError(t, db.Table("options").Migrator().CreateTable(&legacyOptionWithoutPrimaryKey{}))
+			rows := []Option{{Key: "About", Value: "preserved"}, {Key: "About", Value: "preserved"}, {Key: "Notice", Value: "retained"}, {Key: "", Value: "empty-key-backup"}}
+			require.NoError(t, db.Table("options").Create(&rows).Error)
+			require.NoError(t, migrateOptionPrimaryKey(db))
+			var saved []Option
+			require.NoError(t, db.Find(&saved).Error)
+			assert.ElementsMatch(t, []Option{{Key: "About", Value: "preserved"}, {Key: "Notice", Value: "retained"}}, saved)
+			assert.Error(t, db.Create(&Option{Key: "About", Value: "duplicate"}).Error, "修复后数据库必须拒绝重复配置键")
+			tables, err := db.Migrator().GetTables()
+			require.NoError(t, err)
+			var backups []string
+			for _, table := range tables {
+				if strings.HasPrefix(table, optionLegacyTablePrefix) {
+					backups = append(backups, table)
+				}
+			}
+			require.Len(t, backups, 1)
+			var original []Option
+			require.NoError(t, db.Table(backups[0]).Find(&original).Error)
+			assert.ElementsMatch(t, rows, original, "含重复或空键的原始记录必须完整保留")
+			require.NoError(t, migrateOptionPrimaryKey(db))
+			repeated, err := db.Migrator().GetTables()
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tables, repeated, "重复启动不得新增备份或重建 options 表")
+		})
+	}
+}
+
+// TestOptionPrimaryKeyFailureStopsMigration 验证配置主键修复失败会中止启动，不带错误配置表继续服务。
+func TestOptionPrimaryKeyFailureStopsMigration(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := openOptionUpdateTestDB(t, dialect)
+			dbType := common.DatabaseTypeSQLite
+			if dialect == "mysql" {
+				dbType = common.DatabaseTypeMySQL
+			} else if dialect == "postgres" {
+				dbType = common.DatabaseTypePostgreSQL
+			}
+			withOptionUpdateTestState(t, db, dbType)
+			require.NoError(t, db.Migrator().DropTable(&Option{}))
+			require.NoError(t, db.Table("options").Migrator().CreateTable(&legacyOptionWithoutPrimaryKey{}))
+			require.NoError(t, db.Create(&Option{Key: "About", Value: "preserved-on-failure"}).Error)
+			readErr := errors.New("options migration read failed")
+			const callbackName = "option-migration-read-failure"
+			require.NoError(t, db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if tx.Statement.Table == "options" {
+					tx.AddError(readErr)
+				}
+			}))
+			require.ErrorIs(t, migrateDB(), readErr)
+			require.NoError(t, db.Callback().Query().Remove(callbackName))
+			var saved Option
+			require.NoError(t, db.First(&saved, Option{Key: "About"}).Error)
+			assert.Equal(t, "preserved-on-failure", saved.Value)
+		})
+	}
+}
