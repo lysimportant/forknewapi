@@ -71,3 +71,48 @@ it('普通单行粘贴仍在光标处插入，保留手工输入内容', async (
   await user.paste('plain-code')
   expect(input).toHaveValue('typed-plain-code')
 })
+
+it('店铺默认微信，切换支付宝时同步更新内嵌页和新窗口链接，并保留兑换码', async () => {
+  const user = userEvent.setup()
+  render(<RedemptionForm onRedeem={vi.fn()} />)
+  const wechatTab = screen.getByRole('tab', { name: 'WeChat Pay' })
+  const alipayTab = screen.getByRole('tab', { name: 'Alipay' })
+  const shopLink = screen.getByRole('button', { name: 'Open in new window' })
+
+  expect(wechatTab).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByTitle('WeChat Pay redemption code shop')).toHaveAttribute(
+    'src',
+    'https://wzyp.cn/shop/RPE3AZIX'
+  )
+  expect(shopLink).toHaveAttribute('href', 'https://wzyp.cn/shop/RPE3AZIX')
+  expect(shopLink).toHaveAttribute('target', '_blank')
+  expect(shopLink).toHaveAttribute('rel', 'noopener noreferrer')
+
+  const code = screen.getByRole('textbox', { name: 'Have a Code?' })
+  await user.type(code, 'unredeemed-code')
+  await user.click(alipayTab)
+
+  expect(alipayTab).toHaveAttribute('aria-selected', 'true')
+  expect(wechatTab).toHaveAttribute('aria-selected', 'false')
+  expect(screen.getByTitle('Alipay redemption code shop')).toHaveAttribute(
+    'src',
+    'https://catfk.com/shop/68AEJFZJ'
+  )
+  expect(shopLink).toHaveAttribute('href', 'https://catfk.com/shop/68AEJFZJ')
+  expect(code).toHaveValue('unredeemed-code')
+})
+
+it('店铺标签支持键盘切换回微信并同步新窗口入口', async () => {
+  const user = userEvent.setup()
+  render(<RedemptionForm onRedeem={vi.fn()} />)
+  await user.click(screen.getByRole('tab', { name: 'Alipay' }))
+  await user.keyboard('{ArrowLeft}')
+
+  const wechatTab = screen.getByRole('tab', { name: 'WeChat Pay' })
+  expect(wechatTab).toHaveFocus()
+  await user.keyboard('{Enter}')
+  expect(wechatTab).toHaveAttribute('aria-selected', 'true')
+  expect(
+    screen.getByRole('button', { name: 'Open in new window' })
+  ).toHaveAttribute('href', 'https://wzyp.cn/shop/RPE3AZIX')
+})

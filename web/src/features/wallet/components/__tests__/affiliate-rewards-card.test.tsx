@@ -49,6 +49,28 @@ const frozenUser = {
   },
 } satisfies UserWalletData
 
+it('推荐计划说明每笔到账余额返佣 10%，包含兑换码且冻结 48 小时', () => {
+  render(
+    <AffiliateRewardsCard
+      user={frozenUser}
+      affiliateLink='https://example.com/sign-up?aff=referral'
+      onTransfer={vi.fn()}
+      onShowRewards={vi.fn()}
+    />
+  )
+
+  expect(
+    screen.getByText(
+      'Earn 10% of the balance credited by every top-up from invited users, including redemption codes.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      'Each commission is frozen for 48 hours before withdrawal to your in-site balance.'
+    )
+  ).toBeVisible()
+})
+
 it('全部奖励冻结时保留禁用的提现按钮和可提时间，成熟后才允许手动提交', async () => {
   const onTransfer = vi.fn()
   const props = {

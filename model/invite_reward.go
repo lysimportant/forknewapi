@@ -7,19 +7,24 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"gorm.io/gorm"
 )
 
 // 邀请奖励按笔冻结提现的账本实现。
 //
-// 汇总字段 users.aff_quota 仍是对外展示的“可提现邀请额度”，但不再作为唯一凭据：
-// 每一笔奖励在 invite_rewards 中独立记录产生时间和剩余额度，48 小时冻结期按笔
-// 从自身产生时间起算。提现时按到期时间、记录 ID 升序逐笔扣减，汇总与账本在同一个
+// 汇总字段 users.aff_quota 包含未提现的冻结及到期额度，不作为唯一提现凭据。
+// 每一笔奖励在 invite_rewards 中独立记录产生时间和剩余额度，充值返佣的 48 小时冻结期
+// 从自身产生时间起算。提现时按创建时间、记录 ID 升序逐笔扣减已到期记录，汇总与账本在同一个
 // 事务内更新，避免任何一方单独漂移。
 const (
-	// InviteRewardKindInviter 邀请人奖励：写入账本并按笔冻结。
+	// InviteRewardKindInviter 保留旧注册奖励；新注册仅用其零额度来源记录去重邀请计数。
 	InviteRewardKindInviter = "inviter"
+	// InviteRewardKindTopUp 充值返佣：按到账额度的 10% 发放，固定冻结 48 小时。
+	InviteRewardKindTopUp = "topup"
+	// inviteTopUpRewardFreezeSeconds 是充值返佣不可配置的冻结秒数。
+	inviteTopUpRewardFreezeSeconds = 48 * 60 * 60
 	// InviteRewardKindInvitee 受邀人注册赠送：直接计入站内余额，不进入冻结账本。
 	InviteRewardKindInvitee = "invitee"
 	// InviteRewardKindHistory 迁移前历史余额结转：属于明确的历史例外，产生即可提现。
@@ -59,9 +64,9 @@ func (e *InviteRewardFrozenError) Error() string {
 
 // InviteReward 是邀请奖励账本的一笔记录。
 //
-// SourceKey 是去重依据：邀请人奖励为 "inviter:<受邀用户ID>"，受邀人赠送为
-// "invitee:<受邀用户ID>"，历史结转为 "history:<用户ID>"。它同时承担幂等键职责，
-// 因此重复注册回调、重复启动迁移都不会产生第二笔奖励。
+// SourceKey 是去重依据：注册计数为 "inviter:<受邀用户ID>"（零额度，保留旧奖励来源），
+// 受邀人赠送为 "invitee:<受邀用户ID>"，历史结转为 "history:<用户ID>"；充值返佣使用
+// "topup:<订单ID>" 或 "redemption:<兑换码ID>"，重复回调不会产生第二笔奖励。
 type InviteReward struct {
 	Id             int    `json:"id" gorm:"primaryKey"`
 	UserId         int    `json:"user_id" gorm:"column:user_id;type:bigint;not null;uniqueIndex:uk_invite_rewards_source,priority:1;index:idx_invite_rewards_user_available,priority:1"`
@@ -81,7 +86,7 @@ func (InviteReward) TableName() string {
 }
 
 // WithdrawableAfter 返回该笔奖励最早可提现的服务端时间戳，单位为秒。
-// 冻结时长按当前配置计算（管理员可调整，0 表示取消冻结期），因此配置变更立即生效。
+// 充值返佣使用入账时固定的 AvailableAt；旧奖励未记录到期时间时按当前配置计算。
 func (reward *InviteReward) WithdrawableAfter() int64 {
 	if reward.Kind == InviteRewardKindHistory {
 		return reward.AvailableAt
@@ -145,7 +150,7 @@ type InviteRewardSummary struct {
 }
 
 // inviteRewardFreezeWindow 返回当前生效的冻结时长（秒）。
-// 管理员可通过 InviteRewardFreezeHours 调整；0 表示取消冻结期，负值按 0 处理。
+// 管理员可通过 InviteRewardFreezeHours 调整旧注册奖励；0 或负值取消旧奖励冻结。
 func inviteRewardFreezeWindow() int {
 	if common.InviteRewardFreezeHours <= 0 {
 		return 0
@@ -164,35 +169,56 @@ func inviteRewardStatusFor(remaining int, withdrawableAfter, now int64) string {
 	return inviteRewardStatusAvailable
 }
 
-// GrantInviteReward 在事务内为邀请人写入一笔冻结奖励，并同步邀请计数与汇总余额。
-//
-// 返回 (false, nil) 表示该来源已发放过（重复回调、重复注册流程），调用方无需处理，
-// 也绝不能再次记账。奖励写入、邀请计数与汇总余额在同一事务内完成，失败时整笔回滚。
-func GrantInviteReward(tx *gorm.DB, inviterId int, sourceKey, kind string, quota int, createdAt int64) (bool, error) {
+// grantTopUpInviteReward 在充值事务内按到账额度返还 10% 给直接邀请人，最小额度向下取整。
+// sourceKey 必须标识唯一订单或兑换码；重复来源不再记账。奖励固定冻结 48 小时，不增加
+// 邀请人数；未绑定、已删除、禁用或自邀请用户不获奖。额度超限或落库失败返回错误，调用方
+// 必须回滚充值事务，禁止只提交其中一方。未确认支付条款时沿用原有的不发奖励规则。
+func grantTopUpInviteReward(tx *gorm.DB, userId int, sourceKey string, creditedQuota int) error {
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		return nil
+	}
+	if err := common.ValidateWalletQuota(creditedQuota); err != nil {
+		return err
+	}
+	quota := creditedQuota / 10
 	if quota <= 0 {
-		return false, nil
+		return nil
 	}
-	if err := common.ValidateWalletQuota(quota); err != nil {
-		return false, err
+	var invitee User
+	if err := tx.Select("inviter_id").First(&invitee, userId).Error; err != nil {
+		return err
 	}
-
-	claimed, err := ClaimInviteReward(tx, inviterId, sourceKey, kind, quota, createdAt)
+	if invitee.InviterId <= 0 || invitee.InviterId == userId {
+		return nil
+	}
+	var inviter User
+	if err := lockForUpdate(tx).First(&inviter, invitee.InviterId).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if inviter.Status != common.UserStatusEnabled {
+		return nil
+	}
+	now := common.GetTimestamp()
+	claimed, err := ClaimInviteReward(tx, inviter.Id, sourceKey, InviteRewardKindTopUp, quota, now)
 	if err != nil || !claimed {
-		return claimed, err
+		return err
 	}
-
-	result := tx.Model(&User{}).Where("id = ?", inviterId).Updates(map[string]interface{}{
-		"aff_count":   gorm.Expr("aff_count + ?", 1),
-		"aff_quota":   gorm.Expr("aff_quota + ?", quota),
-		"aff_history": gorm.Expr("aff_history + ?", quota),
-	})
+	result := tx.Model(&User{}).
+		Where("id = ? AND aff_quota <= ? AND aff_history <= ?", inviter.Id, common.MaxWalletQuota-quota, common.MaxWalletQuota-quota).
+		Updates(map[string]any{
+			"aff_quota":   gorm.Expr("aff_quota + ?", quota),
+			"aff_history": gorm.Expr("aff_history + ?", quota),
+		})
 	if result.Error != nil {
-		return false, result.Error
+		return result.Error
 	}
-	if result.RowsAffected == 0 {
-		return false, gorm.ErrRecordNotFound
+	if result.RowsAffected != 1 {
+		return ErrWalletQuotaLimitExceeded
 	}
-	return true, nil
+	return nil
 }
 
 // ClaimInviteReward 只负责占用奖励来源：已存在时返回 (false, nil)。
@@ -214,6 +240,9 @@ func ClaimInviteReward(tx *gorm.DB, userId int, sourceKey, kind string, quota in
 		Quota:          quota,
 		RemainingQuota: quota,
 		CreatedAt:      createdAt,
+	}
+	if kind == InviteRewardKindTopUp {
+		reward.AvailableAt = createdAt + inviteTopUpRewardFreezeSeconds
 	}
 	if err := tx.Create(&reward).Error; err != nil {
 		return false, err
@@ -382,7 +411,7 @@ func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 	}
 
 	var rewards []InviteReward
-	if err := DB.Where("user_id = ? AND kind <> ?", userId, InviteRewardKindInvitee).
+	if err := DB.Where("user_id = ? AND kind <> ? AND quota > 0", userId, InviteRewardKindInvitee).
 		Order("created_at DESC, id DESC").Limit(inviteRewardListLimit).Find(&rewards).Error; err != nil {
 		return nil, err
 	}
@@ -394,18 +423,26 @@ func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 	}
 
 	now := common.GetTimestamp()
-	var frozen, withdrawn int
-	var nextAvailableAt int64
+	// 汇总必须覆盖整个账本，不能只统计下方最近 50 笔明细，否则多单充值会把旧冻结额误报为可提。
+	var totals struct {
+		FrozenQuota     int
+		WithdrawnQuota  int
+		NextAvailableAt int64
+	}
+	availableAtSQL := "CASE WHEN kind = ? OR available_at > 0 THEN available_at ELSE created_at + ? END"
+	if err := DB.Model(&InviteReward{}).
+		Where("user_id = ? AND kind <> ? AND quota > 0", userId, InviteRewardKindInvitee).
+		Select("COALESCE(SUM(CASE WHEN remaining_quota > 0 AND ("+availableAtSQL+") > ? THEN remaining_quota ELSE 0 END), 0) AS frozen_quota, "+
+			"COALESCE(SUM(quota - remaining_quota), 0) AS withdrawn_quota, "+
+			"COALESCE(MIN(CASE WHEN remaining_quota > 0 AND ("+availableAtSQL+") > ? THEN ("+availableAtSQL+") END), 0) AS next_available_at",
+			InviteRewardKindHistory, inviteRewardFreezeWindow(), now,
+			InviteRewardKindHistory, inviteRewardFreezeWindow(), now,
+			InviteRewardKindHistory, inviteRewardFreezeWindow()).Scan(&totals).Error; err != nil {
+		return nil, err
+	}
 	items := make([]InviteRewardItem, 0, len(rewards))
 	for _, reward := range rewards {
 		withdrawableAfter := reward.WithdrawableAfter()
-		if reward.RemainingQuota > 0 && now < withdrawableAfter {
-			frozen += reward.RemainingQuota
-			if nextAvailableAt == 0 || withdrawableAfter < nextAvailableAt {
-				nextAvailableAt = withdrawableAfter
-			}
-		}
-		withdrawn += reward.Quota - reward.RemainingQuota
 		items = append(items, InviteRewardItem{
 			Id:              reward.Id,
 			Kind:            reward.Kind,
@@ -421,12 +458,12 @@ func GetInviteRewardSummary(userId int) (*InviteRewardSummary, error) {
 		AffQuota:          user.AffQuota,
 		AffHistoryQuota:   user.AffHistoryQuota,
 		AffCount:          user.AffCount,
-		FrozenQuota:       frozen,
-		WithdrawableQuota: user.AffQuota - frozen,
-		WithdrawnQuota:    withdrawn,
-		NextAvailableAt:   nextAvailableAt,
+		FrozenQuota:       totals.FrozenQuota,
+		WithdrawableQuota: user.AffQuota - totals.FrozenQuota,
+		WithdrawnQuota:    totals.WithdrawnQuota,
+		NextAvailableAt:   totals.NextAvailableAt,
 		MinimumQuota:      common.QuotaFromFloat(common.QuotaPerUnit),
-		FreezeSeconds:     inviteRewardFreezeWindow(),
+		FreezeSeconds:     inviteTopUpRewardFreezeSeconds,
 		ServerTime:        now,
 		Rewards:           items,
 		Withdrawals:       withdrawals,
@@ -450,7 +487,7 @@ func InitializeInviteRewardLedger() error {
 			RemainingQuota int
 		}
 		if err := DB.Model(&InviteReward{}).
-			Where("user_id = ? AND kind <> ?", user.Id, InviteRewardKindInvitee).
+			Where("user_id = ? AND kind <> ? AND quota > 0", user.Id, InviteRewardKindInvitee).
 			Select("COUNT(*) AS count, COALESCE(SUM(remaining_quota), 0) AS remaining_quota").
 			Scan(&ledger).Error; err != nil {
 			return err

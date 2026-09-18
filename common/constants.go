@@ -123,11 +123,13 @@ var TelegramBotToken = ""
 var TelegramBotName = ""
 
 var QuotaForNewUser = 0
+
+// QuotaForInviter 仅保留旧配置读写兼容；邀请人不再获得注册固定奖励。
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
 
-// InviteRewardFreezeHours 是邀请人奖励的冻结时长（小时）。默认 48 小时，
-// 管理员可通过该配置调整；0 表示取消冻结期，历史结转记录不受其影响。
+// InviteRewardFreezeHours 是旧邀请注册奖励的冻结时长（小时），默认 48；0 取消旧奖励冻结。
+// 新充值返佣固定冻结 48 小时，历史结转记录也不受此配置影响。
 var InviteRewardFreezeHours = 48
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false

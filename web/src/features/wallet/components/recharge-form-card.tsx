@@ -28,6 +28,7 @@ import { IconBadge } from '@/components/ui/icon-badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TitledCard } from '@/components/ui/titled-card'
 import {
   Tooltip,
@@ -38,7 +39,7 @@ import {
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { WALLET_SHOP_URL } from '../constants'
+import { WALLET_SHOP_URLS } from '../constants'
 import { extractRedemptionKey } from '../hooks/use-redemption'
 import {
   formatCurrency,
@@ -56,6 +57,7 @@ import type {
 } from '../types'
 import { CreemProductsSection } from './creem-products-section'
 
+/** 充值表单的金额、支付入口和兑换码受控状态及回调。 */
 interface RechargeFormCardProps {
   topupInfo: TopupInfo | null
   presetAmounts: PresetAmount[]
@@ -86,6 +88,7 @@ interface RechargeFormCardProps {
   enableWaffoPancakeTopup?: boolean
 }
 
+/** 展示余额充值、兑换码输入和可按支付方式切换的外部店铺。 */
 export function RechargeFormCard({
   topupInfo,
   presetAmounts,
@@ -117,6 +120,7 @@ export function RechargeFormCard({
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
+  const [shop, setShop] = useState<keyof typeof WALLET_SHOP_URLS>('wechat')
 
   useEffect(() => {
     // Empty string must survive, otherwise the field can never be cleared
@@ -286,7 +290,13 @@ export function RechargeFormCard({
         </Alert>
       )}
 
-      <div className='space-y-2.5 sm:space-y-3'>
+      <Tabs
+        value={shop}
+        onValueChange={(value) => {
+          if (value === 'wechat' || value === 'alipay') setShop(value)
+        }}
+        className='gap-2.5 sm:gap-3'
+      >
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
             {t('My Shop')}
@@ -297,7 +307,7 @@ export function RechargeFormCard({
             className='h-8 gap-1.5'
             render={
               <a
-                href={WALLET_SHOP_URL}
+                href={WALLET_SHOP_URLS[shop]}
                 target='_blank'
                 rel='noopener noreferrer'
               />
@@ -307,21 +317,30 @@ export function RechargeFormCard({
             {t('Open in new window')}
           </Button>
         </div>
-        <div className='bg-muted/20 overflow-hidden rounded-lg border'>
-          {/*
-            allow-same-origin is required for this third-party shop: without it
-            the iframe origin becomes null and its Vue assets fail CORS.
-          */}
-          <iframe
-            src={WALLET_SHOP_URL}
-            title={t('My Shop')}
-            className='bg-background h-[420px] w-full border-0 sm:h-[520px]'
-            sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin'
-            referrerPolicy='no-referrer-when-downgrade'
-            loading='lazy'
-          />
-        </div>
-      </div>
+        <TabsList aria-label={t('Payment Method')}>
+          <TabsTrigger value='wechat'>{t('WeChat Pay')}</TabsTrigger>
+          <TabsTrigger value='alipay'>{t('Alipay')}</TabsTrigger>
+        </TabsList>
+        {Object.entries(WALLET_SHOP_URLS).map(([method, url]) => (
+          <TabsContent
+            key={method}
+            value={method}
+            className='bg-muted/20 overflow-hidden rounded-lg border'
+          >
+            {/* 店铺依赖同源脚本资源；缺少 allow-same-origin 会导致其资源请求被 CORS 拒绝。 */}
+            <iframe
+              src={url}
+              title={t('{{method}} redemption code shop', {
+                method: method === 'wechat' ? t('WeChat Pay') : t('Alipay'),
+              })}
+              className='bg-background h-[420px] w-full border-0 sm:h-[520px]'
+              sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin'
+              referrerPolicy='no-referrer-when-downgrade'
+              loading='lazy'
+            />
+          </TabsContent>
+        ))}
+      </Tabs>
 
       {/* Online Topup Section */}
       {hasAnyTopup ? (

@@ -65,7 +65,8 @@ export const DEFAULT_DISCOUNT_RATE = 1.0
  */
 export const DEFAULT_MIN_TOPUP = 1
 
-/**
- * Embedded shop used on the wallet recharge card.
- */
-export const WALLET_SHOP_URL = 'https://wzyp.cn/shop/RPE3AZIX'
+/** 钱包兑换码店铺地址，分别支持微信和支付宝支付。 */
+export const WALLET_SHOP_URLS = {
+  wechat: 'https://wzyp.cn/shop/RPE3AZIX',
+  alipay: 'https://catfk.com/shop/68AEJFZJ',
+} as const

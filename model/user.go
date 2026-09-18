@@ -579,17 +579,25 @@ func HardDeleteUserById(id int) error {
 	return user.HardDelete()
 }
 
-// grantInviteRewards 发放邀请人与受邀人的注册奖励。
+// grantInviteRewards 记录邀请人数并发放受邀人的注册赠送，不再发放邀请人固定奖励。
 //
-// 邀请人奖励写入按笔冻结的账本，受邀人赠送直接计入余额；两者都以受邀用户 ID 为
-// 去重来源，重复回调不会重复计款。奖励写入与汇总字段更新在同一事务内完成，失败时
-// 整笔回滚并返回错误，调用方必须显式处理，不能静默忽略。
+// 零额度来源记录复用旧邀请奖励幂等键，避免重复回调或历史账号重复计数；受邀人赠送
+// 直接计入余额。所有副作用同事务提交，失败整笔回滚并返回错误。
 func (user *User) grantInviteRewards(inviterId int) error {
 	if inviterId == 0 || inviterId == user.Id || !operation_setting.IsPaymentComplianceConfirmed() {
 		return nil
 	}
 	now := common.GetTimestamp()
 	return DB.Transaction(func(tx *gorm.DB) error {
+		// 注册收尾可能与首次充值并发；两条路径均先锁受邀人，再锁邀请人，避免反向等待。
+		var invitee User
+		if err := lockForUpdate(tx).Select("id").First(&invitee, user.Id).Error; err != nil {
+			return err
+		}
+		var inviter User
+		if err := lockForUpdate(tx).First(&inviter, inviterId).Error; err != nil {
+			return err
+		}
 		if common.QuotaForInvitee > 0 {
 			// 赠送前先占用来源，重复回调在这里得到 claimed=false 并跳过加款。
 			claimed, err := ClaimInviteReward(tx, user.Id, inviteRewardSourceKey(InviteRewardKindInvitee, user.Id), InviteRewardKindInvitee, common.QuotaForInvitee, now)
@@ -608,12 +616,12 @@ func (user *User) grantInviteRewards(inviterId int) error {
 				}
 			}
 		}
-		if common.QuotaForInviter > 0 {
-			if _, err := GrantInviteReward(tx, inviterId, inviteRewardSourceKey(InviteRewardKindInviter, user.Id), InviteRewardKindInviter, common.QuotaForInviter, now); err != nil {
-				return err
-			}
+		claimed, err := ClaimInviteReward(tx, inviterId, inviteRewardSourceKey(InviteRewardKindInviter, user.Id), InviteRewardKindInviter, 0, now)
+		if err != nil || !claimed {
+			return err
 		}
-		return nil
+		return tx.Model(&User{}).Where("id = ?", inviterId).
+			Update("aff_count", gorm.Expr("aff_count + ?", 1)).Error
 	})
 }
 
@@ -668,6 +676,7 @@ func ensureEmailAvailableWithTx(tx *gorm.DB, email string, excludeUserID int) er
 	return nil
 }
 
+// Insert 创建用户并持久化服务端确认的邀请关系；创建失败返回错误，成功后执行注册收尾。
 func (user *User) Insert(inviterId int) error {
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
@@ -675,6 +684,7 @@ func (user *User) Insert(inviterId int) error {
 				return err
 			}
 			user.Quota = common.QuotaForNewUser
+			user.InviterId = inviterId
 			user.AffCode = common.GetRandomString(4)
 
 			// 初始化用户设置，包括默认的边栏配置
@@ -729,15 +739,15 @@ func (user *User) finalizeCreatedUser(createdUser User, inviterId int) {
 	}
 }
 
-// InsertWithTx inserts a new user within an existing transaction.
-// This is used for OAuth registration where user creation and binding need to be atomic.
-// Post-creation tasks (sidebar config, logs, inviter rewards) are handled after the transaction commits.
+// InsertWithTx 在 OAuth 身份绑定事务内创建用户并保存服务端确认的邀请人，失败返回错误。
+// 事务提交后由调用方执行边栏、日志、受邀人赠送及邀请计数等注册收尾。
 func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 	return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 		if err := user.prepareForInsert(tx); err != nil {
 			return err
 		}
 		user.Quota = common.QuotaForNewUser
+		user.InviterId = inviterId
 		user.AffCode = common.GetRandomString(4)
 
 		// 初始化用户设置

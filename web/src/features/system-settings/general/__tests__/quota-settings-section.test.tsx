@@ -40,7 +40,6 @@ import { QuotaSettingsSection } from '../quota-settings-section'
 const defaultValues = {
   QuotaForNewUser: 0,
   PreConsumedQuota: 0,
-  QuotaForInviter: 0,
   QuotaForInvitee: 0,
   TopUpLink: '',
   quota_setting: { enable_free_model_pre_consume: true },
@@ -112,6 +111,22 @@ beforeEach(() => {
 afterEach(() => {
   api.defaults.adapter = originalAdapter
   client.clear()
+})
+
+test('额度页展示充值返佣规则，移除邀请人固定奖励输入并保留受邀人奖励', async () => {
+  await renderQuotaPage()
+
+  expect(
+    screen.queryByRole('spinbutton', { name: 'Inviter Reward' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('spinbutton', { name: 'Invitee Reward' })
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      'Inviters earn 10% of each invited user’s credited top-up balance, including redemption codes. Each commission is frozen for 48 hours.'
+    )
+  ).toBeVisible()
 })
 
 test('额度页不再编辑文档链接，公告入口可导航到唯一编辑区域', async () => {

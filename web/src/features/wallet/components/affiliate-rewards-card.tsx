@@ -30,6 +30,7 @@ import { formatDateTimeObject } from '@/lib/time'
 
 import type { UserWalletData } from '../types'
 
+/** 推荐奖励汇总、分享链接以及明细和提现入口。 */
 interface AffiliateRewardsCardProps {
   user: UserWalletData | null
   affiliateLink: string
@@ -39,6 +40,7 @@ interface AffiliateRewardsCardProps {
   loading?: boolean
 }
 
+/** 展示每笔充值到账余额的返佣规则，并按服务端奖励状态控制提现入口。 */
 export function AffiliateRewardsCard({
   user,
   affiliateLink,
@@ -80,9 +82,14 @@ export function AffiliateRewardsCard({
             <h3 className='truncate text-sm font-semibold'>
               {t('Referral Program')}
             </h3>
-            <p className='text-muted-foreground line-clamp-2 text-xs'>
+            <p className='text-muted-foreground text-xs'>
               {t(
-                'Each invite reward is frozen for 48 hours, then you can withdraw it to your in-site balance.'
+                'Earn 10% of the balance credited by every top-up from invited users, including redemption codes.'
+              )}
+            </p>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Each commission is frozen for 48 hours before withdrawal to your in-site balance.'
               )}
             </p>
           </div>

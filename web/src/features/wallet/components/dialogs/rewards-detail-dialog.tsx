@@ -47,6 +47,7 @@ function rewardBadgeVariant(
   return 'secondary'
 }
 
+/** 展示服务端返回的奖励金额、冻结到期时间和提现状态，历史奖励按各自到期时间显示。 */
 export function RewardsDetailDialog(props: RewardsDetailDialogProps) {
   const { t } = useTranslation()
   const rewards = props.summary?.rewards ?? []
@@ -57,7 +58,7 @@ export function RewardsDetailDialog(props: RewardsDetailDialogProps) {
       onOpenChange={props.onOpenChange}
       title={t('Reward Details')}
       description={t(
-        'Every reward has its own 48-hour freeze window and is withdrawn in order of maturity.'
+        'Each commission is frozen for 48 hours before withdrawal to your in-site balance.'
       )}
       contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-2xl'
       titleClassName='text-xl font-semibold'
@@ -71,7 +72,9 @@ export function RewardsDetailDialog(props: RewardsDetailDialogProps) {
       {rewards.length === 0 ? (
         <EmptyState
           title={t('No rewards yet')}
-          description={t('Invite users to start earning rewards.')}
+          description={t(
+            'Rewards appear after invited users top up or redeem a code.'
+          )}
         />
       ) : (
         <ol className='space-y-3'>
