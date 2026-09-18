@@ -16,9 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Route } from 'lucide-react'
+import { AlertTriangle, Route } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,11 +30,20 @@ import {
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
+/** 日志模型展示参数；实际模型来自已记录的上游请求，不代表底层模型身份验证。 */
 interface ModelBadgeProps {
+  /** 客户端请求的完整模型名称。 */
   modelName: string
+  /** 可选上游模型名称；与请求模型相同时不重复展示。 */
   actualModel?: string
+  /** 上游响应原始声明的模型，未观测到时省略。 */
+  responseModel?: string
+  /** 服务端核对调用模型与响应模型后的不一致标记。 */
+  isMismatch?: boolean
   className?: string
+  /** 在受限宽度内换行，名称最多显示两行，完整值可在详情中查看。 */
   wrapText?: boolean
+  /** 卡片详情入口；提供时由调用方打开详情，徽标不触发复制。 */
   onInspect?: () => void
 }
 
@@ -125,6 +135,7 @@ function resolveModelProvider(modelName: string): ModelProvider | null {
   return null
 }
 
+/** 展示请求模型及供应商图标；没有详情回调时沿用徽标复制行为。 */
 function ModelBadgeContent(props: ModelBadgeProps) {
   const provider = resolveModelProvider(props.modelName)
 
@@ -171,8 +182,38 @@ function ModelBadgeContent(props: ModelBadgeProps) {
   )
 }
 
+/** 直接展示请求模型与不同的上游模型，并提供完整名称的查看和复制入口。 */
 export function ModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
+  const actualModel =
+    typeof props.actualModel === 'string' &&
+    props.actualModel.trim() !== '' &&
+    props.actualModel !== props.modelName
+      ? props.actualModel
+      : undefined
+  const actualModelContent = actualModel ? (
+    <span className='flex max-w-full min-w-0 items-start gap-1 text-xs'>
+      <Route className='mt-0.5 size-3 shrink-0' aria-hidden='true' />
+      <span className='shrink-0'>{t('Actual Model:')}</span>
+      <span className='line-clamp-2 min-w-0 font-mono [overflow-wrap:anywhere]'>
+        {actualModel}
+      </span>
+    </span>
+  ) : null
+  const responseModel =
+    typeof props.responseModel === 'string' && props.responseModel.trim() !== ''
+      ? props.responseModel
+      : undefined
+  const isMismatch = props.isMismatch === true && responseModel !== undefined
+  const responseModelContent = isMismatch ? (
+    <span className='text-warning flex max-w-full min-w-0 items-start gap-1 text-xs'>
+      <AlertTriangle className='mt-0.5 size-3 shrink-0' aria-hidden='true' />
+      <span className='shrink-0'>{t('Response mismatch:')}</span>
+      <span className='line-clamp-2 min-w-0 font-mono [overflow-wrap:anywhere]'>
+        {responseModel}
+      </span>
+    </span>
+  ) : null
 
   if (props.onInspect) {
     return (
@@ -181,50 +222,111 @@ export function ModelBadge(props: ModelBadgeProps) {
         aria-label={`${t('Model')}: ${props.modelName}`}
         aria-haspopup='dialog'
         onClick={props.onInspect}
-        className='h-auto min-h-8 max-w-full min-w-0 justify-start gap-1 px-0 py-0 text-left font-normal whitespace-normal'
+        className='h-auto min-h-8 max-w-full min-w-0 flex-col items-start justify-start gap-1 px-0 py-0 text-left font-normal whitespace-normal'
       >
         <ModelBadgeContent {...props} />
-        {props.actualModel && (
-          <Route className='text-muted-foreground size-3 shrink-0' />
-        )}
+        {actualModelContent}
+        {responseModelContent}
       </Button>
     )
   }
 
-  if (!props.actualModel) {
+  if (!actualModel && !isMismatch) {
     return <ModelBadgeContent {...props} />
   }
 
   return (
-    <Popover>
-      <PopoverTrigger
-        render={
-          <button type='button' className='inline-flex items-center gap-1' />
-        }
-      >
-        <ModelBadgeContent {...props} />
-        <Route className='text-muted-foreground size-3 shrink-0' />
-      </PopoverTrigger>
-      <PopoverContent className='w-72'>
-        <div className='space-y-2'>
-          <div className='flex items-start justify-between gap-3'>
-            <span className='text-muted-foreground text-xs'>
-              {t('Request Model:')}
-            </span>
-            <span className='truncate font-mono text-xs font-medium'>
-              {props.modelName}
-            </span>
+    <div className='flex max-w-80 min-w-0 flex-col items-start gap-1'>
+      <ModelBadgeContent {...props} wrapText />
+      <Popover>
+        {actualModel && (
+          <PopoverTrigger
+            render={
+              <Button
+                variant='ghost'
+                aria-label={`${t('Actual Model')}: ${actualModel}`}
+                className='text-muted-foreground h-auto min-h-6 max-w-full min-w-0 justify-start px-1 py-0.5 text-left font-normal whitespace-normal'
+              />
+            }
+          >
+            {actualModelContent}
+          </PopoverTrigger>
+        )}
+        {isMismatch && (
+          <PopoverTrigger
+            render={
+              <Button
+                variant='ghost'
+                aria-label={`${t('Upstream Response Model')}: ${responseModel}`}
+                className='h-auto min-h-6 max-w-full min-w-0 justify-start px-1 py-0.5 text-left font-normal whitespace-normal'
+              />
+            }
+          >
+            {responseModelContent}
+          </PopoverTrigger>
+        )}
+        <PopoverContent
+          aria-label={t('Model Details')}
+          className='w-80 max-w-[calc(100vw-2rem)]'
+        >
+          <div className='space-y-3'>
+            <div className='space-y-1'>
+              <p className='text-muted-foreground text-xs'>
+                {t('Request Model:')}
+              </p>
+              <div className='flex items-start gap-2'>
+                <span className='min-w-0 flex-1 font-mono text-xs font-medium [overflow-wrap:anywhere] whitespace-pre-wrap'>
+                  {props.modelName}
+                </span>
+                <CopyButton
+                  value={props.modelName}
+                  className='size-6'
+                  iconClassName='size-3'
+                />
+              </div>
+            </div>
+            <div className='space-y-1'>
+              <p className='text-muted-foreground text-xs'>
+                {t('Actual Model:')}
+              </p>
+              <div className='flex items-start gap-2'>
+                <span className='min-w-0 flex-1 font-mono text-xs font-medium [overflow-wrap:anywhere] whitespace-pre-wrap'>
+                  {actualModel ?? props.modelName}
+                </span>
+                <CopyButton
+                  value={actualModel ?? props.modelName}
+                  className='size-6'
+                  iconClassName='size-3'
+                />
+              </div>
+            </div>
+            {responseModel && (
+              <div className='space-y-1'>
+                <p className='text-muted-foreground text-xs'>
+                  {t('Upstream Response Model')}
+                </p>
+                <div className='flex items-start gap-2'>
+                  <span className='min-w-0 flex-1 font-mono text-xs font-medium [overflow-wrap:anywhere] whitespace-pre-wrap'>
+                    {responseModel}
+                  </span>
+                  <CopyButton
+                    value={responseModel}
+                    className='size-6'
+                    iconClassName='size-3'
+                  />
+                </div>
+                {isMismatch && (
+                  <StatusBadge
+                    label={t('Upstream model mismatch')}
+                    variant='warning'
+                    copyable={false}
+                  />
+                )}
+              </div>
+            )}
           </div>
-          <div className='flex items-start justify-between gap-3'>
-            <span className='text-muted-foreground text-xs'>
-              {t('Actual Model:')}
-            </span>
-            <span className='truncate font-mono text-xs font-medium'>
-              {props.actualModel}
-            </span>
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
+        </PopoverContent>
+      </Popover>
+    </div>
   )
 }

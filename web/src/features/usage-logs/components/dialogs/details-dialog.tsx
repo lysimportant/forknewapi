@@ -68,6 +68,7 @@ import { cn } from '@/lib/utils'
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
 import {
+  formatModelName,
   parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
@@ -465,10 +466,12 @@ interface DetailsDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
+/** 展示所选日志的请求、计费和模型信息，权限相关字段沿用日志查看范围。 */
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
+  const modelInfo = formatModelName(props.log)
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
@@ -1106,19 +1109,36 @@ export function DetailsDialog(props: DetailsDialogProps) {
           />
         )}
 
-        {/* Model mapping */}
-        {other?.is_model_mapped && other?.upstream_model_name && (
-          <DetailSection label={t('Model Mapping')}>
-            <DetailRow
-              label={t('Request Model')}
-              value={props.log.model_name}
-              mono
-            />
-            <DetailRow
-              label={t('Actual Model')}
-              value={other.upstream_model_name}
-              mono
-            />
+        {/* 与列表共用模型差异判断，兼容缺少映射标记的日志。 */}
+        {(modelInfo.isMapped || modelInfo.responseModel) && (
+          <DetailSection
+            label={
+              modelInfo.responseModel ? t('Model Details') : t('Model Mapping')
+            }
+          >
+            <DetailRow label={t('Request Model')} value={modelInfo.name} mono />
+            {typeof other?.upstream_model_name === 'string' &&
+              other.upstream_model_name.trim() !== '' && (
+                <DetailRow
+                  label={t('Actual Model')}
+                  value={other.upstream_model_name}
+                  mono
+                />
+              )}
+            {modelInfo.responseModel && (
+              <DetailRow
+                label={t('Upstream Response Model')}
+                value={modelInfo.responseModel}
+                mono
+              />
+            )}
+            {modelInfo.isMismatch && (
+              <StatusBadge
+                label={t('Upstream model mismatch')}
+                variant='warning'
+                copyable={false}
+              />
+            )}
           </DetailSection>
         )}
 

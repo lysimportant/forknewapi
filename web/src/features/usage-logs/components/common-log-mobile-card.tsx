@@ -149,6 +149,8 @@ export function CommonLogMobileCard<TData>(props: {
             <ModelBadge
               modelName={model.name}
               actualModel={model.actualModel}
+              responseModel={model.responseModel}
+              isMismatch={model.isMismatch}
               wrapText
               onInspect={() => setSelectedField('model')}
             />
@@ -356,6 +358,24 @@ export function CommonLogMobileCard<TData>(props: {
                   {model.actualModel}
                 </p>
                 <CopyButton value={model.actualModel} />
+              </div>
+            )}
+            {selectedField === 'model' && model.responseModel && (
+              <div className='space-y-2'>
+                <p className='text-muted-foreground'>
+                  {t('Upstream Response Model')}
+                </p>
+                {model.isMismatch && (
+                  <StatusBadge
+                    label={t('Upstream model mismatch')}
+                    variant='warning'
+                    copyable={false}
+                  />
+                )}
+                <p className='text-base [overflow-wrap:anywhere]'>
+                  {model.responseModel}
+                </p>
+                <CopyButton value={model.responseModel} />
               </div>
             )}
             {selectedField === 'channel' && channelCell && (

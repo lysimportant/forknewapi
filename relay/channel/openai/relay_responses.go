@@ -37,6 +37,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
+	info.ObserveUpstreamResponseModel(responsesResponse.Model, true)
 	if responsesResponse.Usage != nil {
 		// Responses 与 Chat 的输出明细字段名不同，映射时不能再次累加已包含在输出总量中的推理 token。
 		if details := gjson.GetBytes(responseBody, "usage.output_tokens_details"); details.Exists() && details.Type != gjson.Null {
@@ -112,6 +113,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		switch eventType.Str {
 		case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled", "error":
 			isTerminal = true
+		}
+		responseModel := event.Get("response.model")
+		if responseModel.Type != gjson.String {
+			responseModel = event.Get("model")
+		}
+		if responseModel.Type == gjson.String {
+			info.ObserveUpstreamResponseModel(responseModel.String(), isTerminal)
 		}
 
 		// 只解析计费字段；未知事件的 delta、content 等扩展字段不参与共享 DTO 的反序列化。

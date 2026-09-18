@@ -32,7 +32,7 @@ func TestOaiStreamHandlerPreservesTerminalChoice(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			last := `{"id":"last","object":"chat.completion.chunk","choices":` + test.choices + `,"usage":{"prompt_tokens":374,"completion_tokens":78,"total_tokens":452}}`
-			body := "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"}}]}\n\ndata: " + last + "\n\ndata: [DONE]\n\n"
+			body := "data: {\"id\":\"first\",\"model\":\"response-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"}}]}\n\ndata: " + last + "\n\ndata: [DONE]\n\n"
 			ctx, recorder, response, info := newResponsesChatTestContext(t, body, true)
 			info.RelayMode = relayconstant.RelayModeChatCompletions
 			info.ShouldIncludeUsage = test.includeUsage
@@ -42,6 +42,7 @@ func TestOaiStreamHandlerPreservesTerminalChoice(t *testing.T) {
 			assert.Equal(t, 374, usage.PromptTokens)
 			assert.Equal(t, 78, usage.CompletionTokens)
 			assert.Equal(t, 452, usage.TotalTokens)
+			assert.Equal(t, "response-model", info.GetUpstreamResponseModelName())
 			var finalData string
 			for _, frame := range strings.Split(recorder.Body.String(), "\n\n") {
 				data := strings.TrimPrefix(frame, "data: ")
@@ -56,6 +57,50 @@ func TestOaiStreamHandlerPreservesTerminalChoice(t *testing.T) {
 				assert.Empty(t, finalData)
 			}
 			assert.True(t, strings.HasSuffix(recorder.Body.String(), "data: [DONE]\n\n"))
+		})
+	}
+}
+
+func TestOpenaiHandlerRecordsResponseModel(t *testing.T) {
+	body := `{"id":"chatcmpl_1","model":"response-model","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`
+	ctx, _, response, info := newResponsesChatTestContext(t, body, false)
+
+	usage, apiErr := OpenaiHandler(ctx, info, response)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, "response-model", info.GetUpstreamResponseModelName())
+}
+
+func TestOaiStreamHandlerPrefersTerminalResponseModel(t *testing.T) {
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+
+	for _, tt := range []struct {
+		name            string
+		finalUsageModel string
+		wantModel       string
+	}{
+		{name: "finish model survives empty usage model", wantModel: "finish-model"},
+		{name: "final usage model wins", finalUsageModel: `,"model":"usage-model"`, wantModel: "usage-model"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "data: {\"id\":\"first\",\"model\":\"sent-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"}}]}\n\n" +
+				"data: {\"id\":\"finish\",\"model\":\"finish-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+				"data: {\"id\":\"usage\"" + tt.finalUsageModel + ",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n" +
+				"data: [DONE]\n\n"
+			ctx, _, response, info := newResponsesChatTestContext(t, body, true)
+			info.RelayMode = relayconstant.RelayModeChatCompletions
+			info.SetSentUpstreamModelName("sent-model")
+
+			usage, apiErr := OaiStreamHandler(ctx, info, response)
+
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, tt.wantModel, info.GetUpstreamResponseModelName())
+			mismatch, observed := info.GetUpstreamModelMismatch()
+			assert.True(t, observed)
+			assert.True(t, mismatch)
 		})
 	}
 }

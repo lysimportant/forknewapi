@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -45,6 +46,71 @@ func TestRelayInfoGetFinalRequestRelayFormatFallsBackToRelayFormat(t *testing.T)
 func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
+}
+
+func TestRelayInfoTracksSentAndResponseModels(t *testing.T) {
+	info := &RelayInfo{ChannelMeta: &ChannelMeta{UpstreamModelName: "mapped-model"}}
+	info.CaptureSentUpstreamModelName([]byte(`{"model":" final-sent-model "}`))
+	info.ObserveUpstreamResponseModel("first-response-model", false)
+	info.ObserveUpstreamResponseModel("terminal-response-model", true)
+	info.ObserveUpstreamResponseModel("late-non-terminal-model", false)
+
+	assert.Equal(t, "final-sent-model", info.GetSentUpstreamModelName())
+	assert.Equal(t, "terminal-response-model", info.GetUpstreamResponseModelName())
+	mismatch, observed := info.GetUpstreamModelMismatch()
+	assert.True(t, observed)
+	assert.True(t, mismatch)
+}
+
+func TestRelayInfoUpstreamModelMismatchComparison(t *testing.T) {
+	longModel := strings.Repeat("long-model-", 30)
+	for _, tt := range []struct {
+		name         string
+		sent         string
+		response     string
+		wantMismatch bool
+		wantObserved bool
+	}{
+		{name: "same exact model", sent: "gpt-5.6-sol", response: "gpt-5.6-sol", wantObserved: true},
+		{name: "case difference", sent: "GPT-5.6-SOL", response: "gpt-5.6-sol", wantMismatch: true, wantObserved: true},
+		{name: "alias differs from build", sent: "grok-4.6-latest", response: "grok-4.6-build", wantMismatch: true, wantObserved: true},
+		{name: "long exact model", sent: longModel, response: longModel, wantObserved: true},
+		{name: "different", sent: "gpt-5.6-sol", response: "gpt-5.6-terra", wantMismatch: true, wantObserved: true},
+		{name: "missing response", sent: "gpt-5.6-sol"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &RelayInfo{ChannelMeta: &ChannelMeta{UpstreamModelName: tt.sent}}
+			info.SetSentUpstreamModelName(tt.sent)
+			info.ObserveUpstreamResponseModel(tt.response, true)
+
+			mismatch, observed := info.GetUpstreamModelMismatch()
+			assert.Equal(t, tt.wantObserved, observed)
+			assert.Equal(t, tt.wantMismatch, mismatch)
+		})
+	}
+}
+
+func TestRelayInfoCaptureSentModelKeepsTargetProtocolUnknown(t *testing.T) {
+	info := &RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		ChannelMeta: &ChannelMeta{UpstreamModelName: "mapped-model"},
+	}
+	info.CaptureSentUpstreamModelName([]byte(`{"temperature":0.2}`))
+
+	assert.Empty(t, info.GetSentUpstreamModelName())
+	info.ObserveUpstreamResponseModel("response-model", true)
+	_, observed := info.GetUpstreamModelMismatch()
+	assert.False(t, observed)
+}
+
+func TestRelayInfoCaptureSentModelPreservesURLProtocolFallback(t *testing.T) {
+	info := &RelayInfo{
+		RelayFormat: types.RelayFormatGemini,
+		ChannelMeta: &ChannelMeta{UpstreamModelName: "models/gemini-test"},
+	}
+	info.CaptureSentUpstreamModelName([]byte(`{"contents":[]}`))
+
+	assert.Equal(t, "models/gemini-test", info.GetSentUpstreamModelName())
 }
 
 func TestRelayInfoMetaTypedNilReceiver(t *testing.T) {
@@ -233,6 +299,8 @@ func TestInitChannelMetaResetsPerAttemptStreamStateAndPreservesRequestState(t *t
 	info.SendResponseCount = 3
 	info.ClaudeToChatStreamState = claudeState
 	info.ChatToGeminiStreamState = geminiState
+	info.SetSentUpstreamModelName("attempt-1-sent-model")
+	info.ObserveUpstreamResponseModel("attempt-1-response-model", true)
 	info.LastError = types.NewError(assert.AnError, types.ErrorCodeBadResponseBody)
 	info.StreamStatus = NewStreamStatus()
 	info.StreamStatus.RecordError("attempt 1 soft error")
@@ -249,6 +317,15 @@ func TestInitChannelMetaResetsPerAttemptStreamStateAndPreservesRequestState(t *t
 	assert.Zero(t, info.SendResponseCount)
 	assert.Nil(t, info.ClaudeToChatStreamState)
 	assert.Nil(t, info.ChatToGeminiStreamState)
+	assert.Empty(t, info.GetUpstreamResponseModelName())
+	_, observed := info.GetUpstreamModelMismatch()
+	assert.False(t, observed)
+	info.CaptureSentUpstreamModelName([]byte(`{"model":"attempt-2-model"}`))
+	assert.Equal(t, "attempt-2-model", info.GetSentUpstreamModelName())
+	info.ObserveUpstreamResponseModel("attempt-2-model", true)
+	mismatch, observed := info.GetUpstreamModelMismatch()
+	assert.True(t, observed)
+	assert.False(t, mismatch)
 
 	require.NotNil(t, info.StreamStatus)
 	assert.True(t, info.StreamStatus.HasErrors())

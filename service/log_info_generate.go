@@ -94,6 +94,34 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	AppendChannelAffinityAdminInfo(ctx, other)
 }
 
+// AppendRelayModelLogInfo 写入请求模型、实际调用模型及上游响应模型的公开日志字段。
+// recordedModelName 是日志主字段已经保存的模型名，用于避免重复记录请求原名。
+func AppendRelayModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther, recordedModelName string) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+	if requestedModel := strings.TrimSpace(relayInfo.OriginModelName); requestedModel != "" && requestedModel != recordedModelName {
+		other.SetPublic("requested_model_name", requestedModel)
+	}
+	sentModel := relayInfo.GetSentUpstreamModelName()
+	responseModel := relayInfo.GetUpstreamResponseModelName()
+	isModelMapped := relayInfo.ChannelMeta != nil && relayInfo.IsModelMapped
+	if isModelMapped {
+		other.SetPublic("is_model_mapped", true)
+	}
+	requestModel := strings.TrimSpace(relayInfo.OriginModelName)
+	if isModelMapped || (sentModel != "" && (sentModel != requestModel || responseModel != "")) {
+		other.SetPublic("upstream_model_name", sentModel)
+	}
+	if responseModel == "" {
+		return
+	}
+	other.SetPublic("upstream_response_model", responseModel)
+	if mismatch, observed := relayInfo.GetUpstreamModelMismatch(); observed {
+		other.SetPublic("upstream_model_mismatch", mismatch)
+	}
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) *model.LogOther {
 	other := model.NewLogOther()
@@ -108,10 +136,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.ReasoningEffort != "" {
 		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}
-	if relayInfo.IsModelMapped {
-		other.SetPublic("is_model_mapped", true)
-		other.SetPublic("upstream_model_name", relayInfo.UpstreamModelName)
-	}
+	AppendRelayModelLogInfo(relayInfo, other, relayInfo.GetBillingModelName())
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
 	if isSystemPromptOverwritten {

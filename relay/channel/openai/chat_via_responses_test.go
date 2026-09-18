@@ -67,6 +67,7 @@ func TestOaiResponsesToChatStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Equal(t, 2, usage.PromptTokens)
 	require.Equal(t, 3, usage.CompletionTokens)
 	require.Equal(t, 5, usage.TotalTokens)
+	assert.Equal(t, "gpt-test", info.GetUpstreamResponseModelName())
 
 	got := recorder.Body.String()
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
@@ -162,6 +163,7 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.Nil(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 3, usage.TotalTokens)
+	assert.Equal(t, "gpt-test", info.GetUpstreamResponseModelName())
 
 	got := recorder.Body.String()
 	require.NotContains(t, got, `data:`)
@@ -230,8 +232,8 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup"}}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"x\"}"}}]},"finish_reason":null}]}`,
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-finish","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-runtime","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -245,6 +247,10 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Equal(t, 2, usage.PromptTokens)
 	require.Equal(t, 3, usage.CompletionTokens)
 	require.Equal(t, 5, usage.TotalTokens)
+	assert.Equal(t, "gpt-runtime", info.GetUpstreamResponseModelName())
+	mismatch, observed := info.GetUpstreamModelMismatch()
+	assert.True(t, observed)
+	assert.True(t, mismatch)
 
 	got := recorder.Body.String()
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))

@@ -222,24 +222,45 @@ export function getResponseTimeColor(seconds: number): LatencyVariant {
 }
 
 /**
- * Format model name with mapping indicator
+ * 返回请求、调用、响应模型名称及差异标记，兼容缺少映射标记的历史日志。
+ * 缺失名称不推测；响应不一致仅在服务端已确认且两侧名称有效时展示。
  */
 export function formatModelName(log: UsageLog): {
   name: string
   isMapped: boolean
   actualModel?: string
+  responseModel?: string
+  isMismatch: boolean
 } {
   const other = parseLogOther(log.other)
-  const isMapped = !!(
-    other?.is_model_mapped &&
-    other?.upstream_model_name &&
-    other.upstream_model_name !== ''
-  )
+  const name =
+    typeof other?.requested_model_name === 'string' &&
+    other.requested_model_name.trim() !== ''
+      ? other.requested_model_name
+      : log.model_name
+  const upstreamModel = other?.upstream_model_name
+  const isMapped =
+    typeof upstreamModel === 'string' &&
+    upstreamModel.trim() !== '' &&
+    upstreamModel !== name
+  const responseModel =
+    typeof other?.upstream_response_model === 'string' &&
+    other.upstream_response_model.trim() !== ''
+      ? other.upstream_response_model
+      : undefined
+  const isMismatch =
+    other?.upstream_model_mismatch === true &&
+    typeof upstreamModel === 'string' &&
+    upstreamModel.trim() !== '' &&
+    responseModel !== undefined &&
+    responseModel !== upstreamModel
 
   return {
-    name: log.model_name,
+    name,
     isMapped,
-    actualModel: isMapped ? other.upstream_model_name : undefined,
+    actualModel: isMapped ? upstreamModel : undefined,
+    responseModel,
+    isMismatch,
   }
 }
 

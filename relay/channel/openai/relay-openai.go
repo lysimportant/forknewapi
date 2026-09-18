@@ -134,7 +134,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 
 			lastStreamData = data
-			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
+			responseModel, terminal := collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
+			info.ObserveUpstreamResponseModel(responseModel, terminal)
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
@@ -194,10 +195,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	return usage, nil
 }
 
-func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) {
+// collectStreamFunctionCallNames 累计去重后的工具调用名，并复用同次解析返回模型声明和终态标记。
+// 无法解析的分片不改变调用名集合，模型声明返回空值。
+func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) (model string, terminal bool) {
 	var streamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-		return
+		return "", false
 	}
 	for _, choice := range streamResponse.Choices {
 		for i, tc := range choice.Delta.ToolCalls {
@@ -236,6 +239,20 @@ func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names
 			*names = append(*names, name)
 		}
 	}
+	return streamResponse.Model, isChatCompletionStreamTerminal(&streamResponse)
+}
+
+// isChatCompletionStreamTerminal 判断 Chat SSE 是否已到达 finish_reason 或最终 usage 分片。
+func isChatCompletionStreamTerminal(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			return true
+		}
+	}
+	return len(response.Choices) == 0 && response.Usage != nil
 }
 
 func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -271,6 +288,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
+	info.ObserveUpstreamResponseModel(simpleResponse.Model, true)
 
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {

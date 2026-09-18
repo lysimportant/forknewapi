@@ -99,6 +99,13 @@ type RelayInfo struct {
 	UsePrice               bool
 	RelayMode              int
 	OriginModelName        string
+	// sentUpstreamModelName 固定最终发出的模型，避免 Claude 既有响应回写覆盖审计值；
+	// sentUpstreamModelCaptured 区分“尚未接入采集的旧路径”和“已采集但模型未知”。
+	sentUpstreamModelName     string
+	sentUpstreamModelCaptured bool
+	// upstreamResponseModel 保存转换或客户端回写前的上游声明；终态声明优先。
+	upstreamResponseModel string
+	responseModelTerminal bool
 
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
@@ -246,6 +253,10 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.SendResponseCount = 0
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
+	info.sentUpstreamModelName = ""
+	info.sentUpstreamModelCaptured = false
+	info.upstreamResponseModel = ""
+	info.responseModelTerminal = false
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
@@ -826,6 +837,86 @@ func (info *RelayInfo) GetUpstreamModelName() string {
 		return ""
 	}
 	return info.UpstreamModelName
+}
+
+// SetSentUpstreamModelName 记录当前尝试实际发送给上游的模型名。
+// 调用方应在参数覆写完成后、发出请求前调用；空值表示已确认无法取得模型。
+func (info *RelayInfo) SetSentUpstreamModelName(modelName string) {
+	if info == nil {
+		return
+	}
+	info.sentUpstreamModelName = strings.TrimSpace(modelName)
+	info.sentUpstreamModelCaptured = true
+}
+
+// CaptureSentUpstreamModelName 从最终 JSON 请求体记录实际发送的 model。
+// OpenAI、Responses 与 Claude 请求缺少字符串 model 时会明确记录为未知；
+// URL 携带模型的其他协议仍沿用既有渠道模型字段。
+func (info *RelayInfo) CaptureSentUpstreamModelName(jsonData []byte) {
+	if info == nil {
+		return
+	}
+	if model := gjson.GetBytes(jsonData, "model"); model.Type == gjson.String {
+		info.SetSentUpstreamModelName(model.String())
+		return
+	}
+	switch info.GetFinalRequestRelayFormat() {
+	case types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatClaude:
+		info.SetSentUpstreamModelName("")
+	}
+}
+
+// GetSentUpstreamModelName 返回当前尝试实际发送给上游的模型名。
+// 旧调用路径没有显式快照时，回退到现有渠道模型字段以保持兼容。
+func (info *RelayInfo) GetSentUpstreamModelName() string {
+	if info == nil {
+		return ""
+	}
+	if info.sentUpstreamModelCaptured {
+		return info.sentUpstreamModelName
+	}
+	return info.GetUpstreamModelName()
+}
+
+// ObserveUpstreamResponseModel 记录上游成功响应声明的模型名。
+// 首个非终态声明会被保留，终态声明可以覆盖它；空值不会产生检测结果。
+func (info *RelayInfo) ObserveUpstreamResponseModel(modelName string, terminal bool) {
+	if info == nil {
+		return
+	}
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return
+	}
+	if terminal {
+		info.upstreamResponseModel = modelName
+		info.responseModelTerminal = true
+		return
+	}
+	if info.upstreamResponseModel == "" && !info.responseModelTerminal {
+		info.upstreamResponseModel = modelName
+	}
+}
+
+// GetUpstreamResponseModelName 返回转换或回写前由上游响应声明的模型名。
+func (info *RelayInfo) GetUpstreamResponseModelName() string {
+	if info == nil {
+		return ""
+	}
+	return info.upstreamResponseModel
+}
+
+// GetUpstreamModelMismatch 比较实际发送模型与上游响应模型。
+// 第二个返回值表示两侧模型均已知且可以比较；任一未知时不应展示不一致状态。
+func (info *RelayInfo) GetUpstreamModelMismatch() (mismatch bool, observed bool) {
+	if info == nil || info.upstreamResponseModel == "" {
+		return false, false
+	}
+	sentModel := strings.TrimSpace(info.GetSentUpstreamModelName())
+	if sentModel == "" {
+		return false, false
+	}
+	return sentModel != strings.TrimSpace(info.upstreamResponseModel), true
 }
 
 func (info *RelayInfo) HasChannelMeta() bool { return info != nil && info.ChannelMeta != nil }

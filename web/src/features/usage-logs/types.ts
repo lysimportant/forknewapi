@@ -194,7 +194,13 @@ export interface LogOtherData {
   cache_creation_ratio_5m?: number
   cache_creation_ratio_1h?: number
   is_model_mapped?: boolean
+  /** 原始请求模型与计费模型不同时记录，避免把计费别名当成请求名称。 */
+  requested_model_name?: string
   upstream_model_name?: string
+  /** 上游响应在协议转换、模型名回写之前声明的模型；缺失表示未观测到。 */
+  upstream_response_model?: string
+  /** 服务端确认响应声明与实际调用模型不一致；缺失不代表已经核验一致。 */
+  upstream_model_mismatch?: boolean
   audio_ratio?: number
   audio_completion_ratio?: number
   frt?: number

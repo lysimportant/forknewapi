@@ -26,6 +26,7 @@ func TestOaiResponsesHandlerCountsOutputCallsNotDeclarations(t *testing.T) {
 	})
 
 	body, err := common.Marshal(dto.OpenAIResponsesResponse{
+		Model: "response-model",
 		Tools: []map[string]any{
 			{"type": "web_search_preview"},
 			{"type": "file_search"},
@@ -67,6 +68,7 @@ func TestOaiResponsesHandlerCountsOutputCallsNotDeclarations(t *testing.T) {
 	require.Contains(t, info.ResponsesUsageInfo.BuiltInTools, "priced_fn")
 	assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools["priced_fn"].CallCount)
 	assert.NotContains(t, info.ResponsesUsageInfo.BuiltInTools, "unpriced_fn")
+	assert.Equal(t, "response-model", info.GetUpstreamResponseModelName())
 }
 
 func TestOaiResponsesHandlerDeclaredToolsWithoutOutputCountZero(t *testing.T) {
@@ -240,10 +242,11 @@ func TestOaiResponsesStreamHandlerDeduplicatesCompletedImageOutput(t *testing.T)
 	info := runResponsesImageBillingStream(
 		t,
 		`{"type":"response.output_item.done","output_index":0,"item":`+item+`}`,
-		`{"type":"response.completed","response":{"status":"completed","output":[`+item+`],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		`{"type":"response.completed","response":{"model":"response-model","status":"completed","output":[`+item+`],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
 	)
 
 	assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolImageGeneration].CallCount)
+	assert.Equal(t, "response-model", info.GetUpstreamResponseModelName())
 }
 
 func TestOaiResponsesStreamHandlerDiscardsImageOutputOnIncomplete(t *testing.T) {
