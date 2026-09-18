@@ -91,7 +91,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, and ArtsDance models",
     zh: "Moon Wan、Seedance 与 ArtsDance 视频生成",
   },
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "QuantumNous" },
   models: MODELS,
   fetchMode: "per_task",
@@ -303,6 +303,63 @@ function validateKnownFields(req, model, allowAutoDuration = false) {
   if (req.seed !== undefined && (!Number.isInteger(req.seed) || req.seed < -1 || req.seed > 2147483647))
     throw new Error("seed must be between -1 and 2147483647");
   return { duration, resolution, ratio, videoInput: references.videoCount > 0 ? "video" : "none", ...references };
+}
+
+/**
+ * 仅把 Canvas 当前 OpenAI Video 纯文封装还原为 Moon 已验证的顶层合同。
+ * 参考素材、模式字段和未知键保持拒绝，避免兼容路径扩大模型能力。
+ */
+function normalizeCanvasTextVideoRequest(source, model, clientModel) {
+  const request = Object.assign({}, source, { model: clientModel });
+  if (!Object.prototype.hasOwnProperty.call(source, "metadata")) return request;
+  const metadata = source.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error("metadata must be an object");
+
+  if (isWan(model)) {
+    const metadataKeys = Object.keys(metadata);
+    if (metadataKeys.length !== 1 || metadataKeys[0] !== "input") throw new Error("Moon Wan metadata must contain only input");
+    const input = metadata.input;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Moon Wan metadata.input must be an object");
+    for (const key of Object.keys(input)) if (key !== "media") throw new Error("unsupported Moon Wan metadata.input field: " + key);
+    if (input.media !== undefined && (!Array.isArray(input.media) || input.media.length !== 0))
+      throw new Error("Moon Wan text-to-video requires metadata.input.media to be empty");
+    delete request.metadata;
+    return request;
+  }
+
+  if (model !== "doubao-seedance-2-0-mini-260615" && model !== "doubao-seedance-2-0-fast-260128") return request;
+  for (const key of Object.keys(metadata))
+    if (!["content", "resolution", "ratio"].includes(key)) throw new Error("unsupported Moon Seedance metadata field: " + key);
+  if (
+    !Object.prototype.hasOwnProperty.call(metadata, "content") ||
+    !Object.prototype.hasOwnProperty.call(metadata, "resolution") ||
+    !Object.prototype.hasOwnProperty.call(metadata, "ratio")
+  )
+    throw new Error("Moon Seedance metadata must include content, resolution, and ratio");
+  if (!Array.isArray(metadata.content) || metadata.content.length !== 1) throw new Error("Moon Seedance metadata.content must contain one text item");
+  const text = metadata.content[0];
+  if (!text || typeof text !== "object" || Array.isArray(text) || text.type !== "text" || typeof text.text !== "string" || !text.text.trim())
+    throw new Error("Moon Seedance metadata.content must contain one text item");
+  for (const key of Object.keys(text)) if (key !== "type" && key !== "text") throw new Error("unsupported Moon Seedance text field: " + key);
+  if (Object.prototype.hasOwnProperty.call(request, "content")) throw new Error("content conflicts with metadata.content");
+  if (request.prompt !== text.text) throw new Error("prompt conflicts with metadata.content text");
+
+  const resolution = normalizeResolution(metadata.resolution, model);
+  if (Object.prototype.hasOwnProperty.call(request, "resolution") && normalizeResolution(request.resolution, model) !== resolution)
+    throw new Error("resolution conflicts with metadata.resolution");
+  const ratio = normalizeRatio({ ratio: metadata.ratio }, model);
+  if (
+    (Object.prototype.hasOwnProperty.call(request, "ratio") || Object.prototype.hasOwnProperty.call(request, "aspect_ratio")) &&
+    normalizeRatio(request, model) !== ratio
+  )
+    throw new Error("ratio conflicts with metadata.ratio");
+
+  request.content = [Object.assign({}, text)];
+  request.resolution = resolution;
+  request.ratio = ratio;
+  delete request.prompt;
+  delete request.metadata;
+  return request;
 }
 
 /** 将解码器新建且已校验的请求副本转换为宿主格式，返回同一副本；不向宿主暴露负数用量。 */
@@ -601,9 +658,10 @@ export const protocols = {
       const source = ctx.body.value;
       if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("request body must be an object");
       const model = trimmed(ctx.model || source.model);
-      if (!MODELS.includes(trimmed(ctx.upstreamModel || model))) throw new Error("unsupported Moon model");
-      const request = Object.assign({}, source, { model: model });
-      const facts = validateKnownFields(request, trimmed(ctx.upstreamModel || model));
+      const upstreamModel = trimmed(ctx.upstreamModel || model);
+      if (!MODELS.includes(upstreamModel)) throw new Error("unsupported Moon model");
+      const request = normalizeCanvasTextVideoRequest(source, upstreamModel, model);
+      const facts = validateKnownFields(request, upstreamModel);
       return {
         kind: "submit",
         model: model,

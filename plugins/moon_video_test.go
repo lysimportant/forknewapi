@@ -19,6 +19,7 @@ func TestMoonVideoContracts(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
 	const tokenModel = "doubao-seedance-2-0-mini-260615"
+	const fastModel = "doubao-seedance-2-0-fast-260128"
 	const wanModel = "wan3.0-video"
 	for _, spec := range []struct{ model, other string }{{wanModel, "alibaba"}, {tokenModel, "doubao"}} {
 		otherSource, sourceErr := plugins.Source(spec.other)
@@ -68,6 +69,74 @@ func TestMoonVideoContracts(t *testing.T) {
 			assert.JSONEq(t, tc.want, string(encoded))
 		})
 	}
+	t.Run("Canvas纯文元数据解码为Moon顶层合同", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			model string
+			body  map[string]any
+			want  string
+		}{
+			{
+				name:  "Wan空媒体",
+				model: wanModel,
+				body: map[string]any{
+					"model": wanModel, "prompt": "ocean", "duration": 5, "seconds": "5", "resolution": "720P", "ratio": "16:9",
+					"metadata": map[string]any{"input": map[string]any{"media": []any{}}},
+				},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9"}`,
+			},
+			{
+				name:  "Seedance Fast文本",
+				model: fastModel,
+				body: map[string]any{
+					"model": fastModel, "prompt": "ocean", "duration": 5, "seconds": "5",
+					"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"},
+				},
+				want: `{"model":"doubao-seedance-2-0-fast-260128","content":[{"type":"text","text":"ocean"}],"duration":5,"resolution":"720p","ratio":"16:9"}`,
+			},
+			{
+				name:  "Seedance Mini文本",
+				model: tokenModel,
+				body: map[string]any{
+					"model": tokenModel, "prompt": "ocean", "duration": 5, "seconds": "5",
+					"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"},
+				},
+				want: `{"model":"doubao-seedance-2-0-mini-260615","content":[{"type":"text","text":"ocean"}],"duration":5,"resolution":"720p","ratio":"16:9"}`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": tc.model,
+					"body":  map[string]any{"kind": "json", "value": tc.body},
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var decoded struct {
+					Action      string         `json:"action"`
+					RequestBody map[string]any `json:"requestBody"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &decoded))
+				assert.Equal(t, "text_to_video", decoded.Action)
+				assert.NotContains(t, decoded.RequestBody, "metadata")
+
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"baseUrl": "https://moon.example/v1", "apiKey": "fixture", "publicTaskId": "task_unique",
+					"upstreamModel": tc.model, "requestBody": decoded.RequestBody,
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr = common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					Body map[string]any `json:"body"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
 	t.Run("解码请求通过计费枚举并保留上游语义", func(t *testing.T) {
 		for _, protocol := range []string{"openai_video", "openai_responses"} {
 			for _, tc := range []struct {
@@ -163,6 +232,13 @@ func TestMoonVideoContracts(t *testing.T) {
 		{name: "布尔参数字符串", model: tokenModel, fields: map[string]any{"generate_audio": "false"}},
 		{name: "无限分辨率", model: tokenModel, fields: map[string]any{"resolution": "4k"}},
 		{name: "元数据绕过", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"duration": 100000}}},
+		{name: "Wan非空元数据媒体", model: wanModel, fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "reference_image", "url": "https://cdn.example/ref.png"}}}}}},
+		{name: "Wan元数据未知字段", model: wanModel, fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{}, "negative_prompt": "blur"}}}},
+		{name: "Seedance元数据参考输入", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.png"}}}, "resolution": "720p", "ratio": "16:9"}}},
+		{name: "Seedance元数据模式字段", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9", "omni_reference_task_type": "auto"}}},
+		{name: "Seedance提示冲突", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "desert"}}, "resolution": "720p", "ratio": "16:9"}}},
+		{name: "Seedance分辨率冲突", model: tokenModel, fields: map[string]any{"resolution": "480p", "metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"}}},
+		{name: "Seedance比例同义字段冲突", model: tokenModel, fields: map[string]any{"aspect_ratio": "9:16", "metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"}}},
 		{name: "内部时长标记不可直传", model: tokenModel, fields: map[string]any{"auto_duration": true}},
 		{name: "提示覆盖参数", model: tokenModel, fields: map[string]any{"prompt": "ocean --duration 9999"}},
 		{name: "参考片段未知字段", model: tokenModel, fields: map[string]any{"videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "role": "reference_video", "duration": 1}}}},
