@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +16,101 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestTaskSubmissionAcceptanceAndSingleAttempt 验证异步受理与发送后失败的重试边界，不访问真实供应商。
+func TestTaskSubmissionAcceptanceAndSingleAttempt(t *testing.T) {
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	savedFreePreConsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = savedFreePreConsume
+	})
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"declared-model":0}`))
+	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
+	service.InitHttpClient()
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		noRetry    bool
+		wantError  bool
+		disconnect bool
+	}{
+		{name: "异步202保留任务编号", status: 202, body: `{"id":"accepted-video"}`, noRetry: true},
+		{name: "已有200响应仍可用", status: 200, body: `{"id":"accepted-video"}`},
+		{name: "服务端失败禁止重复提交", status: 503, body: `{"error":"submission unknown"}`, noRetry: true, wantError: true},
+		{name: "受理后缺少编号禁止重复提交", status: 202, body: `{}`, noRetry: true, wantError: true},
+		{name: "受理后JSON损坏禁止重复提交", status: 202, body: `{`, noRetry: true, wantError: true},
+		{name: "响应断开禁止重复提交", noRetry: true, wantError: true, disconnect: true},
+		{name: "既有插件保留重试行为", status: 503, body: `{"error":"unavailable"}`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "/submit", r.URL.Path)
+				assert.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+				if tc.disconnect {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					require.NoError(t, err)
+					require.NoError(t, conn.Close())
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, err := io.WriteString(w, tc.body)
+				require.NoError(t, err)
+			}))
+			defer upstream.Close()
+			source := `
+export const meta = {apiVersion:1,key:"single-submit",name:"Single submit",version:"1.0.0",author:{name:"Test"},models:["declared-model"],fetchMode:"per_task",requiredCapabilities:["task-submit-no-retry@1"]};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit",method:"POST",headers:{"Idempotency-Key":ctx.publicTaskId},body:{model:ctx.upstreamModel},noRetry:NO_RETRY};}
+export function parseSubmitResponse(ctx,resp){if(!resp.body.id)throw new Error("missing task id");return {taskId:resp.body.id,taskData:resp.body};}
+export function buildQueryRequest(ctx){return {url:ctx.baseUrl+"/query"};}
+export function parseTaskResult(){return {status:"QUEUED"};}
+`
+			noRetryValue := "false"
+			if tc.noRetry {
+				noRetryValue = "true"
+			}
+			source = strings.Replace(source, "NO_RETRY", noRetryValue, 1)
+			c, info := newTaskSubmitContext(t, "declared-model", "")
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+			pinMappingOrderPlugin(t, c, source)
+			info.OriginModelName = "declared-model"
+			info.UserGroup, info.UsingGroup = "default", "default"
+			result, taskErr := RelayTaskSubmit(c, info)
+			assert.Equal(t, 1, requests)
+			if tc.wantError {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, tc.noRetry, taskErr.NoRetry)
+				assert.Nil(t, result)
+				return
+			}
+			require.Nil(t, taskErr, "%+v", taskErr)
+			require.NotNil(t, result)
+			assert.Equal(t, "accepted-video", result.UpstreamTaskID)
+		})
+	}
+}
+
+// TestTaskSubmitNoRetryRequiresCapability 阻止未声明宿主能力的插件静默依赖重试保护。
+func TestTaskSubmitNoRetryRequiresCapability(t *testing.T) {
+	source := strings.Replace(mappingOrderSubmitPlugin, `action:"text_to_video"`, `noRetry:true,action:"text_to_video"`, 1)
+	c, info := newTaskSubmitContext(t, "declared-model", "")
+	pinMappingOrderPlugin(t, c, source)
+	info.OriginModelName = "declared-model"
+	_, taskErr := RelayTaskSubmit(c, info)
+	require.NotNil(t, taskErr)
+	assert.Contains(t, taskErr.Message, "noRetry requires task-submit-no-retry@1")
+}
 
 func TestTaskModel2DtoNormalizesLegacyAction(t *testing.T) {
 	task := &model.Task{Action: "firstTailGenerate"}

@@ -558,6 +558,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	return resp, nil
 }
 
+// DoTaskApiRequest 按适配器和渠道配置发送任务正文，返回上游响应或构造、传输错误；调用方负责关闭响应体。
+// 显式禁止重试时拒绝可被 Go 直接重放的空正文，并关闭非空正文的传输重放。
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.BuildRequestURL(info)
 	if err != nil {
@@ -568,6 +570,14 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
+	if policy, ok := a.(TaskSubmitRetryPolicy); ok && policy.SkipSubmitRetry() {
+		if req.Body == nil || req.Body == http.NoBody {
+			return nil, errors.New("task submission with noRetry requires a non-empty request body")
+		}
+		// Idempotency-Key 会让 Go 传输层将请求视为可重放；此类付费提交仍要求只发送一次。
+		// 空正文会绕过 GetBody 检查，因此必须先拒绝，multipart 的边界正文不受影响。
+		req.GetBody = nil
+	}
 	// Do NOT wrap requestBody in a GetBody closure here: returning the same
 	// (already consumed) reader would make any transport-level retry silently
 	// replay an empty body. http.NewRequest already derives a correct,

@@ -36,6 +36,7 @@ import (
 
 type requestDescriptor struct {
 	ResponseType   string            `json:"responseType"`
+	NoRetry        bool              `json:"noRetry"`
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`
 	Headers        map[string]string `json:"headers"`
@@ -449,6 +450,11 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, bod
 		defer func() { c.Request.Method = originalMethod }()
 	}
 	return channel.DoTaskApiRequest(a, c, info, body)
+}
+
+// SkipSubmitRetry 读取已验证的提交描述；true 禁止发送后换渠道或重发同一付费任务。
+func (a *TaskAdaptor) SkipSubmitRetry() bool {
+	return a.submit != nil && a.submit.NoRetry
 }
 
 func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (_ *channel.TaskSubmitResponse, taskErr *dto.TaskError) {
@@ -1204,6 +1210,9 @@ func (a *TaskAdaptor) buildSubmit(c *gin.Context, info *relaycommon.RelayInfo) (
 	if descriptor.ResponseType == "" {
 		descriptor.ResponseType = "json"
 	}
+	if descriptor.NoRetry && !slices.Contains(a.plugin.Meta.RequiredCapabilities, pluginruntime.CapabilityTaskSubmitNoRetry) {
+		return nil, fmt.Errorf("noRetry requires %s", pluginruntime.CapabilityTaskSubmitNoRetry)
+	}
 	allowed := a.plugin.Meta.SubmitResponseTypes
 	if len(allowed) == 0 {
 		allowed = []string{"json"}
@@ -1714,6 +1723,7 @@ func positiveInt(value any) int {
 }
 
 var _ channel.TaskAdaptor = (*TaskAdaptor)(nil)
+var _ channel.TaskSubmitRetryPolicy = (*TaskAdaptor)(nil)
 var _ channel.OpenAIVideoConverter = (*TaskAdaptor)(nil)
 var _ channel.TaskArtifactProvider = (*TaskAdaptor)(nil)
 var _ channel.TaskContentRequestProvider = (*TaskAdaptor)(nil)

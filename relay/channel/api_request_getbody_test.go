@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,7 +185,11 @@ type stubTaskAdaptor struct {
 	TaskAdaptor
 	baseURL     string
 	capturedReq *http.Request
+	noRetry     bool
 }
+
+// SkipSubmitRetry 为请求夹具提供显式的单次提交策略，默认保持可重放行为。
+func (s *stubTaskAdaptor) SkipSubmitRetry() bool { return s.noRetry }
 
 func (s *stubTaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	return s.baseURL + "/v1/video/generations", nil
@@ -247,6 +252,59 @@ func TestDoTaskApiRequest_KeepsReplayableGetBody(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, rc.Close())
 		assert.Equal(t, payload, replay, "replay %d must equal the original payload", i+1)
+	}
+}
+
+// TestDoTaskApiRequestSingleAttemptDisablesTransportReplay 验证付费提交保留请求体但关闭传输层重放。
+func TestDoTaskApiRequestSingleAttemptDisablesTransportReplay(t *testing.T) {
+	service.InitHttpClient()
+	payload := []byte(`{"model":"test-model","prompt":"hello"}`)
+	receivedCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedCh <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(payload))
+	adaptor := &stubTaskAdaptor{baseURL: server.URL, noRetry: true}
+	response, err := DoTaskApiRequest(adaptor, ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, bytes.NewReader(payload))
+	require.NoError(t, err)
+	defer response.Body.Close()
+	assert.Equal(t, http.StatusAccepted, response.StatusCode)
+	assert.Equal(t, payload, <-receivedCh)
+	require.NotNil(t, adaptor.capturedReq)
+	assert.Nil(t, adaptor.capturedReq.GetBody, "禁止 net/http 根据幂等头重放请求")
+}
+
+// TestDoTaskApiRequestSingleAttemptRejectsEmptyBody 验证 Go 可直接重放的空正文在发送前被拒绝。
+func TestDoTaskApiRequestSingleAttemptRejectsEmptyBody(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	for _, tc := range []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "省略正文"},
+		{name: "空字符串", body: strings.NewReader("")},
+		{name: "空字节", body: bytes.NewReader(nil)},
+		{name: "空缓冲区", body: bytes.NewBuffer(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			adaptor := &stubTaskAdaptor{baseURL: server.URL, noRetry: true}
+			response, err := DoTaskApiRequest(adaptor, ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}, tc.body)
+			require.ErrorContains(t, err, "noRetry requires a non-empty request body")
+			assert.Nil(t, response)
+			assert.Zero(t, requests.Load(), "不能发送可能被传输层重放的空提交")
+		})
 	}
 }
 

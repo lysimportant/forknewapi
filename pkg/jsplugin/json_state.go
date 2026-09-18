@@ -21,9 +21,12 @@ const (
 	maxJSONChanges           = 256
 )
 
+// CapabilityTaskSubmitNoRetry 声明宿主支持提交描述的 noRetry，旧宿主必须拒绝依赖该保护的插件。
+const CapabilityTaskSubmitNoRetry = "task-submit-no-retry@1"
+
 // HasCapability describes host APIs independently of a plugin's mutable globals.
 func HasCapability(name string) bool {
-	return name == CapabilityJSONClone || name == CapabilitySubmitSSEDelta
+	return name == CapabilityJSONClone || name == CapabilitySubmitSSEDelta || name == CapabilityTaskSubmitNoRetry
 }
 
 // JSONState owns a request-local JSON result. Appended strings stay in Go and

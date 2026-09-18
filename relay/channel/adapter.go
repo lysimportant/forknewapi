@@ -90,6 +90,12 @@ type TaskSubmitResponse struct {
 	PluginState    []byte
 }
 
+// TaskSubmitRetryPolicy 允许异步供应商禁止发送后的自动重试，避免受理结果未知时重复创建付费任务。
+type TaskSubmitRetryPolicy interface {
+	// SkipSubmitRetry 返回当前提交是否必须只发送一次；发送前的校验失败不受影响。
+	SkipSubmitRetry() bool
+}
+
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }

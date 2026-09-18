@@ -699,3 +699,18 @@ Chromium `151.0.7922.34` + Playwright，隔离站点 `127.0.0.1:3017` 与最终�
 本轮 P1，基线为干净的 `main@870b16c63`。用户确认同时展示请求与调用模型差异、调用与上游响应模型不一致。前端复用已有模型徽标与详情组件，直接显示映射模型和响应不一致提示，支持完整模型名复制，七语言文案同步；后端在请求最终参数确定后保存调用模型，在响应转换前记录上游声明，写入现有日志 Other JSON。
 
 不把上游自报名称视为底层模型身份验证，不推测历史日志或缺失响应模型；保留现有计费、转发、数据库结构和权限。验收、接口附加字段、恢复步骤及覆盖范围见 [检查点](verification/usage-log-model-mapping.md)。前端 225 项日志测试、类型检查、修改文件 lint、生产构建与四组浏览器样例通过；后端六个相关包、终态补充回归、Go 构建与 vet 通过。交付为 `fork/main` 与 `v1.0.0-rc.37.custom.3`；全仓 192 个既有 lint error 继续单独跟踪，未部署生产。
+
+## 17. 2026-09-18 至 19 日 Moon 视频插件与 Wan3 验证
+
+本轮 P1，基线为干净的 `main@9e9065727`。新增内置 Moon 任务插件，接入两个 Wan 和三个 Seedance/ArtsDance 模型，使用现有 OpenAI Video 与 Responses 协议，兼容渠道根地址及 `/v1` 后缀。宿主支持 202 受理，并增加显式 `task-submit-no-retry@1` 能力：Moon 提交发送后发生网络或解析错误、503 等未知结果时，不自动重发或换渠道；Go 传输层也关闭正文重放。旧插件默认重试行为保持原样。
+
+页面配置、计费表达式、接口路径、回滚边界和证据见 [Moon 与 Wan3 验证说明](verification/moon-video.md)。官方阿里云 Key 继续使用百炼插件，Workspace Base URL 使用根地址，不带 `/compatible-mode/v1`。渠道同步测试按钮不能验证视频任务闭环；新增 `verification/video-smoke.ps1`，默认只预览，`-Submit` 才执行一次付费生成，保留检查点并支持只查询恢复。
+
+- [x] 五个相关 Go 包和 controller/service/router 测试通过，Go build/vet、插件 lint/format、PowerShell 语法与帮助检查通过。
+- [x] 禁网容器内真实网关加模拟供应商的 25/25 HTTP 验收通过，覆盖受理、查询、制品、Responses 三模式、零用量、结算和退款；503 在配置 3 次重试时仍只有一次 POST。
+- [x] 测试脚本 26 个本地 HTTP 场景通过，包含并发首次提交、结果未知、恢复、重定向和凭据检查。
+- [x] 模型声明、计费字段中英文描述、完整差异及敏感信息检查完成，测试产物未纳入交付。
+
+主代理负责宿主、集中回归、HTTP 验收和交付；moon_finish 负责插件，moon_host_review 只读复核，wan_test_script 负责脚本及本地场景。用户中途要求的全局 AGENTS 已改为子代理继承主代理模型和推理强度。
+
+无前端、依赖、数据库结构或数据库访问实现变更，未部署生产，未发起真实付费生成。Moon Wan 参考输入与最终用量未获有效协议证据，本版仅开放文生视频，按请求秒数计量；新三模型等待有效 `usage.total_tokens`。模拟 MP4 头不证明真实账号权限、供应商生成质量或可播放性；凭据保护下的跨域 `/content` 重定向限制仍保留。交付目标为 `fork/main`（`https://github.com/lysimportant/forknewapi.git`）与中文 annotated Tag `v1.0.0-rc.37.custom.4`，提交和远端一致性由最终 Git 核验确认。
