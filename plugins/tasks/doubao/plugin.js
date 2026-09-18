@@ -7,7 +7,7 @@ export const meta = {
     en: "Volcengine Doubao Seedance video generation (text-to-video, image-to-video, and video-to-video)",
     zh: "火山引擎豆包 Seedance 视频生成（文生视频、图生视频、视频生视频）",
   },
-  version: "1.0.2",
+  version: "1.0.3",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
   models: [
@@ -118,6 +118,68 @@ function hasVideo(content) {
   return Array.isArray(content) && content.some((item) => item && (item.type === "video_url" || Object.prototype.hasOwnProperty.call(item, "video_url")));
 }
 
+/** 解析视频时长；JSON 与 multipart 均只接受十进制整数。 */
+function durationNumber(value, field) {
+  if (typeof value !== "number" && typeof value !== "string") throw new Error(field + " must be an integer");
+  if (typeof value === "string" && !/^-?\d+$/.test(value.trim())) throw new Error(field + " must be an integer");
+  const number = Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number)) throw new Error(field + " must be an integer");
+  if (number !== -1 && (number <= 0 || number > 3600)) throw new Error(field + " must be -1 or between 1 and 3600");
+  return number;
+}
+
+/** 将外部时长字段规范为宿主可校验的 seconds 或自动时长标记。 */
+function normalizeDurationRequest(value) {
+  const request = Object.assign({}, value);
+  let metadata;
+  if (request.metadata !== undefined) {
+    if (!request.metadata || typeof request.metadata !== "object" || Array.isArray(request.metadata)) throw new Error("metadata must be an object");
+    metadata = Object.assign({}, request.metadata);
+    request.metadata = metadata;
+  }
+  if (Object.prototype.hasOwnProperty.call(request, "auto_duration") || (metadata && Object.prototype.hasOwnProperty.call(metadata, "auto_duration")))
+    throw new Error("auto_duration is reserved for internal use");
+
+  const fields = [
+    { object: request, key: "seconds", name: "seconds" },
+    { object: request, key: "duration", name: "duration" },
+  ];
+  if (metadata) fields.push({ object: metadata, key: "duration", name: "metadata.duration" });
+  let duration;
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(field.object, field.key)) continue;
+    const candidate = durationNumber(field.object[field.key], field.name);
+    if (duration !== undefined && duration !== candidate) throw new Error("duration and seconds conflict");
+    duration = candidate;
+  }
+
+  delete request.seconds;
+  delete request.duration;
+  if (metadata) delete metadata.duration;
+  if (duration === -1) request.auto_duration = true;
+  else if (duration !== undefined) request.seconds = duration;
+  return request;
+}
+
+/** 校验内部自动时长标记，并返回对应模型的保守预留秒数。 */
+function automaticDurationReservation(request, model) {
+  const metadata = request.metadata === undefined ? {} : request.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error("metadata must be an object");
+  if (Object.prototype.hasOwnProperty.call(metadata, "auto_duration")) throw new Error("invalid internal auto duration marker");
+  if (!Object.prototype.hasOwnProperty.call(request, "auto_duration")) return 0;
+  if (
+    request.auto_duration !== true ||
+    Object.prototype.hasOwnProperty.call(request, "seconds") ||
+    Object.prototype.hasOwnProperty.call(request, "duration") ||
+    Object.prototype.hasOwnProperty.call(metadata, "seconds") ||
+    Object.prototype.hasOwnProperty.call(metadata, "duration")
+  )
+    throw new Error("invalid internal auto duration marker");
+  if (model === "doubao-seedance-2-5-260628") return 30;
+  if (["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"].includes(model)) return 15;
+  throw new Error("automatic duration is not supported by the upstream model");
+}
+
 // Max-pixel 16:9 dimensions per resolution tier. Used when ratio is absent or
 // adaptive so the submit-time estimate overestimates rather than underestimates.
 // Official Ark formula: tokens = seconds × width × height × 24 / 1024.
@@ -200,8 +262,9 @@ function responsesVideoText(ctx) {
 export const native = {
   createTask: function (ctx) {
     if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
-    const body = ctx.body.value;
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("request body must be an object");
+    const value = ctx.body.value;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request body must be an object");
+    const body = normalizeDurationRequest(value);
     const model = trimmed(body.model);
     if (!model) throw new Error("model is required");
     if (body.content !== undefined && !Array.isArray(body.content)) throw new Error("content must be an array");
@@ -214,6 +277,9 @@ export const native = {
       else hasReference = true;
     }
     if (!texts.length && !hasReference) throw new Error("content is required");
+    const metadata = Object.assign({}, body);
+    delete metadata.seconds;
+    delete metadata.auto_duration;
     const requestBody = {
       model: model,
       prompt: texts
@@ -221,10 +287,10 @@ export const native = {
           return trimmed(text);
         })
         .join("\n"),
-      metadata: body,
+      metadata: metadata,
     };
-    const seconds = Number(body.duration);
-    if (Number.isFinite(seconds) && seconds > 0) requestBody.seconds = seconds;
+    if (Object.prototype.hasOwnProperty.call(body, "seconds")) requestBody.seconds = body.seconds;
+    if (body.auto_duration === true) requestBody.auto_duration = true;
     const intent = { kind: "submit", model: model, action: hasReference ? "image_to_video" : "text_to_video", requestBody: requestBody };
     const originTaskIds = draftTaskIds(content);
     if (originTaskIds.length) intent.originTaskIds = originTaskIds;
@@ -249,6 +315,8 @@ export const native = {
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody;
   const metadata = req.metadata || {};
+  const upstreamModel = ctx.upstreamModel || ctx.model;
+  const automaticSeconds = automaticDurationReservation(req, upstreamModel);
   const body = Object.assign({ model: req.model || "", content: [] }, metadata);
   const imageContent = [];
   const images = Array.isArray(req.images) ? req.images : [];
@@ -259,8 +327,10 @@ export function buildSubmitRequest(ctx) {
   if (trimmed(req.prompt) || !hasReference) body.content.push({ type: "text", text: req.prompt || "" });
   if (Array.isArray(body.content)) body.content = rewriteDraftTaskContent(body.content, ctx.originTasks);
   const seconds = Number.parseInt(req.seconds || "", 10);
-  if (seconds > 0) body.duration = seconds;
-  body.model = ctx.upstreamModel || body.model;
+  if (automaticSeconds > 0) body.duration = -1;
+  else if (seconds > 0) body.duration = seconds;
+  delete body.auto_duration;
+  body.model = upstreamModel || body.model;
   return {
     url: ctx.baseUrl + "/api/v3/contents/generations/tasks",
     method: "POST",
@@ -279,14 +349,18 @@ export function parseSubmitResponse(ctx, resp) {
 export function extractUsage(ctx) {
   const req = ctx.requestBody || {};
   const metadata = req.metadata || {};
+  const model = ctx.upstreamModel || ctx.model;
   if (ctx.usagePurpose === "billing_ratios") {
-    const ratio = videoInputRatio(ctx.upstreamModel || ctx.model, metadata.resolution, metadata.content);
+    const ratio = videoInputRatio(model, metadata.resolution, metadata.content);
     return ratio === 1 ? null : { video_input_ratio: ratio };
   }
-  let seconds = Number(req.seconds || req.duration || metadata.duration || 0);
+  let seconds = automaticDurationReservation(req, model);
+  if (seconds <= 0) seconds = Number(req.seconds || req.duration || metadata.duration || 0);
   if (!Number.isFinite(seconds) || seconds <= 0) {
     const frames = Number(metadata.frames);
-    seconds = Number.isFinite(frames) && frames > 0 ? Math.floor(frames / 24) : 15;
+    if (Number.isFinite(frames) && frames > 0) seconds = Math.floor(frames / 24);
+    else if (model === "doubao-seedance-2-5-260628") seconds = 30;
+    else seconds = 15;
   }
   if (seconds <= 0) seconds = 5;
   seconds = Math.min(seconds, 3600);
@@ -389,9 +463,11 @@ export const protocols = {
       const requestBody = { model: model, prompt: prompt, metadata: metadata };
       if (images.length) requestBody.images = images;
       if (Object.prototype.hasOwnProperty.call(req, "seconds")) requestBody.seconds = req.seconds;
-      else if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.seconds = req.duration;
+      if (Object.prototype.hasOwnProperty.call(req, "duration")) requestBody.duration = req.duration;
+      if (Object.prototype.hasOwnProperty.call(req, "auto_duration")) requestBody.auto_duration = req.auto_duration;
       if (Object.prototype.hasOwnProperty.call(req, "size")) requestBody.size = req.size;
-      const intent = { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: requestBody };
+      const normalizedRequestBody = normalizeDurationRequest(requestBody);
+      const intent = { kind: "submit", model: model, action: images.length ? "image_to_video" : "text_to_video", requestBody: normalizedRequestBody };
       const originTaskIds = draftTaskIds(metadata.content);
       if (originTaskIds.length) intent.originTaskIds = originTaskIds;
       return intent;
@@ -453,14 +529,12 @@ protocols.openai_video = {
     if (ctx.body.kind === "json") {
       if (!ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
       const req = ctx.body.value;
-      const seconds = req.seconds === undefined ? req.duration : req.seconds;
-      if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-        throw new Error("seconds must be between 1 and 3600");
+      const requestBody = normalizeDurationRequest(Object.assign({}, req, { model: ctx.model }));
       return {
         kind: "submit",
         model: ctx.model,
         action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
-        requestBody: Object.assign({}, req, { model: ctx.model }),
+        requestBody: requestBody,
       };
     }
     const first = function (name) {
@@ -484,16 +558,12 @@ protocols.openai_video = {
       req.metadata = parsed;
     }
     if ((ctx.body.files || []).length) throw new Error("Doubao requires image and video references to be URLs inside metadata.content");
-    if (req.seconds !== undefined) req.seconds = Number(req.seconds);
-    else if (req.duration !== undefined) req.seconds = Number(req.duration);
-    const seconds = req.seconds === undefined ? req.duration : req.seconds;
-    if (seconds !== undefined && (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0 || Number(seconds) > 3600))
-      throw new Error("seconds must be between 1 and 3600");
+    const requestBody = normalizeDurationRequest(Object.assign({}, req, { model: ctx.model }));
     return {
       kind: "submit",
       model: ctx.model,
       action: req.input_reference || req.image ? "image_to_video" : "text_to_video",
-      requestBody: Object.assign({}, req, { model: ctx.model }),
+      requestBody: requestBody,
     };
   },
   render: function (ctx, task) {
