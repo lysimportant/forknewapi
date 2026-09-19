@@ -942,6 +942,148 @@ test('model discovery reports failures inline and allows an empty result to fall
   expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
 })
 
+test.each([false, true])(
+  'plugin discovery uses the selected plugin and draft connection when editing=%s',
+  async (editing) => {
+    pluginOptions = [
+      {
+        ...plugins[0],
+        modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+      },
+    ]
+    editingChannel = {
+      ...editingChannel,
+      type: 61,
+      setting: '{"task_plugin_key":"video-a"}',
+    }
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        source: 'upstream',
+        data: ['video-a-1'],
+        unsupported_models: ['future-video-model'],
+      },
+    })
+    const user = userEvent.setup()
+    render(
+      <ConfigurationHarness currentRow={editing ? editingChannel : undefined} />
+    )
+    if (editing) {
+      await screen.findByDisplayValue('Existing channel')
+    } else {
+      await user.click(await screen.findByRole('option', { name: /Video A/ }))
+    }
+    if (!editing) {
+      fireEvent.change(screen.getByLabelText('API Key *'), {
+        target: { value: 'test-key' },
+      })
+    }
+    await user.click(
+      await screen.findByRole('button', { name: 'Fetch from Upstream' })
+    )
+    expect(
+      await screen.findByRole('checkbox', { name: 'video-a-1' })
+    ).toBeVisible()
+    expect(screen.getByText('Source: Upstream catalog')).toBeVisible()
+    expect(screen.getByText('future-video-model')).toBeVisible()
+    expect(
+      screen.queryByRole('checkbox', { name: 'future-video-model' })
+    ).not.toBeInTheDocument()
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel/fetch_models',
+      expect.objectContaining({
+        type: 61,
+        task_plugin_key: 'video-a',
+        channel_id: editing ? 42 : undefined,
+        key: editing ? undefined : 'test-key',
+      }),
+      expect.anything()
+    )
+    expect(
+      screen.queryByRole('group', { name: 'Upstream Model Detection Settings' })
+    ).not.toBeInTheDocument()
+  }
+)
+
+test('a plugin without a catalog loads its declared models without a key and retains custom selections', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      source: 'plugin',
+      data: ['video-a-1'],
+      unsupported_models: [],
+    },
+  })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(await screen.findByRole('option', { name: /Video A/ }))
+  await user.click(screen.getByRole('button', { name: 'Clear All' }))
+  await user.type(
+    screen.getByRole('combobox', { name: 'Select models or add custom ones' }),
+    'custom-model,'
+  )
+  await user.keyboard('{Escape}')
+  await user.click(screen.getByRole('button', { name: 'Load Plugin Models' }))
+  expect(await screen.findByText('Source: Plugin model list')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'video-a-1' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/fetch_models',
+    expect.objectContaining({ type: 61, task_plugin_key: 'video-a', key: '' }),
+    expect.anything()
+  )
+})
+
+test('switching plugins clears the previous catalog and ignores an in-flight result', async () => {
+  pluginOptions = plugins.map((plugin) => ({
+    ...plugin,
+    modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+  }))
+  const oldReply = deferredResponse<{
+    data: {
+      success: boolean
+      source: string
+      data: string[]
+      unsupported_models: string[]
+    }
+  }>()
+  vi.spyOn(api, 'post')
+    .mockReturnValueOnce(oldReply.promise)
+    .mockResolvedValueOnce({
+      data: { success: true, source: 'upstream', data: ['video-b-1'] },
+    })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(await screen.findByRole('option', { name: /Video A/ }))
+  fireEvent.change(screen.getByLabelText('API Key *'), {
+    target: { value: 'test-key' },
+  })
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  await user.click(screen.getByRole('button', { name: 'Change provider' }))
+  await user.click(
+    screen.getByRole('option', { name: 'Video B Plugin video-b' })
+  )
+  await act(async () => {
+    oldReply.resolve({
+      data: {
+        success: true,
+        source: 'upstream',
+        data: ['video-a-1'],
+        unsupported_models: ['old-unsupported-model'],
+      },
+    })
+    await oldReply.promise
+  })
+  expect(screen.queryByText('old-unsupported-model')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('checkbox', { name: 'video-a-1' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  expect(
+    await screen.findByRole('checkbox', { name: 'video-b-1' })
+  ).toBeVisible()
+})
+
 test('editing opens the shared configuration and omits an unchanged key on update', async () => {
   const channel = channelSchema.parse({
     id: 42,

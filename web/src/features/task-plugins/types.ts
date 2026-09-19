@@ -41,6 +41,12 @@ export type TaskPluginRoute = {
   models?: string[]
 }
 
+/** 管理页模型目录发现声明；路径由宿主拼接渠道地址并处理分页。 */
+export type TaskPluginModelDiscovery = {
+  protocol: 'openai' | 'gemini' | 'bailian'
+  path: string
+}
+
 export type TaskPluginMeta = {
   sortPriority?: number
   website?: string
@@ -57,6 +63,7 @@ export type TaskPluginMeta = {
   baseUrl?: string
   channelTypes?: number[] | null
   models: string[] | null
+  modelDiscovery?: TaskPluginModelDiscovery
   fetchMode: string
   routes?: TaskPluginRoute[]
   protocols?: TaskPluginProtocolClaim[]

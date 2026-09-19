@@ -73,9 +73,10 @@ export const meta = {
     en: "Alibaba Cloud Bailian Wanxiang image and video generation",
     zh: "阿里云百炼万相图片与视频生成",
   },
-  version: "1.3.0",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   channelTypes: [17],
+  modelDiscovery: { protocol: "bailian", path: "/api/v1/models" },
   // Literal metadata also supports the dashboard's static script preview.
   models: [
     "wan3.0-video",

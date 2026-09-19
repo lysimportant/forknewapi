@@ -21,10 +21,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createServerError } from '@/lib/server-error-message'
 
 import { fetchModels, fetchUpstreamModels } from '../api'
+import type { FetchModelsResponse } from '../types'
+
+/** 区分实时上游目录与插件声明列表。 */
+export type ChannelModelDiscoverySource = NonNullable<
+  FetchModelsResponse['source']
+>
 
 type DiscoveryState = {
   status: 'idle' | 'loading' | 'success' | 'error' | 'stale'
   models: string[]
+  source?: ChannelModelDiscoverySource
+  unsupportedModels: string[]
   error?: unknown
 }
 
@@ -35,31 +43,49 @@ export type ChannelModelDiscoveryRequest =
 type ChannelModelDiscoveryProps = {
   enabled: boolean
   request: ChannelModelDiscoveryRequest
+  scopeKey: string
 }
 
+/** 读取渠道模型；失效请求不覆盖新配置，失败不修改表单选择。 */
 export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
   const [state, setState] = useState<DiscoveryState>({
     status: 'idle',
     models: [],
+    unsupportedModels: [],
   })
   const sequence = useRef(0)
+  const scopeKey = useRef(props.scopeKey)
 
   useEffect(() => {
     sequence.current += 1
+    const scopeChanged = scopeKey.current !== props.scopeKey
+    scopeKey.current = props.scopeKey
     setState((previous) => {
+      if (!props.enabled || scopeChanged) {
+        return { status: 'idle', models: [], unsupportedModels: [] }
+      }
       if (previous.status === 'idle') return previous
-      if (!props.enabled) return { status: 'idle', models: [] }
-      return { status: 'stale', models: previous.models }
+      return {
+        status: 'stale',
+        models: previous.models,
+        source: previous.source,
+        unsupportedModels: previous.unsupportedModels,
+      }
     })
     return () => {
       sequence.current += 1
     }
-  }, [props.enabled, props.request])
+  }, [props.enabled, props.request, props.scopeKey])
 
   const fetch = useCallback(async () => {
     if (!props.enabled) return
     const requestSequence = ++sequence.current
-    setState((previous) => ({ status: 'loading', models: previous.models }))
+    setState((previous) => ({
+      status: 'loading',
+      models: previous.models,
+      source: previous.source,
+      unsupportedModels: previous.unsupportedModels,
+    }))
     try {
       const response =
         props.request.kind === 'saved'
@@ -69,12 +95,20 @@ export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
       if (!response.success) {
         throw createServerError(response, 'Failed to fetch models')
       }
-      setState({ status: 'success', models: response.data ?? [] })
+      setState({
+        status: 'success',
+        models: response.data ?? [],
+        source: response.source,
+        unsupportedModels: response.unsupported_models ?? [],
+      })
+      return response
     } catch (error) {
       if (requestSequence !== sequence.current) return
       setState((previous) => ({
         status: 'error',
         models: previous.models,
+        source: previous.source,
+        unsupportedModels: previous.unsupportedModels,
         error,
       }))
     }

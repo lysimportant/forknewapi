@@ -40,6 +40,9 @@ var pluginKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 var pluginVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 var localeTagPattern = regexp.MustCompile(`^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$`)
 
+// modelDiscoveryPathPattern 限制目录路径为无需转义的本地路径，阻止编码绕过及凭据参数。
+var modelDiscoveryPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._~/-]+$`)
+
 // ValidPluginKey checks the canonical identifier accepted by plugin manifests.
 func ValidPluginKey(key string) bool {
 	return len(key) <= 30 && pluginKeyPattern.MatchString(key)
@@ -98,6 +101,7 @@ type Meta struct {
 	BaseURL              string                      `json:"baseUrl,omitempty"`
 	ChannelTypes         []int                       `json:"channelTypes,omitempty"`
 	Models               []string                    `json:"models"`
+	ModelDiscovery       *ModelDiscovery             `json:"modelDiscovery,omitempty"`
 	FetchMode            string                      `json:"fetchMode"`
 	AllowedHosts         []string                    `json:"allowedHosts"`
 	Routes               []Route                     `json:"routes"`
@@ -106,6 +110,13 @@ type Meta struct {
 	UsageExamples        []UsageExample              `json:"usageExamples,omitempty"`
 	UsageProfiles        []UsageProfile              `json:"usageProfiles,omitempty"`
 	Auth                 AuthMeta                    `json:"auth"`
+}
+
+// ModelDiscovery 声明管理页读取上游目录的只读协议；未声明时使用插件模型列表。
+// Path 为渠道地址下的绝对路径，不含主机、查询参数或凭据，不改变生成路由和计费。
+type ModelDiscovery struct {
+	Protocol string `json:"protocol"` // openai、gemini 或 bailian，分别使用对应的目录与分页格式。
+	Path     string `json:"path"`     // 例如 /v1/models；宿主避免与渠道地址末尾的协议前缀重复。
 }
 
 // UsageProfile replaces the plugin's default usage metadata for its models.
@@ -829,6 +840,10 @@ func (r *Registry) Snapshot() RegistrySnapshot {
 }
 
 func cloneMeta(meta Meta) Meta {
+	if meta.ModelDiscovery != nil {
+		discovery := *meta.ModelDiscovery
+		meta.ModelDiscovery = &discovery
+	}
 	meta.SubmitResponseTypes = slices.Clone(meta.SubmitResponseTypes)
 	meta.RequiredCapabilities = slices.Clone(meta.RequiredCapabilities)
 	meta.ChannelTypes = append([]int(nil), meta.ChannelTypes...)
@@ -975,7 +990,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}
@@ -1028,6 +1043,23 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	if meta.BaseURL, err = stringMetaField(object, "baseUrl"); err != nil {
 		return Meta{}, err
+	}
+	if rawDiscovery, present := object["modelDiscovery"]; present {
+		discovery, ok := rawDiscovery.(map[string]any)
+		if !ok {
+			return Meta{}, fmt.Errorf("plugin meta modelDiscovery must be an object")
+		}
+		for field := range discovery {
+			if field != "protocol" && field != "path" {
+				return Meta{}, fmt.Errorf("plugin meta modelDiscovery has unknown field %q", field)
+			}
+		}
+		protocol, protocolErr := stringMetaField(discovery, "protocol")
+		path, pathErr := stringMetaField(discovery, "path")
+		if protocolErr != nil || pathErr != nil {
+			return Meta{}, fmt.Errorf("plugin meta modelDiscovery protocol and path must be strings")
+		}
+		meta.ModelDiscovery = &ModelDiscovery{Protocol: protocol, Path: path}
 	}
 	if _, exists := object["channelType"]; exists {
 		return Meta{}, fmt.Errorf("plugin meta channelType is no longer supported; declare channelTypes instead")
@@ -1232,6 +1264,19 @@ func normalizeV1Meta(meta *Meta) error {
 			return err
 		}
 		meta.BaseURL = normalized
+	}
+	if discovery := meta.ModelDiscovery; discovery != nil {
+		if discovery.Protocol != "openai" && discovery.Protocol != "gemini" && discovery.Protocol != "bailian" {
+			return fmt.Errorf("plugin meta modelDiscovery protocol must be openai, gemini or bailian")
+		}
+		if !modelDiscoveryPathPattern.MatchString(discovery.Path) || strings.Contains(discovery.Path, "//") || len(discovery.Path) > 512 {
+			return fmt.Errorf("plugin meta modelDiscovery path must be a local absolute path without query or fragment")
+		}
+		for segment := range strings.SplitSeq(discovery.Path, "/") {
+			if segment == "." || segment == ".." {
+				return fmt.Errorf("plugin meta modelDiscovery path must not contain dot segments")
+			}
+		}
 	}
 	if len(meta.Key) > 30 {
 		return fmt.Errorf("plugin meta key must not exceed 30 characters")

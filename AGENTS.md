@@ -118,6 +118,8 @@ Inside `relaykit/`, use `kitutil.*` from `relaykit/relayconvert/kitutil/json.go`
 **JavaScript task plugins (mandatory):**
 
 - Before implementing, modifying, or reviewing JavaScript task plugins or their host API/runtime, MUST read [Task Plugin API v1](docs/plugin-api/v1.md), including its description writing and translation conventions. When changing the plugin contract, also check `docs/plugin-api/v1.schema.json` and `docs/plugin-api/v1.d.ts` for consistency.
+- 新增或维护任务插件时，必须检查渠道页面的模型获取流程。上游有已确认的模型目录接口时，声明 `meta.modelDiscovery` 并适配真实返回格式、分页、渠道地址和鉴权；不能只隐藏按钮或要求管理员逐项手填模型。没有已确认目录接口的插件，必须提供明确标识来源的“填入插件模型”，不能把 `meta.models` 冒充实时上游结果。
+- 模型目录发现与生成适配相互独立：可导入模型必须属于插件已适配的精确 ID，其他上游模型单列提示待适配；不能因为发现新名称而自动开放生成模式、路由、参数或计费。获取失败必须保留当前选择并展示原因，不得静默回退为获取成功。测试至少覆盖新建/编辑渠道、上游失败/空结果、凭据不外泄及旧插件兼容。
 - For numeric billing fields in `usageSchema` and `usageProfiles[].schema`, `description` MUST name the **billing subject + unit price**, because it labels the price input in the UI. For example, `image_count` uses `Image generation unit price` / `图片生成单价`, not `Generated image count` / `生成图片张数`; `seconds` uses `Video generation unit price` / `视频生成单价`. The field value remains a usage quantity, not a price.
 - Put units in `unit`. Keep protocol limits, usage sources, defaults, estimation, and settlement details in code comments or technical documentation. Descriptions must be short, equivalent across languages, and free of numeric prices and trailing punctuation. Follow the API document's separate wording rules for actions, booleans, and other enum conditions.
 - Review metadata wording explicitly before completing plugin work. These are authoring requirements; successful compilation, schema validation, or tests do not verify that descriptions follow them.

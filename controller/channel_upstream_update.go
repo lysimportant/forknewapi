@@ -361,13 +361,245 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	return io.ReadAll(response.Body)
 }
 
+// channelUpstreamModelCatalog 区分已适配模型与上游新增模型，来源为 upstream 或 plugin。
+// Models 可直接填入渠道；UnsupportedModels 仅供展示，不能绕过插件路由声明。
+type channelUpstreamModelCatalog struct {
+	Models            []string
+	Source            string
+	UnsupportedModels []string
+}
+
+// fetchChannelUpstreamModelCatalog 为管理页面读取模型及其来源；普通渠道保留既有获取规则。
+func fetchChannelUpstreamModelCatalog(channel *model.Channel) (channelUpstreamModelCatalog, error) {
+	if channel.Type == constant.ChannelTypeTaskPlugin {
+		return fetchTaskPluginModelCatalog(channel)
+	}
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	return channelUpstreamModelCatalog{Models: models, Source: "upstream", UnsupportedModels: []string{}}, err
+}
+
+// taskPluginModelDiscoveryURL 合并管理员 Base URL 与插件相对路径，避免重复版本前缀。
+// 百炼模型目录位于原生 API，兼容模式 Base URL 的后缀不能用于该目录。
+func taskPluginModelDiscoveryURL(baseURL string, discovery jsplugin.ModelDiscovery) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, errors.New("模型获取需要有效的 HTTP(S) Base URL，且不能包含凭据、查询参数或片段")
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if discovery.Protocol == "bailian" {
+		basePath = strings.TrimSuffix(basePath, "/compatible-mode/v1")
+	}
+	baseParts := strings.Split(strings.Trim(basePath, "/"), "/")
+	pathParts := strings.Split(strings.Trim(discovery.Path, "/"), "/")
+	overlap := min(len(baseParts), len(pathParts))
+	for overlap > 0 && !slices.Equal(baseParts[len(baseParts)-overlap:], pathParts[:overlap]) {
+		overlap--
+	}
+	parsed.Path = strings.TrimRight(basePath, "/") + "/" + strings.Join(pathParts[overlap:], "/")
+	parsed.RawPath = ""
+	return parsed, nil
+}
+
+// getTaskPluginModelDiscoveryPage 发出一次只读请求，拒绝重定向及超过剩余字节预算的响应。
+// headers 仅发送至构造好的渠道地址；状态错误不包含上游正文或凭据。
+func getTaskPluginModelDiscoveryPage(ctx context.Context, client *http.Client, requestURL string, headers http.Header, remainingBytes int64) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header = headers.Clone()
+	request.Host = headers.Get("Host")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status code: %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, remainingBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > remainingBytes {
+		return nil, errors.New("模型获取响应总大小超过 1 MiB")
+	}
+	return body, nil
+}
+
+// fetchTaskPluginModelCatalog 获取 type-61 插件目录，最多 100 页、1 MiB、30 秒。
+// 未声明发现接口的旧插件返回静态目录；空目录或不完整分页显式报错，不回退或发布部分结果。
+func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstreamModelCatalog, err error) {
+	plugin, ok := jsplugin.DefaultRegistry.Get(channel.GetSetting().TaskPluginKey)
+	if !ok {
+		return catalog, fmt.Errorf("task plugin %q is not registered", channel.GetSetting().TaskPluginKey)
+	}
+	if plugin.Meta.ModelDiscovery == nil {
+		return channelUpstreamModelCatalog{
+			Models: normalizeModelNames(plugin.Meta.Models), Source: "plugin", UnsupportedModels: []string{},
+		}, nil
+	}
+	discovery := *plugin.Meta.ModelDiscovery
+	baseURL := strings.TrimSpace(channel.GetBaseURL())
+	if baseURL == "" {
+		baseURL = plugin.Meta.BaseURL
+		if baseURL == "" && len(plugin.Meta.ChannelTypes) > 0 {
+			baseURL = constant.GetChannelBaseURL(plugin.Meta.ChannelTypes[0])
+		}
+	}
+	requestURL, err := taskPluginModelDiscoveryURL(baseURL, discovery)
+	if err != nil {
+		return catalog, err
+	}
+	// 管理目录读取使用副本选择启用密钥，不推进生成请求的轮询索引。
+	credentialChannel := *channel
+	credentialChannel.ChannelInfo.MultiKeyMode = constant.MultiKeyModeRandom
+	key, _, apiErr := credentialChannel.GetNextEnabledKey()
+	if apiErr != nil {
+		return catalog, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+	}
+	key = strings.TrimSpace(key)
+	headers := GetAuthHeader(key)
+	if discovery.Protocol == "gemini" {
+		headers = http.Header{"X-Goog-Api-Key": []string{key}}
+	}
+	defer func() {
+		err = sanitizeFetchModelsError(err, key)
+		for _, values := range headers {
+			for _, value := range values {
+				err = sanitizeFetchModelsError(err, value)
+			}
+		}
+	}()
+	if err := applyFetchModelsHeaderOverrides(channel, key, headers); err != nil {
+		return catalog, err
+	}
+	baseClient, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	if err != nil {
+		return catalog, errors.New("模型获取的代理配置无效")
+	}
+	client := *baseClient
+	if client.Timeout <= 0 || client.Timeout > 30*time.Second {
+		client.Timeout = 30 * time.Second
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var ids []string
+	remainingBytes := int64(1 << 20)
+	seenPageTokens := make(map[string]bool)
+	seenModelIDs := make(map[string]bool)
+	pageToken := ""
+	fetchedBailianModels, bailianTotal := 0, -1
+	for page := 1; page <= 100; page++ {
+		query := requestURL.Query()
+		if discovery.Protocol == "gemini" && pageToken != "" {
+			query.Set("pageToken", pageToken)
+		}
+		if discovery.Protocol == "bailian" {
+			query.Set("page_no", fmt.Sprint(page))
+			query.Set("page_size", "20")
+		}
+		requestURL.RawQuery = query.Encode()
+		body, fetchErr := getTaskPluginModelDiscoveryPage(ctx, &client, requestURL.String(), headers, remainingBytes)
+		if fetchErr != nil {
+			return catalog, fetchErr
+		}
+		remainingBytes -= int64(len(body))
+		hasNextPage := false
+		switch discovery.Protocol {
+		case "openai":
+			ids, err = parseOpenAIModelIDs(body)
+			if err != nil {
+				return catalog, err
+			}
+		case "gemini":
+			var result struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+				NextPageToken string `json:"nextPageToken"`
+			}
+			if err := common.Unmarshal(body, &result); err != nil {
+				return catalog, fmt.Errorf("invalid Gemini Models response: %w", err)
+			}
+			pageToken = result.NextPageToken
+			hasNextPage = pageToken != ""
+			if hasNextPage && seenPageTokens[pageToken] {
+				return catalog, errors.New("invalid Gemini Models response: repeated page token")
+			}
+			seenPageTokens[pageToken] = true
+			// Google 空页可省略 models；是否结束仅取决于 nextPageToken，页数和字节预算仍限制整个目录。
+			for _, item := range result.Models {
+				id := strings.TrimSpace(strings.TrimPrefix(item.Name, "models/"))
+				if id == "" || seenModelIDs[id] {
+					return catalog, errors.New("invalid Gemini Models response: empty or repeated model ID")
+				}
+				seenModelIDs[id] = true
+				ids = append(ids, id)
+			}
+		case "bailian":
+			var result struct {
+				Success bool `json:"success"`
+				Output  *struct {
+					Total    *int `json:"total"`
+					PageNo   int  `json:"page_no"`
+					PageSize int  `json:"page_size"`
+					Models   *[]struct {
+						Model string `json:"model"`
+					} `json:"models"`
+				} `json:"output"`
+			}
+			if err := common.Unmarshal(body, &result); err != nil {
+				return catalog, fmt.Errorf("invalid Bailian Models response: %w", err)
+			}
+			if !result.Success || result.Output == nil || result.Output.Models == nil || result.Output.Total == nil || *result.Output.Total < 0 || result.Output.PageNo != page || result.Output.PageSize <= 0 {
+				return catalog, errors.New("invalid Bailian Models response: success, output.models and pagination are required")
+			}
+			if bailianTotal >= 0 && bailianTotal != *result.Output.Total {
+				return catalog, errors.New("invalid Bailian Models response: total changed during pagination")
+			}
+			bailianTotal = *result.Output.Total
+			fetchedBailianModels += len(*result.Output.Models)
+			if fetchedBailianModels > bailianTotal || len(*result.Output.Models) > result.Output.PageSize || (len(*result.Output.Models) == 0 && fetchedBailianModels < bailianTotal) {
+				return catalog, errors.New("invalid Bailian Models response: model count does not match total")
+			}
+			for _, item := range *result.Output.Models {
+				id := strings.TrimSpace(item.Model)
+				if id == "" || seenModelIDs[id] {
+					return catalog, errors.New("invalid Bailian Models response: empty or repeated model ID")
+				}
+				seenModelIDs[id] = true
+				ids = append(ids, id)
+			}
+			hasNextPage = fetchedBailianModels < bailianTotal
+		default:
+			return catalog, fmt.Errorf("unsupported task plugin model discovery protocol %q", discovery.Protocol)
+		}
+		if !hasNextPage {
+			if len(ids) == 0 {
+				return catalog, errors.New("Models response contains no valid model IDs")
+			}
+			return channelUpstreamModelCatalog{
+				Models: intersectModelNames(ids, plugin.Meta.Models), Source: "upstream",
+				UnsupportedModels: subtractModelNames(ids, plugin.Meta.Models),
+			}, nil
+		}
+	}
+	return catalog, errors.New("模型获取超过 100 页，未返回不完整目录")
+}
+
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	if channel.Type == constant.ChannelTypeTaskPlugin {
-		plugin, ok := jsplugin.DefaultRegistry.Get(channel.GetSetting().TaskPluginKey)
-		if !ok {
-			return nil, fmt.Errorf("task plugin %q is not registered", channel.GetSetting().TaskPluginKey)
+		catalog, err := fetchTaskPluginModelCatalog(channel)
+		if err != nil {
+			return nil, err
 		}
-		return normalizeModelNames(plugin.Meta.Models), nil
+		// 目录仍有模型但当前插件未适配时，不能把空交集当成上游已下架全部模型。
+		if len(catalog.Models) == 0 {
+			return nil, errors.New("task plugin catalog contains no supported model IDs; existing channel models are preserved")
+		}
+		return catalog.Models, nil
 	}
 	baseURL := constant.GetChannelBaseURL(channel.Type)
 	if channel.GetBaseURL() != "" {

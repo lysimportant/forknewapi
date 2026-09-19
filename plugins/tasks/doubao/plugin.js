@@ -7,9 +7,10 @@ export const meta = {
     en: "Volcengine Doubao Seedance video generation (text-to-video, image-to-video, and video-to-video)",
     zh: "火山引擎豆包 Seedance 视频生成（文生视频、图生视频、视频生视频）",
   },
-  version: "1.0.3",
+  version: "1.1.0",
   author: { name: "QuantumNous" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
+  modelDiscovery: { protocol: "openai", path: "/api/v3/models" },
   models: [
     "doubao-seedance-1-0-pro-250528",
     "doubao-seedance-1-0-lite-t2v",

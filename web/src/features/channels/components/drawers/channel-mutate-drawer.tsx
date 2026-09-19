@@ -201,6 +201,7 @@ import {
 } from '../dialogs/missing-models-confirmation-dialog'
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
+import { ModelDiscoveryNotice } from '../model-discovery-notice'
 import { ModelMappingEditor } from '../model-mapping-editor'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 import {
@@ -1078,13 +1079,21 @@ export function ChannelMutateDrawer({
     [currentModelsArray, form]
   )
 
-  // Ordinary edits use the saved channel. Advanced Custom retains its existing
-  // preview path, which reuses the saved credential on the server.
+  const isTaskPlugin = currentType === CHANNEL_TYPE_TASK_PLUGIN
+  const canFetchModels = MODEL_FETCHABLE_TYPES.has(currentType) || isTaskPlugin
+  const usePluginModelList =
+    isTaskPlugin && !!boundTaskPlugin && !boundTaskPlugin.modelDiscovery
+  const fetchModelsLabel = usePluginModelList
+    ? t('Load Plugin Models')
+    : t('Fetch from Upstream')
+  // 插件和高级自定义渠道预览草稿；未提供新密钥时由服务器复用保存的启用密钥。
   const previewModels =
     !isEditing ||
-    (currentType === CHANNEL_TYPE_ADVANCED_CUSTOM && canEditSensitive)
+    ((currentType === CHANNEL_TYPE_ADVANCED_CUSTOM || isTaskPlugin) &&
+      canEditSensitive)
   const canDiscoverModels = previewModels ? canEditSensitive : canOperateChannel
-  const previewKey = isEditing ? undefined : currentKey
+  let previewKey = isEditing ? undefined : currentKey
+  if (isEditing && isTaskPlugin && currentKey?.trim()) previewKey = currentKey
   const previewRequest = useMemo<ChannelModelDiscoveryRequest>(
     () => ({
       kind: 'preview',
@@ -1096,6 +1105,7 @@ export function ChannelMutateDrawer({
         advanced_custom: currentAdvancedCustom,
         header_override: currentHeaderOverride,
         proxy: currentProxy,
+        task_plugin_key: isTaskPlugin ? currentTaskPluginKey : undefined,
       },
     }),
     [
@@ -1107,6 +1117,8 @@ export function ChannelMutateDrawer({
       currentAdvancedCustom,
       currentHeaderOverride,
       currentProxy,
+      isTaskPlugin,
+      currentTaskPluginKey,
     ]
   )
   const savedRequest = useMemo<ChannelModelDiscoveryRequest>(
@@ -1117,14 +1129,15 @@ export function ChannelMutateDrawer({
     enabled:
       open &&
       canDiscoverModels &&
-      MODEL_FETCHABLE_TYPES.has(currentType) &&
+      canFetchModels &&
       (!isEditing || Boolean(channelData?.data)),
     request: previewModels ? previewRequest : savedRequest,
+    scopeKey: `${currentType}:${currentTaskPluginKey || ''}:${channelId || ''}`,
   })
   const fetchDiscoveredModels = discovery.fetch
   const handleFetchModels = useCallback(async () => {
     const type = form.getValues('type')
-    if (!MODEL_FETCHABLE_TYPES.has(type)) {
+    if (!canFetchModels) {
       toast.error(t('This channel type does not support fetching models'))
       return
     }
@@ -1135,6 +1148,7 @@ export function ChannelMutateDrawer({
     if (
       !isEditing &&
       type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
+      !usePluginModelList &&
       !form.getValues('key')?.trim()
     ) {
       form.setError('key', {
@@ -1145,8 +1159,25 @@ export function ChannelMutateDrawer({
       setPendingErrorFocus('key')
       return
     }
-    await fetchDiscoveredModels()
-  }, [isEditing, canDiscoverModels, form, t, fetchDiscoveredModels])
+    const response = await fetchDiscoveredModels()
+    if (response?.source === 'plugin') {
+      form.setValue(
+        'models',
+        formatModelsArray([
+          ...parseModelsString(form.getValues('models')),
+          ...(response.data ?? []),
+        ])
+      )
+    }
+  }, [
+    isEditing,
+    canFetchModels,
+    canDiscoverModels,
+    usePluginModelList,
+    form,
+    t,
+    fetchDiscoveredModels,
+  ])
 
   // Handle model operations
   const handleFillRelatedModels = useCallback(() => {
@@ -2802,8 +2833,14 @@ export function ChannelMutateDrawer({
               )}
             />
 
-            {MODEL_FETCHABLE_TYPES.has(currentType) && (
+            {canFetchModels && (
               <div aria-live='polite' className='mt-4 space-y-3'>
+                {discovery.status === 'success' && (
+                  <ModelDiscoveryNotice
+                    source={discovery.source}
+                    unsupportedModels={discovery.unsupportedModels}
+                  />
+                )}
                 {discovery.status === 'loading' && (
                   <LoadingState
                     className='min-h-0 py-4'
@@ -2844,7 +2881,11 @@ export function ChannelMutateDrawer({
                   discovery.models.length === 0 && (
                     <EmptyState
                       className='min-h-0 p-3'
-                      title={t('No models returned by the upstream')}
+                      title={
+                        discovery.unsupportedModels.length > 0
+                          ? t('No compatible models returned by the upstream')
+                          : t('No models returned by the upstream')
+                      }
                       description={t(
                         'You can add models manually or try fetching again.'
                       )}
@@ -2915,7 +2956,7 @@ export function ChannelMutateDrawer({
                   <FileText className='mr-2 h-4 w-4' aria-hidden='true' />
                   {t('Fill Related Models')}
                 </Button>
-                {MODEL_FETCHABLE_TYPES.has(currentType) && (
+                {canFetchModels && (
                   <>
                     <Button
                       type='button'
@@ -2927,7 +2968,7 @@ export function ChannelMutateDrawer({
                       }
                     >
                       <Sparkles className='mr-2 h-4 w-4' aria-hidden='true' />
-                      {t('Fetch from Upstream')}
+                      {fetchModelsLabel}
                     </Button>
                     {!canDiscoverModels && (
                       <span className='text-muted-foreground basis-full text-xs'>

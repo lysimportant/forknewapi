@@ -25,6 +25,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import { fetchModels } from '../../api'
+import type { FetchModelsResponse } from '../../types'
 import { ChannelsProvider } from '../channels-provider'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
 import { UpstreamModelSelection } from '../upstream-model-selection'
@@ -32,6 +33,83 @@ import { UpstreamModelSelection } from '../upstream-model-selection'
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('plugin catalogs are identified and merged into the existing selection before saving', async () => {
+  const client = new QueryClient()
+  const select = vi.fn()
+  const fetcher = vi
+    .fn<() => Promise<FetchModelsResponse>>()
+    .mockResolvedValue({
+      success: true,
+      source: 'plugin',
+      data: ['minimax-h3'],
+      unsupported_models: [],
+    })
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <ChannelsProvider>
+        <FetchModelsDialog
+          open
+          onOpenChange={vi.fn()}
+          onModelsSelected={select}
+          existingModelsOverride={['manual-alias']}
+          customFetcher={fetcher}
+        />
+      </ChannelsProvider>
+    </QueryClientProvider>
+  )
+  expect(await screen.findByText('Source: Plugin model list')).toBeVisible()
+  expect(
+    screen.getByRole('dialog', { name: 'Load Plugin Models' })
+  ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Save Models' }))
+  expect(select).toHaveBeenCalledWith(['manual-alias', 'minimax-h3'])
+  client.clear()
+})
+
+test('a failed plugin fetch cannot save an empty selection and retry only offers supported models', async () => {
+  const client = new QueryClient()
+  const select = vi.fn()
+  const fetcher = vi
+    .fn<() => Promise<FetchModelsResponse>>()
+    .mockResolvedValueOnce({ success: false, message: 'Catalog access denied' })
+    .mockResolvedValueOnce({
+      success: true,
+      source: 'upstream',
+      data: ['wan3.0-video'],
+      unsupported_models: ['seedance-future'],
+    })
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <ChannelsProvider>
+        <FetchModelsDialog
+          open
+          onOpenChange={vi.fn()}
+          onModelsSelected={select}
+          existingModelsOverride={['manual-alias']}
+          customFetcher={fetcher}
+        />
+      </ChannelsProvider>
+    </QueryClientProvider>
+  )
+  expect(await screen.findByText('Catalog access denied')).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Save Models' })
+  ).not.toBeInTheDocument()
+  expect(select).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(await screen.findByText('Source: Upstream catalog')).toBeVisible()
+  expect(screen.getByText('seedance-future')).toBeVisible()
+  expect(
+    screen.queryByRole('checkbox', { name: 'seedance-future' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('checkbox', { name: 'wan3.0-video' }))
+  await user.click(screen.getByRole('button', { name: 'Save Models' }))
+  expect(select).toHaveBeenCalledWith(['manual-alias', 'wan3.0-video'])
+  client.clear()
 })
 
 test.each([

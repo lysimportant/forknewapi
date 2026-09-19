@@ -242,7 +242,7 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	ids, err := fetchChannelUpstreamModelIDs(channel)
+	catalog, err := fetchChannelUpstreamModelCatalog(channel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -251,11 +251,12 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    ids,
-	})
+	response := gin.H{"success": true, "message": "", "data": catalog.Models}
+	if channel.Type == constant.ChannelTypeTaskPlugin {
+		response["source"] = catalog.Source
+		response["unsupported_models"] = catalog.UnsupportedModels
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func FixChannelsAbilities(c *gin.Context) {
@@ -1233,6 +1234,57 @@ type fetchModelsRequest struct {
 	AdvancedCustom *string `json:"advanced_custom"`
 	HeaderOverride *string `json:"header_override"`
 	Proxy          *string `json:"proxy"`
+	TaskPluginKey  string  `json:"task_plugin_key"`
+}
+
+// buildTaskPluginModelPreviewChannel 将插件草稿叠加到渠道副本，不保存配置或推进线上密钥轮询。
+// 编辑时仅可读取任务插件渠道的已启用密钥；非空草稿密钥取首条，未传字段沿用已保存值。
+func buildTaskPluginModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
+	channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin}
+	if req.ChannelID > 0 {
+		savedChannel, err := model.GetChannelById(req.ChannelID, true)
+		if err != nil {
+			return nil, err
+		}
+		if savedChannel.Type != constant.ChannelTypeTaskPlugin {
+			return nil, fmt.Errorf("channel %d is not a task plugin channel", req.ChannelID)
+		}
+		preview := *savedChannel
+		channel = &preview
+	}
+	if key := strings.TrimSpace(req.Key); key != "" {
+		channel.Key, _, _ = strings.Cut(key, "\n")
+		channel.Keys = nil
+		channel.ChannelInfo = model.ChannelInfo{}
+	}
+	if req.BaseURL != nil {
+		baseURL := strings.TrimSpace(*req.BaseURL)
+		channel.BaseURL = &baseURL
+	}
+	settings := dto.ChannelSettings{}
+	if channel.Setting != nil && *channel.Setting != "" {
+		if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
+			return nil, errors.New("saved channel settings are invalid")
+		}
+	}
+	if pluginKey := strings.TrimSpace(req.TaskPluginKey); pluginKey != "" || req.ChannelID <= 0 {
+		settings.TaskPluginKey = pluginKey
+	}
+	if req.Proxy != nil {
+		settings.Proxy = strings.TrimSpace(*req.Proxy)
+	}
+	channel.SetSetting(settings)
+	if req.HeaderOverride != nil {
+		rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
+		channel.HeaderOverride = &rawHeaderOverride
+	}
+	if channel.HeaderOverride != nil && *channel.HeaderOverride != "" {
+		var headers map[string]any
+		if err := common.UnmarshalJsonStr(*channel.HeaderOverride, &headers); err != nil || headers == nil {
+			return nil, errors.New("header_override must be a JSON object")
+		}
+	}
+	return channel, nil
 }
 
 func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
@@ -1315,7 +1367,14 @@ func FetchModels(c *gin.Context) {
 	}
 
 	var channel *model.Channel
-	if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
+	if req.Type == constant.ChannelTypeTaskPlugin {
+		var err error
+		channel, err = buildTaskPluginModelPreviewChannel(req)
+		if err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
+	} else if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
 		var err error
 		channel, err = buildAdvancedCustomModelPreviewChannel(req)
 		if err != nil {
@@ -1345,7 +1404,7 @@ func FetchModels(c *gin.Context) {
 		}
 	}
 
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	catalog, err := fetchChannelUpstreamModelCatalog(channel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1353,11 +1412,12 @@ func FetchModels(c *gin.Context) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    models,
-	})
+	response := gin.H{"success": true, "message": "", "data": catalog.Models}
+	if channel.Type == constant.ChannelTypeTaskPlugin {
+		response["source"] = catalog.Source
+		response["unsupported_models"] = catalog.UnsupportedModels
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func BatchSetChannelTag(c *gin.Context) {

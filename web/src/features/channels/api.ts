@@ -20,6 +20,7 @@ import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
+import type { TaskPluginModelDiscovery } from '../task-plugins/types'
 import type {
   AddChannelRequest,
   BatchDeleteParams,
@@ -59,6 +60,7 @@ export type TaskPluginOption = {
   hasIcon?: boolean
   baseUrl?: string
   models: string[]
+  modelDiscovery?: TaskPluginModelDiscovery
   channelTypes?: number[] | null
 }
 
@@ -558,6 +560,7 @@ export async function fetchModels(data: {
   advanced_custom?: string
   header_override?: string
   proxy?: string
+  task_plugin_key?: string
 }): Promise<FetchModelsResponse> {
   const res = await api.post(
     '/api/channel/fetch_models',

@@ -7,9 +7,10 @@ export const meta = {
     en: "Google Veo video generation on the Gemini API (text-to-video and image-to-video)",
     zh: "Google Veo 视频生成（文生视频、图生视频），Gemini API 版本",
   },
-  version: "1.0.2",
+  version: "1.1.0",
   author: { name: "QuantumNous" },
   channelTypes: [24],
+  modelDiscovery: { protocol: "gemini", path: "/v1beta/models" },
   models: ["veo-3.0-generate-001", "veo-3.0-fast-generate-001", "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview"],
   fetchMode: "per_task",
   usageSchema: {

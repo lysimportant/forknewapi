@@ -136,3 +136,37 @@ Moon Wan 公开合同未支持 `negative_prompt` 或 `duration=-1`，插件会�
 本轮禁网验收于北京时间 2026-09-19 07:26 完成，证据为 `.local-tests/moon-video/report.json` 与 `http-tests.log`。包括缺少参考时长、超界时长、错误编辑参数和 Base64 参考在预扣前拒绝，Wan 输出及参考秒数计费，Seedance 实际/零 tokens 结算，H3 工作流及 `metadata.url` 制品，原有百炼和 Responses 合同。二进制 SHA256 为 `16C63FF98F83A742D86EDDEFC876761EEACDF10922914CC48319487A8EFC8B53`，插件 SHA256 为 `AA355CD9609B095E0C4A83EA07F194C7BED4D64A6EA22608446ACD587DB58CBB`。未连接供应商，模拟 MP4 只用于下载协议验证。
 
 Canvas 配套在 `G:\multimodal-canvas` 完成：全量 lint/typecheck/test/build 通过（已有设施跳过保留），实际 PostgreSQL 版本时长到本插件的组合验证 4/4、浏览器 Mock 9/9、跨仓库映射 73 组通过。本地 8080 的 API、Worker、Web 已更新并健康，用户资产和画布未改写；线上 New API 仍需更新宿主与 Moon 1.1.0，配置公网素材地址后再独立验收真实生成。
+
+## 2026-09-19 插件模型获取
+
+本轮 P1，基线 `main@9bb735216`，工作区干净，跟踪 `fork/main`。Go `1.26.0`、Node `24.12.0`、仓库本地 Bun `1.4.2`；沿用 `web/node_modules` 与锁文件，无依赖安装。原模型获取按钮按渠道类型排除了任务插件，后端仅返回 `meta.models`；目标为所有插件提供无需手填的模型选择入口，存在目录合同时读取真实上游。
+
+本轮仅修改 New API。主代理负责插件元信息、内置声明、文档与集成验收；`plugin_discovery_backend` 负责控制器与集中回归，`moon_canvas_ui` 负责渠道界面与翻译，`moon_discovery_contract` 只读核对公开目录。新建子代理继承主代理模型与推理强度。
+
+影响为附加的插件 API 元信息与管理接口响应，不改数据库结构、账务或生成能力。新字段要求先升级宿主再装新版插件；回滚可还原本次代码与插件版本，保留渠道模型、价格和任务数据。未授权生产部署或付费生成。本轮不实现 Seedance 2.5 的 Moon 生成合同。
+
+- [x] 恢复基线，读取插件 API、README、检查点、前端及技能约束。
+- [x] 基线相关宿主测试通过；新增目录字段红测复现 unknown field，支持三种协议后变绿；完整 `./pkg/jsplugin ./plugins` 测试通过。
+- [x] 核实 Moon/OpenAI/Google/百炼目录格式；豆包沿用项目已有 `/api/v3/models` 合同，真实账号结果仍待验收。
+- [x] 更新项目 `AGENTS.md`：模型发现、静态来源区分、失败保留与新模型待适配要求。
+- [x] 完成控制器与新增/编辑渠道界面，兼容未声明目录的全部插件；已保存渠道的行菜单也可直接获取模型。
+- [x] 完成相关检查、真实浏览器流程与最终差异复核；下方记录基线格式问题及未进行的真实供应商验收。
+- [x] 完成中文交付材料与最终差异检查；提交、标签和推送结果以最终 Git 远端核验为准。
+
+当前实现：Moon 1.2.0、Sora 1.1.0、Google 1.1.0、豆包 1.1.0、百炼 1.4.0 声明真实目录协议；其余插件共用明确标识来源的静态列表入口，无需改动旧插件。任务插件渠道类型为 61；传统 OpenAI、百炼等渠道保留原有模型获取合同。新建或编辑渠道时，进入“配置模型”，有目录的插件点“从上游获取”，无目录的插件点“填入插件模型”；已保存渠道可从行菜单进入“获取模型”。
+
+目录仅提供插件已适配的精确模型 ID 供勾选，大小写不合并；例如未来 Seedance 2.5 出现在 Moon 目录时，会先显示为尚未适配。发现新名称不自动建立生成、参数或计费合同。上游失败、空目录或后台同步没有兼容模型时明确失败并保留现有模型，不能以静态模型冒充实时获取成功。新建及编辑页面复用现有 `UpstreamModelSelection`、`Dialog`、`ErrorState`；新增 `ModelDiscoveryNotice` 只组合现有 `Alert` 展示目录来源与待适配模型，没有新增通用交互实现。
+
+编辑预览使用当前插件、地址、请求头和代理；不填新密钥时复用保存的启用密钥。预览和已保存 GET 目录获取均通过渠道副本选取密钥，不保存草稿或推进生成请求的密钥轮询索引。鉴权仍经过现有 AdminAuth、ChannelSensitiveWrite/ChannelOperate 权限，目录调用拒绝重定向，错误不回显供应商正文或渠道凭据。目录最多 100 页、1 MiB、30 秒。
+
+收尾验证与证据（`.local-tests/plugin-model-discovery/` 不纳入 Git）：
+
+- `go test -mod=readonly ./controller ./pkg/jsplugin ./plugins -count=1 -timeout=300s` 和 `go test -mod=readonly ./... -count=1 -timeout=240s` 通过，全仓 44 个测试包通过；日志 `final-targeted-go-test.log`、`final-go-test.log`。
+- 最终复核新增两个红绿回归：Google 空页可省略 `models` 字段；已保存渠道 GET 目录获取不推进轮询索引。`go test -mod=readonly ./controller -run 'TestFetchTaskPlugin|TestFailedTaskPlugin' -count=1 -timeout=90s` 通过，见 `gemini-empty-page-red.log`、`saved-key-red.log`、`discovery-final-test.log`。Google 依据 [AIP-158](https://google.aip.dev/158) 和 [ProtoJSON 缺省值规则](https://protobuf.dev/programming-guides/json/)，仅由 `nextPageToken` 判断分页结束，完整空目录仍失败。
+- `go vet -mod=readonly ./...`、`go build -mod=readonly ./...` 通过，最后控制器补修后再次通过控制器 vet 与全仓 build；`relaykit` 独立 `GOWORK=off go build ./...` 通过。
+- `bun run test -- src/features/channels --testTimeout 15000`：11 个文件、129 个测试通过；`bun run typecheck`、本次修改 TS/TSX 的定向 oxlint、9 个文件的保留版权头格式检查及 `bun run build` 通过。使用本地 Bun `.local-tests/responses-docker/tools/node_modules/bun/bin/bun.exe`，版本 1.4.2。
+- 7 个新增界面文案在全部 7 种 locale 中存在，插值一致；i18n 同步报告所有语言缺失键为 0。复用项目 i18n 脚本，没有修改锁文件。
+- 五个插件 oxlint 无错误，有 4 个既有警告；Moon/Sora/Google/豆包 oxfmt 通过。百炼文件基线已有格式差异，已对比 HEAD 确认本轮仅新增元信息和版本行，保留无关行格式；没有把该文件全量格式检查报告为通过。`go run -mod=readonly . plugin lint plugins/tasks/moon/plugin.js` 通过，所有内置插件也通过 Go 加载验证。
+- 实际浏览器使用本地构建及 43919 端口模拟接口：Moon 新建、编辑、失败、空目录保留原选择，H3/Grok 静态列表，已保存 Moon 的行菜单入口与来源/待适配提示均已验证。初次编辑夹具缺少 `channel_info` 导致错误，补全后编辑正常，当前 `browser-report.json` 无页面异常或非预期请求。未使用真实供应商密钥。
+
+交付目标为中文提交、annotated Tag `v1.0.0-rc.37.custom.8`，仅推送 `fork/main` 与该标签，结果在最终交接中核验。正式环境需升级宿主及内置插件后才能看到新按钮；此轮没有生产部署或真实付费生成，真实账号目录权限仍需独立验证。

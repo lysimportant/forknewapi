@@ -205,6 +205,8 @@ export interface FetchModelsResponse {
   success: boolean
   message?: string
   data?: string[]
+  source?: 'upstream' | 'plugin'
+  unsupported_models?: string[]
 }
 
 export interface CopyChannelResponse {

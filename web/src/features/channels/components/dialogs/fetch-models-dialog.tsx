@@ -18,13 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
-import { useState, useEffect, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
+import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
 import { handleServerError } from '@/lib/handle-server-error'
+import {
+  createServerError,
+  getServerErrorMessage,
+} from '@/lib/server-error-message'
 
 import { fetchUpstreamModels, updateChannel } from '../../api'
 import {
@@ -32,7 +37,9 @@ import {
   normalizeModelName,
   parseModelsString,
 } from '../../lib'
+import type { FetchModelsResponse } from '../../types'
 import { useChannels } from '../channels-provider'
+import { ModelDiscoveryNotice } from '../model-discovery-notice'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 
 function normalizeModelNameList(models: readonly string[]): string[] {
@@ -44,7 +51,7 @@ type FetchModelsDialogBaseProps = {
   onOpenChange: (open: boolean) => void
   redirectModels?: string[]
   redirectSourceModels?: string[]
-  customFetcher?: () => Promise<string[]>
+  customFetcher?: () => Promise<string[] | FetchModelsResponse>
   channelName?: string | null
 }
 
@@ -79,6 +86,11 @@ export function FetchModelsDialog({
   const [fetchedModels, setFetchedModels] = useState<string[]>([])
   const [candidateModels, setCandidateModels] = useState<string[]>([])
   const [selectedModels, setSelectedModels] = useState<string[]>([])
+  const [source, setSource] = useState<FetchModelsResponse['source']>()
+  const [unsupportedModels, setUnsupportedModels] = useState<string[]>([])
+  const [fetchError, setFetchError] = useState<unknown>()
+  const [hasFetched, setHasFetched] = useState(false)
+  const fetchSequence = useRef(0)
 
   // Parse existing models
   const existingModels = useMemo(
@@ -99,8 +111,18 @@ export function FetchModelsDialog({
   )
 
   useEffect(() => {
+    setHasFetched(false)
+    setFetchError(undefined)
+    setSource(undefined)
+    setUnsupportedModels([])
+    setFetchedModels([])
+    setCandidateModels(existingModels)
+    setSelectedModels(existingModels)
     if (open && (activeChannel || customFetcher)) {
-      handleFetchModels()
+      void handleFetchModels()
+    }
+    return () => {
+      fetchSequence.current += 1
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, activeChannel?.id, customFetcher])
@@ -108,32 +130,45 @@ export function FetchModelsDialog({
   const handleFetchModels = async () => {
     if (!activeChannel && !customFetcher) return
 
+    const sequence = ++fetchSequence.current
     setIsFetching(true)
+    setFetchError(undefined)
+    setHasFetched(false)
     try {
+      let response: FetchModelsResponse
       if (customFetcher) {
-        const list = await customFetcher()
-        setFetchedModels(list)
-        setCandidateModels(existingModels)
-        setSelectedModels(existingModels)
-        toast.success(t('Fetched {{count}} models', { count: list.length }))
+        const result = await customFetcher()
+        response = Array.isArray(result)
+          ? { success: true, data: result }
+          : result
       } else if (activeChannel) {
-        const response = await fetchUpstreamModels(activeChannel.id)
-        if (response.success) {
-          const list = Array.isArray(response.data) ? response.data : []
-          setFetchedModels(list)
-          setCandidateModels(existingModels)
-          setSelectedModels(existingModels)
-          toast.success(t('Fetched {{count}} models', { count: list.length }))
-        } else {
-          handleServerError(response, t('Failed to fetch models'))
-          setFetchedModels([])
-        }
+        response = await fetchUpstreamModels(activeChannel.id)
+      } else {
+        return
+      }
+      if (sequence !== fetchSequence.current) return
+      if (!response.success) {
+        throw createServerError(response, t('Failed to fetch models'))
+      }
+      const list = response.data ?? []
+      setFetchedModels(list)
+      setSource(response.source)
+      setUnsupportedModels(response.unsupported_models ?? [])
+      setHasFetched(true)
+      setCandidateModels(existingModels)
+      setSelectedModels(
+        response.source === 'plugin'
+          ? [...new Set([...existingModels, ...list])]
+          : existingModels
+      )
+      if (response.source !== 'plugin') {
+        toast.success(t('Fetched {{count}} models', { count: list.length }))
       }
     } catch (error: unknown) {
-      handleServerError(error, t('Failed to fetch models'))
-      setFetchedModels([])
+      if (sequence !== fetchSequence.current) return
+      setFetchError(error)
     } finally {
-      setIsFetching(false)
+      if (sequence === fetchSequence.current) setIsFetching(false)
     }
   }
 
@@ -169,6 +204,7 @@ export function FetchModelsDialog({
   }
 
   const handleClose = () => {
+    fetchSequence.current += 1
     setFetchedModels([])
     setCandidateModels([])
     setSelectedModels([])
@@ -178,6 +214,7 @@ export function FetchModelsDialog({
   const showFooterActions =
     !!(activeChannel || customFetcher) &&
     !isFetching &&
+    hasFetched &&
     (fetchedModels.length > 0 || hasUnlistedModels)
 
   let dialogDescription: ReactNode = t('Fetch available models from upstream')
@@ -207,6 +244,19 @@ export function FetchModelsDialog({
       <div className='flex items-center justify-center py-12'>
         <Loader2 className='text-muted-foreground h-8 w-8 animate-spin' />
       </div>
+    )
+  } else if (fetchError) {
+    dialogBody = (
+      <ErrorState
+        title={t('Failed to fetch models')}
+        description={getServerErrorMessage(
+          fetchError,
+          t('Failed to fetch models')
+        )}
+        onRetry={() => {
+          void handleFetchModels()
+        }}
+      />
     )
   } else if (fetchedModels.length === 0 && !hasUnlistedModels) {
     dialogBody = (
@@ -238,7 +288,7 @@ export function FetchModelsDialog({
     <Dialog
       open={open}
       onOpenChange={handleClose}
-      title={t('Fetch Models')}
+      title={source === 'plugin' ? t('Load Plugin Models') : t('Fetch Models')}
       description={dialogDescription}
       contentClassName='max-w-3xl'
       contentHeight='auto'
@@ -257,6 +307,12 @@ export function FetchModelsDialog({
         ) : null
       }
     >
+      {hasFetched && (
+        <ModelDiscoveryNotice
+          source={source}
+          unsupportedModels={unsupportedModels}
+        />
+      )}
       {dialogBody}
     </Dialog>
   )

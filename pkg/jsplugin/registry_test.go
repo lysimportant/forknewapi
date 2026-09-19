@@ -966,6 +966,39 @@ func TestRegistryNormalizesBaseURL(t *testing.T) {
 	}
 }
 
+// TestRegistryModelDiscovery 校验目录协议及路径边界，防止元信息指定外部地址或夹带凭据。
+func TestRegistryModelDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+		valid  bool
+	}{
+		{"legacy", "", true},
+		{"openai", `modelDiscovery: {protocol: "openai", path: "/v1/models"},`, true},
+		{"gemini", `modelDiscovery: {protocol: "gemini", path: "/v1beta/models"},`, true},
+		{"bailian", `modelDiscovery: {protocol: "bailian", path: "/api/v1/models"},`, true},
+		{"null", `modelDiscovery: null,`, false},
+		{"unknown protocol", `modelDiscovery: {protocol: "unknown", path: "/models"},`, false},
+		{"unknown property", `modelDiscovery: {protocol: "openai", path: "/models", key: "value"},`, false},
+		{"absolute URL", `modelDiscovery: {protocol: "openai", path: "https://other.example/models"},`, false},
+		{"protocol relative URL", `modelDiscovery: {protocol: "openai", path: "//other.example/models"},`, false},
+		{"query", `modelDiscovery: {protocol: "openai", path: "/models?key=value"},`, false},
+		{"fragment", `modelDiscovery: {protocol: "openai", path: "/models#fragment"},`, false},
+		{"parent segment", `modelDiscovery: {protocol: "openai", path: "/v1/../models"},`, false},
+		{"encoded parent", `modelDiscovery: {protocol: "openai", path: "/v1/%2e%2e/models"},`, false},
+		{"numeric path", `modelDiscovery: {protocol: "openai", path: 1},`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CompilePlugin(routingTestPluginSource("discovery", 0, `["model"]`, tc.fields, ""), Options{})
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "modelDiscovery")
+			}
+		})
+	}
+}
+
 func TestRegistryNormalizesAllowedHosts(t *testing.T) {
 	tests := []struct {
 		name      string
