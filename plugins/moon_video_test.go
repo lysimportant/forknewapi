@@ -1,6 +1,7 @@
 package plugins_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -434,6 +435,409 @@ func TestMoonVideoContracts(t *testing.T) {
 		for _, field := range []string{"tools", "metadata", "instructions", "previous_response_id"} {
 			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "decodeRequest"}, map[string]any{"model": tokenModel, "body": map[string]any{"kind": "json", "value": map[string]any{"input": "ocean", field: map[string]any{}}}})
 			require.Error(t, callErr, field)
+		}
+	})
+}
+
+// TestMoonLatestVideoContracts 验证公开文档中的新增模型、输入边界与结算门槛，不调用生成上游。
+func TestMoonLatestVideoContracts(t *testing.T) {
+	source, err := plugins.Source("moon")
+	require.NoError(t, err)
+	registry := jsplugin.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	const grokModel = "grok-v1.5-video"
+	t.Run("Grok精确模型进入已适配目录与按次计费", func(t *testing.T) {
+		assert.Contains(t, plugin.Meta.Models, grokModel)
+		require.NotNil(t, plugin.Meta.ModelDiscovery)
+		assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
+		assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
+		for _, path := range []string{"/v1/videos", "/v1/responses"} {
+			candidates := registry.Generation().LookupEndpointCandidates("POST", path, grokModel)
+			require.Len(t, candidates, 1)
+			assert.Equal(t, "moon", candidates[0].Plugin.Meta.Key)
+			assert.Empty(t, registry.Generation().LookupEndpointCandidates("POST", path, "grok-imagine-video-1.5"))
+		}
+		schema, _ := plugin.Meta.UsageForModel(grokModel)
+		require.Len(t, schema, 1)
+		assert.Equal(t, "number", schema["video_count"].Type)
+		assert.Equal(t, "count", schema["video_count"].Unit)
+	})
+	t.Run("Grok规范请求保留幂等且禁止提交重试", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			fields map[string]any
+			want   string
+		}{
+			{name: "默认文生视频", want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"16:9"}`},
+			{name: "别名及整数字符串", fields: map[string]any{"duration": "15", "resolution": "1080p", "ratio": "1:1"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":15,"size":"1080p","aspect_ratio":"1:1"}`},
+			{name: "一致的同义参数", fields: map[string]any{"duration": 4, "seconds": "4", "size": "720p", "resolution": "720p", "ratio": "4:3", "aspect_ratio": "4:3"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":4,"size":"720p","aspect_ratio":"4:3"}`},
+			{name: "横向720精确尺寸", fields: map[string]any{"size": "1280x720"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"16:9"}`},
+			{name: "竖向720精确尺寸", fields: map[string]any{"size": "720x1280", "ratio": "9:16"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"9:16"}`},
+			{name: "横向1080精确尺寸", fields: map[string]any{"size": "1920x1080", "resolution": "1080p"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"1080p","aspect_ratio":"16:9"}`},
+			{name: "竖向1080精确尺寸", fields: map[string]any{"size": "1080x1920", "aspect_ratio": "9:16"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"1080p","aspect_ratio":"9:16"}`},
+			{name: "单图入口", fields: map[string]any{"input_reference": "https://cdn.example/ref.jpg", "ratio": "3:4"}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"3:4","input_reference":"https://cdn.example/ref.jpg"}`},
+			{name: "默认参考图角色", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg"}}}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`},
+			{name: "单张首帧", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/first.jpg", "role": "first_frame"}}}, want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/first.jpg","role":"first_frame"}]}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				body := map[string]any{"prompt": "ocean"}
+				for key, value := range tc.fields {
+					body[key] = value
+				}
+				value, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"upstreamModel": grokModel, "model": "moon-grok-alias", "baseUrl": "https://moon.example/proxy/v1/",
+					"apiKey": "fixture", "publicTaskId": "task-grok", "requestBody": body,
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					URL     string            `json:"url"`
+					Method  string            `json:"method"`
+					Headers map[string]string `json:"headers"`
+					Body    map[string]any    `json:"body"`
+					NoRetry bool              `json:"noRetry"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				assert.Equal(t, "https://moon.example/proxy/v1/videos", request.URL)
+				assert.Equal(t, "POST", request.Method)
+				assert.Equal(t, "Bearer fixture", request.Headers["Authorization"])
+				assert.Equal(t, "task-grok", request.Headers["Idempotency-Key"])
+				assert.True(t, request.NoRetry)
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
+	t.Run("Grok协议输入映射到原生图片参考", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, protocol string
+			body           map[string]any
+			want           string
+		}{
+			{
+				name: "Responses文本图片", protocol: "openai_responses",
+				body: map[string]any{"duration": 8, "resolution": "1080p", "ratio": "4:3", "input": []any{map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "input_text", "text": "ocean"},
+					map[string]any{"type": "input_image", "image_url": "https://cdn.example/ref.jpg"},
+				}}}},
+				want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":8,"size":"1080p","aspect_ratio":"4:3","reference_images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`,
+			},
+			{
+				name: "Canvas参考图", protocol: "openai_video",
+				body: map[string]any{"prompt": "ocean", "seconds": "5", "metadata": map[string]any{"resolution": "1080p", "ratio": "3:4", "content": []any{
+					map[string]any{"type": "text", "text": "ocean"},
+					map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.jpg"}},
+				}}},
+				want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":5,"size":"1080p","aspect_ratio":"3:4","reference_images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`,
+			},
+			{
+				name: "Canvas首帧", protocol: "openai_video",
+				body: map[string]any{"metadata": map[string]any{"resolution": "720p", "ratio": "16:9", "content": []any{
+					map[string]any{"type": "text", "text": "ocean"},
+					map[string]any{"type": "image_url", "role": "first_frame", "image_url": map[string]any{"url": "https://cdn.example/first.jpg"}},
+				}}},
+				want: `{"model":"grok-v1.5-video","prompt":"ocean","seconds":6,"size":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/first.jpg","role":"first_frame"}]}`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{tc.protocol, "decodeRequest"}, map[string]any{
+					"model": "moon-grok-alias", "upstreamModel": grokModel, "body": map[string]any{"kind": "json", "value": tc.body},
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var decoded struct {
+					Model       string         `json:"model"`
+					Action      string         `json:"action"`
+					RequestBody map[string]any `json:"requestBody"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &decoded))
+				assert.Equal(t, "moon-grok-alias", decoded.Model)
+				assert.Equal(t, "reference_to_video", decoded.Action)
+				assert.NotContains(t, decoded.RequestBody, "metadata")
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"upstreamModel": grokModel, "baseUrl": "https://moon.example/v1", "apiKey": "fixture",
+					"publicTaskId": "task-grok", "requestBody": decoded.RequestBody,
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr = common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					Body map[string]any `json:"body"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
+	t.Run("Grok按次结算并等待真实成片", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, hook string
+			args       []any
+			want       string
+		}{
+			{name: "默认请求只预留一次", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"video_count":1}`},
+			{name: "高分辨率长视频仍为一次", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 15, "size": "1080p"}}}, want: `{"video_count":1}`},
+			{name: "成功无需Token用量", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"status": "completed", "url": "https://cdn.example/done.mp4"}}, want: `{"video_count":1}`},
+			{name: "失败不发布结算事实", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "FAILURE"}, map[string]any{"status": "failed"}}, want: `null`},
+			{name: "顶层原链接完成", hook: "parseTaskResult", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "completed", "url": "https://cdn.example/done.mp4"}}, want: `{"status":"SUCCESS","progress":"100%","url":"https://cdn.example/done.mp4"}`},
+			{name: "元数据原链接完成", hook: "parseTaskResult", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "completed", "metadata": map[string]any{"url": "https://cdn.example/done.mp4"}}}, want: `{"status":"SUCCESS","progress":"100%","url":"https://cdn.example/done.mp4"}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.Call(t.Context(), tc.hook, tc.args...)
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+		for _, body := range []map[string]any{
+			{"status": "completed"},
+			{"status": "completed", "url": "javascript:invalid"},
+			{"status": "submitting_unknown", "url": "https://cdn.example/not-settled.mp4"},
+			{"status": "commit_pending", "url": "https://cdn.example/not-settled.mp4"},
+			{"status": "refund_pending"},
+		} {
+			value, callErr := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"upstreamModel": grokModel}, body)
+			require.NoError(t, callErr)
+			encoded, encodeErr := common.Marshal(value)
+			require.NoError(t, encodeErr)
+			var result map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &result))
+			assert.Equal(t, "IN_PROGRESS", result["status"], "%s", encoded)
+			assert.NotContains(t, result, "url")
+		}
+	})
+	t.Run("Grok参考图数量边界", func(t *testing.T) {
+		for _, count := range []int{7, 8} {
+			images := make([]any, count)
+			for i := range images {
+				images[i] = map[string]any{"url": "https://cdn.example/ref.jpg"}
+			}
+			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": grokModel, "body": map[string]any{"kind": "json", "value": map[string]any{"prompt": "ocean", "reference_images": images}},
+			})
+			if count == 7 {
+				require.NoError(t, callErr)
+			} else {
+				require.Error(t, callErr)
+			}
+		}
+	})
+	t.Run("Grok拒绝越界及未支持素材", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			fields map[string]any
+		}{
+			{name: "不支持自动时长", fields: map[string]any{"duration": -1}},
+			{name: "超短时长", fields: map[string]any{"duration": 3}},
+			{name: "超长时长", fields: map[string]any{"duration": 16}},
+			{name: "小数时长", fields: map[string]any{"duration": 4.5}},
+			{name: "空时长", fields: map[string]any{"seconds": nil}},
+			{name: "布尔时长", fields: map[string]any{"seconds": true}},
+			{name: "冲突时长", fields: map[string]any{"seconds": 4, "duration": 5}},
+			{name: "错误分辨率", fields: map[string]any{"resolution": "480p"}},
+			{name: "分辨率不能接受精确尺寸", fields: map[string]any{"resolution": "1280x720"}},
+			{name: "分辨率别名冲突", fields: map[string]any{"resolution": "720p", "size": "1080p"}},
+			{name: "尺寸比例冲突", fields: map[string]any{"size": "1280x720", "ratio": "1:1"}},
+			{name: "未声明尺寸", fields: map[string]any{"size": "1024x1024"}},
+			{name: "未知比例", fields: map[string]any{"ratio": "21:9"}},
+			{name: "比例别名冲突", fields: map[string]any{"ratio": "1:1", "aspect_ratio": "16:9"}},
+			{name: "空提示", fields: map[string]any{"prompt": " "}},
+			{name: "超长提示", fields: map[string]any{"prompt": strings.Repeat("a", 32001)}},
+			{name: "未知参数", fields: map[string]any{"generate_audio": true}},
+			{name: "视频参考", fields: map[string]any{"reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4"}}}},
+			{name: "音频参考", fields: map[string]any{"reference_audios": []any{map[string]any{"url": "https://cdn.example/ref.mp3"}}}},
+			{name: "空参考图片", fields: map[string]any{"reference_images": []any{}}},
+			{name: "图片上传文件", fields: map[string]any{"reference_images": []any{map[string]any{"file_id": "file-fixture"}}}},
+			{name: "图片内联数据", fields: map[string]any{"input_reference": "data:image/png;base64,aW1hZ2U="}},
+			{name: "图片对象未知字段", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "strength": 1}}}},
+			{name: "首帧最多一张", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/a.jpg", "role": "first_frame"}, map[string]any{"url": "https://cdn.example/b.jpg", "role": "first_frame"}}}},
+			{name: "首帧不能混用参考图", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/a.jpg", "role": "first_frame"}, map[string]any{"url": "https://cdn.example/b.jpg", "role": "reference_image"}}}},
+			{name: "不支持尾帧", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "role": "last_frame"}}}},
+			{name: "图片入口互斥", fields: map[string]any{"input_reference": "https://cdn.example/a.jpg", "reference_images": []any{map[string]any{"url": "https://cdn.example/b.jpg"}}}},
+			{name: "Canvas尾帧", fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "image_url", "role": "last_frame", "image_url": map[string]any{"url": "https://cdn.example/ref.jpg"}}}}}},
+			{name: "Canvas视频", fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "video_url", "role": "reference_video", "video_url": map[string]any{"url": "https://cdn.example/ref.mp4"}}}}}},
+			{name: "Canvas音频", fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "https://cdn.example/ref.mp3"}}}}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				body := map[string]any{"prompt": "ocean"}
+				for key, value := range tc.fields {
+					body[key] = value
+				}
+				_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": grokModel, "body": map[string]any{"kind": "json", "value": body},
+				})
+				require.Error(t, callErr)
+			})
+		}
+	})
+	t.Run("各模型新增参考输入规范化并保持计费", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, model string
+			body        map[string]any
+			want, usage string
+		}{
+			{
+				name: "Seedance字符串图片别名", model: "seedance-2-0-mini-official",
+				body:  map[string]any{"prompt": "ocean", "image_urls": []any{"https://cdn.example/ref.jpg"}},
+				want:  `{"model":"seedance-2-0-mini-official","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9","images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`,
+				usage: `{"tokens":108000,"resolution":"720p","video_input":"none"}`,
+			},
+			{
+				name: "Seedance对象图片别名", model: "seedance-2-0-fast-official",
+				body: map[string]any{"prompt": "ocean", "image_urls": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "role": "reference_image"}}},
+				want: `{"model":"seedance-2-0-fast-official","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9","images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`,
+			},
+			{
+				name: "Wan文档与普通参考图", model: "wan3.0-video",
+				body: map[string]any{"prompt": "ocean", "duration": 5, "input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf"}}},
+					"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg"}}},
+				want:  `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","input":{"media":[{"type":"file","url":"https://cdn.example/story.pdf"}]},"reference_images":[{"url":"https://cdn.example/ref.jpg"}]}`,
+				usage: `{"seconds":5,"resolution":"720P"}`,
+			},
+			{
+				name: "Wan网页参考", model: "wan3.0-video-prime",
+				body: map[string]any{"prompt": "ocean", "duration": 5, "input": map[string]any{"media": []any{map[string]any{"type": "link", "url": "https://example.com/story"}}}},
+				want: `{"model":"wan3.0-video-prime","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","input":{"media":[{"type":"link","url":"https://example.com/story"}]}}`,
+			},
+			{
+				name: "Wan单独尾帧保留既有行为", model: "wan3.0-video",
+				body: map[string]any{"prompt": "ocean", "duration": 5, "reference_images": []any{map[string]any{"url": "https://cdn.example/last.jpg", "role": "last_frame"}}},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/last.jpg","role":"last_frame"}]}`,
+			},
+			{
+				name: "WanCanvas分离文档与计费素材", model: "wan3.0-video",
+				body: map[string]any{"prompt": "ocean", "duration": 5, "metadata": map[string]any{
+					"reference_video_durations": []any{3}, "input": map[string]any{"media": []any{
+						map[string]any{"type": "link", "url": "https://example.com/story"},
+						map[string]any{"type": "reference_image", "url": "https://cdn.example/ref.jpg"},
+						map[string]any{"type": "reference_video", "url": "https://cdn.example/ref.mp4"},
+					}}}},
+				want:  `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","input":{"media":[{"type":"link","url":"https://example.com/story"}]},"reference_images":[{"url":"https://cdn.example/ref.jpg"}],"reference_videos":[{"url":"https://cdn.example/ref.mp4","duration":3}]}`,
+				usage: `{"seconds":8,"resolution":"720P"}`,
+			},
+			{
+				name: "H3量化允许480p", model: "minimax-h3",
+				body:  map[string]any{"prompt": "ocean", "seconds": 10, "workflow_id": "lh-multi-reference", "size": "864x480", "images": []any{"https://cdn.example/ref.jpg"}},
+				want:  `{"model":"minimax-h3","prompt":"ocean","seconds":10,"workflow_id":"lh-multi-reference","size":"864x480","images":["https://cdn.example/ref.jpg"]}`,
+				usage: `{"seconds":10,"resolution":"480p"}`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": tc.model, "body": map[string]any{"kind": "json", "value": tc.body},
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var decoded struct {
+					Action      string         `json:"action"`
+					RequestBody map[string]any `json:"requestBody"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &decoded))
+				assert.Equal(t, "reference_to_video", decoded.Action)
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"upstreamModel": tc.model, "baseUrl": "https://moon.example/v1", "apiKey": "fixture",
+					"publicTaskId": "task-references", "requestBody": decoded.RequestBody,
+				})
+				require.NoError(t, callErr)
+				encoded, encodeErr = common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					Body map[string]any `json:"body"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+				if tc.usage != "" {
+					value, callErr = plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+						"upstreamModel": tc.model, "usagePurpose": "facts", "requestBody": decoded.RequestBody,
+					})
+					require.NoError(t, callErr)
+					encoded, encodeErr = common.Marshal(value)
+					require.NoError(t, encodeErr)
+					assert.JSONEq(t, tc.usage, string(encoded))
+				}
+			})
+		}
+	})
+	t.Run("Wan文档额外于十二个图片音视频素材", func(t *testing.T) {
+		images := make([]any, 10)
+		for i := range images {
+			images[i] = map[string]any{"url": "https://cdn.example/ref.jpg"}
+		}
+		_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+			"model": "wan3.0-video", "body": map[string]any{"kind": "json", "value": map[string]any{
+				"prompt": "ocean", "input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf"}}},
+				"reference_images": images, "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3}},
+				"reference_audios": []any{map[string]any{"url": "https://cdn.example/ref.mp3"}},
+			}},
+		})
+		require.NoError(t, callErr)
+	})
+	t.Run("新增别名和参考模式不绕过模型限制", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, model string
+			fields      map[string]any
+		}{
+			{name: "Seedance图片字段互斥", model: "seedance-2-0-official", fields: map[string]any{"images": []any{map[string]any{"url": "https://cdn.example/a.jpg", "role": "reference_image"}}, "image_urls": []any{"https://cdn.example/b.jpg"}}},
+			{name: "Seedance别名与content互斥", model: "seedance-2-0-official", fields: map[string]any{"prompt": nil, "content": []any{map[string]any{"type": "text", "text": "ocean"}}, "image_urls": []any{"https://cdn.example/ref.jpg"}}},
+			{name: "Seedance别名禁止内联图片", model: "seedance-2-0-official", fields: map[string]any{"image_urls": []any{"data:image/png;base64,aW1hZ2U="}}},
+			{name: "Seedance别名禁止文件ID", model: "seedance-2-0-official", fields: map[string]any{"image_urls": []any{map[string]any{"file_id": "file-fixture"}}}},
+			{name: "Seedance别名禁止未知字段", model: "seedance-2-0-official", fields: map[string]any{"image_urls": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "strength": 1}}}},
+			{name: "Wan文档与网页互斥", model: "wan3.0-video", fields: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf"}, map[string]any{"type": "link", "url": "https://example.com/story"}}}}},
+			{name: "Wan未知文档类型", model: "wan3.0-video", fields: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "document", "url": "https://cdn.example/story.pdf"}}}}},
+			{name: "Wan文档禁止内联数据", model: "wan3.0-video", fields: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "data:application/pdf;base64,cGRm"}}}}},
+			{name: "Wan文档禁止未知字段", model: "wan3.0-video", fields: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf", "file_id": "file-fixture"}}}}},
+			{name: "Wan首帧不可混普通参考图", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/first.jpg", "role": "first_frame"}, map[string]any{"url": "https://cdn.example/ref.jpg"}}}},
+			{name: "Wan首帧不可混参考音频", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/first.jpg", "role": "first_frame"}}, "reference_audios": []any{map[string]any{"url": "https://cdn.example/ref.mp3"}}}},
+			{name: "Wan首帧不可混参考视频", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/first.jpg", "role": "first_frame"}}, "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3}}}},
+			{name: "Wan首帧不可混文档", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/first.jpg", "role": "first_frame"}}, "input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf"}}}}},
+			{name: "Wan首帧不能重复", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/a.jpg", "role": "first_frame"}, map[string]any{"url": "https://cdn.example/b.jpg", "role": "first_frame"}}}},
+			{name: "Wan尾帧不能重复", model: "wan3.0-video", fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/a.jpg", "role": "last_frame"}, map[string]any{"url": "https://cdn.example/b.jpg", "role": "last_frame"}}}},
+			{name: "WanCanvas首帧与网页互斥", model: "wan3.0-video", fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "first_frame", "url": "https://cdn.example/first.jpg"}, map[string]any{"type": "link", "url": "https://example.com/story"}}}}}},
+			{name: "H3量化拒绝1080p", model: "minimax-h3", fields: map[string]any{"seconds": 6, "workflow_id": "lh-multi-reference", "size": "1920x1088", "images": []any{"https://cdn.example/ref.jpg"}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				body := map[string]any{"prompt": "ocean"}
+				for key, value := range tc.fields {
+					body[key] = value
+				}
+				if body["prompt"] == nil {
+					delete(body, "prompt")
+				}
+				_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": tc.model, "body": map[string]any{"kind": "json", "value": body},
+				})
+				require.Error(t, callErr)
+			})
+		}
+	})
+	t.Run("Seedance图片别名计入九图与总素材上限", func(t *testing.T) {
+		for _, count := range []int{9, 10} {
+			images := make([]any, count)
+			for i := range images {
+				images[i] = "https://cdn.example/ref.jpg"
+			}
+			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": "seedance-2-0-official", "body": map[string]any{"kind": "json", "value": map[string]any{
+					"prompt": "ocean", "image_urls": images,
+					"videos": []any{map[string]any{"url": "https://cdn.example/one.mp4", "role": "reference_video"}, map[string]any{"url": "https://cdn.example/two.mp4", "role": "reference_video"}, map[string]any{"url": "https://cdn.example/three.mp4", "role": "reference_video"}},
+					"audios": []any{map[string]any{"url": "https://cdn.example/one.mp3", "role": "reference_audio"}, map[string]any{"url": "https://cdn.example/two.mp3", "role": "reference_audio"}, map[string]any{"url": "https://cdn.example/three.mp3", "role": "reference_audio"}},
+				}},
+			})
+			if count == 9 {
+				require.NoError(t, callErr)
+			} else {
+				require.Error(t, callErr)
+			}
 		}
 	})
 }

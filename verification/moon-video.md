@@ -170,3 +170,46 @@ Canvas 配套在 `G:\multimodal-canvas` 完成：全量 lint/typecheck/test/buil
 - 实际浏览器使用本地构建及 43919 端口模拟接口：Moon 新建、编辑、失败、空目录保留原选择，H3/Grok 静态列表，已保存 Moon 的行菜单入口与来源/待适配提示均已验证。初次编辑夹具缺少 `channel_info` 导致错误，补全后编辑正常，当前 `browser-report.json` 无页面异常或非预期请求。未使用真实供应商密钥。
 
 交付目标为中文提交、annotated Tag `v1.0.0-rc.37.custom.8`，仅推送 `fork/main` 与该标签，结果在最终交接中核验。正式环境需升级宿主及内置插件后才能看到新按钮；此轮没有生产部署或真实付费生成，真实账号目录权限仍需独立验证。
+
+## 2026-09-19 最新视频文档适配
+
+本轮 P1，基线 `main@0e4680ad4`，Go `1.26.0`、Node `24.12.0`，沿用既有依赖。主工作区另有未提交的画布账务改动，因此在隔离分支 `codex/moon-docs-update` 实现和验证；交付仅包含 Moon 插件、集中测试、免费报价脚本和本检查点。基线 `go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin -count=1 -timeout=180s` 通过。
+
+依据为 [Moon 视频文档](https://moon.sixai.cc/video-api-docs.html)、其 `reference-limits`、`grok-create` 段落及公开 `h3-catalog.json`；页面资源版本为 `20260919-grok5`。主代理负责实现、HTTP 验收与交付；子代理负责集中回归和免费报价脚本，均继承主代理模型及推理强度。独立文档复核代理因服务限流未完成的部分由主代理接管。
+
+Moon 升级至 **1.3.0**：
+
+- 新增精确模型 `grok-v1.5-video`，支持 4–15 秒、720p/1080p、最多 7 张参考图或单张首帧。校验时长/清晰度/比例别名冲突及精确尺寸，不接收音视频、尾帧或上传文件。标准视频、Responses 文本/图片和 Canvas 元数据均映射为相同上游合同。目录获取可选择此模型，其他 Grok 插件和模型 ID 不变。
+- Grok 独立使用 `video_count=1` 的 count 用量，管理员在“视频生成单价”配置每次价格；时长、图片数、分辨率和供应商积分不增加计费倍数。不写入新的美元价格，不改既有价格。成功但缺少合法成片 URL 时继续等待；明确失败走宿主退款。保留唯一幂等键与 `noRetry`。
+- Seedance 接受 `image_urls` 的 URL 字符串数组或与 `images` 相同的图片对象数组，统一转为已公开的 `images:[{url,role:"reference_image"}]` 后提交；不依赖供应商对别名元素类型的隐含处理。与 `images`/`content` 互斥，沿用 9 图、3 视频、3 音频、合计 15 及实际 tokens 结算。
+- Wan 接入 `input.media:[{type:"file"|"link",url:"https://..."}]` 文档/网页，最多一个，额外于图片音视频合计 12 的限制；Canvas 元数据中的对应素材也能映射。首尾帧不能与普通图片、音视频、文档/网页混用，同一帧角色不能重复。没有借用其他渠道规则禁止原有单独尾帧请求。
+- H3 `lh-multi-reference` 按文档“最高 768p”接收 480p/768p 的已公布精确尺寸，保留最多 4 图、10 秒和禁止参考音视频限制。
+
+Wan 页面明确 `input.media` 和 `file/link`，但未给完整 JSON 示例；本实现沿用既有 Wan/Canvas 的 `type + url` 素材结构。Wan 文档/网页和 H3 480p 的供应商真实受理仍待验证，模拟测试不证明供应商最终行为。已下线的 `seedance2.5-30-10-10` 未加入模型声明。
+
+这是插件请求与用量合同扩展，没有数据库、宿主插件 API、依赖或前端代码变更；已有 Wan/Seedance/H3 模型和价格保留。回滚前先等待新版插件创建的在途任务完成，再还原插件版本，保留任务、日志、价格和渠道数据。本轮仅修改 New API，不修改画布项目，不部署生产、不执行真实付费生成。
+
+### 免费报价
+
+`verification/moon-quote.ps1` 直接访问 Moon 的 `POST /v1/video/quote`。任务插件 API v1 没有无任务报价透传入口，因此不注册会进入预扣和任务持久化的伪生成路由。脚本默认只检查本地请求文件，加 `-Quote` 才报价；从 `MOON_API_KEY` 或隐藏输入读取密钥，禁用重定向，不自动重试，不调用视频生成。报价与生成权限、成功出片验收不同，报价也不锁定后续价格。
+
+```powershell
+pwsh -File ./verification/moon-quote.ps1 -RequestPath ./request.json
+pwsh -File ./verification/moon-quote.ps1 -RequestPath ./request.json -Quote
+```
+
+`request.json` 使用 Moon 原生请求体，例如 `{"model":"grok-v1.5-video","prompt":"A calm ocean at sunset","seconds":6,"size":"720p"}`，不要把密钥写入文件。返回的是 Moon 账号报价，不会覆盖 New API 的管理员售价。
+
+### 检查点
+
+- [x] 复现文档差异，完成 Moon 1.3.0 插件与集中回归，独立代码复核未发现阻断问题。
+- [x] `go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin ./relay -count=1 -timeout=180s` 通过。
+- [x] 全仓 `go test -mod=readonly ./... -count=1 -timeout=240s` 中 43 个测试包通过；唯一失败是既有 `grok-video` multipart 数组依赖 Go map 顺序的偶发断言。未改相关代码，`go test -mod=readonly ./plugins -count=1` 重跑通过。原始失败与重跑日志均保留，不把初次全仓命令写为通过。
+- [x] `go vet -mod=readonly ./...`、Linux/amd64 `CGO_ENABLED=0 go build -mod=readonly`、Moon oxlint/oxfmt、`go run -mod=readonly . plugin lint plugins/tasks/moon/plugin.js` 通过。没有前端或 relaykit 修改，未重复前端构建或独立模块检查。
+- [x] 禁网容器真实网关 + 模拟供应商 **48/48** 通过：提交、轮询、制品下载、按次预留、实际 tokens、完成门槛、失败退款、别名和各系列参考输入。最终用户余额、令牌余额与每笔日志合计扣除 **2500000 quota** 一致。首轮沿用旧固定等待导致 2 项超时，改为按状态等待并在夹具渠道关闭逐任务延迟后通过，未改生产轮询行为。
+- [x] 免费报价脚本 PowerShell 解析及帮助检查通过；本地 HTTP/TLS 夹具 **26/26** 通过，共 11 次模拟报价，无生成请求、失败重发或密钥输出。覆盖预览零请求、根地址及 /v1、重定向/401/500、无效与超大响应、无效证书、输入边界、脱敏与 JSON 数组保留，见 `quote-test.log`。
+- [x] 最终差异、元信息双语文案、凭据与文件归属检查完成；交付为中文提交与 annotated Tag `v1.0.0-rc.37.custom.9`，仅推送 `fork/main` 和该标签，提交及远端结果在最终交接中核验。
+
+本轮隔离证据位于工作树的 `.local-tests/moon-latest/`：`report.json`、`app.log`、`first-http-report.json`、`go-test.log`、`plugin-rerun.log`、`go-vet.log`；均不纳入 Git。没有写入或使用真实供应商凭据。
+
+报价脚本凭据处理参考 [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html) 和 ASVS 5.0.0 的 12.1.1、12.2.1、12.3.2、14.2.1、16.2.5：远程仅 HTTPS，TLS 1.2/1.3，保留系统证书验证，密钥仅放 Bearer 头、内存使用，错误不回显供应商正文，成功响应脱敏。HTTP 只供本机夹具；脚本不建立 Cookie 会话、不改宿主登录认证。验证仅覆盖脚本控制范围，不表示已审计供应商认证或整站 ASVS 合规。
