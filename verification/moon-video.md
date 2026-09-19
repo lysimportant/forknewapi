@@ -213,3 +213,28 @@ pwsh -File ./verification/moon-quote.ps1 -RequestPath ./request.json -Quote
 本轮隔离证据位于工作树的 `.local-tests/moon-latest/`：`report.json`、`app.log`、`first-http-report.json`、`go-test.log`、`plugin-rerun.log`、`go-vet.log`；均不纳入 Git。没有写入或使用真实供应商凭据。
 
 报价脚本凭据处理参考 [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html) 和 ASVS 5.0.0 的 12.1.1、12.2.1、12.3.2、14.2.1、16.2.5：远程仅 HTTPS，TLS 1.2/1.3，保留系统证书验证，密钥仅放 Bearer 头、内存使用，错误不回显供应商正文，成功响应脱敏。HTTP 只供本机夹具；脚本不建立 Cookie 会话、不改宿主登录认证。验证仅覆盖脚本控制范围，不表示已审计供应商认证或整站 ASVS 合规。
+
+## 2026-09-19 Grok 下游按秒定价
+
+本轮 P1，基线 `4cd429a4c`，继续使用干净的隔离工作区，主工作区其他改动不纳入提交。Go `1.26.0`、Node `24.12.0`、锁文件及依赖不变；基线 Moon 集中测试通过。用户要求上游仍按次收费，同时允许 New API 对下游按秒定价。
+
+Moon **1.3.1** 增加 Grok `seconds` 用量并保留 `video_count=1`。按秒计量的是**请求中确认的生成时长**（4–15 秒，省略时 6 秒），不是下载成片后测量的实际时长。解码会将 `seconds/duration` 及整数字符串统一为数值 `seconds`，提交到 Moon 的参数保持一致。
+
+次数和秒数都是供管理员选择的用量事实，上游成本不强制下游计费方式。现有按次表达式、固定价及价格设置不改写。完成时只覆盖次数，秒数和价格沿用提交时冻结的快照；不会采纳 Moon 的积分或未经确认的 `billing.seconds`，也不会给旧任务补造默认秒数。
+
+升级宿主内置 Moon 或安装 1.3.1 后，在“模型定价”选择 `grok-v1.5-video`，进入“计费表达式”，配置 `seconds` 对应的每秒单价；只按秒收费时，将次数单价和固定费用设为 0。也可直接填写如下表达式（示例价格，**未写入实际配置**）：
+
+```text
+tier("base", u("seconds") * 0.02)
+```
+
+原始表达式价格以 USD 为单位，因此示例的 6 秒基础费用为 0.12 美元，再应用站内分组倍率。使用界面币种输入时沿用现有换算逻辑。旧按次定价如 `tier("base", u("video_count") * 0.2)` 仍有效；同时给两个用量设非零单价则会叠加收费。
+
+影响仅为 Moon 用量声明、解码和集中测试，无数据库或宿主 API 迁移，无前端代码变化。回滚前先处理完引用 `seconds` 的在途任务，并将相关价格改回旧版支持的表达式，再恢复插件版本；不删除旧任务、价格或用户数据。
+
+- [x] 插件用量、解码规范化与版本更新；集中测试覆盖 4/6/15 秒、旧按次价、旧快照缺秒数、上游异常账单不覆盖、冻结预扣/结算一致。
+- [x] `go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin ./service -count=1 -timeout=180s`、同包 `go vet`、Linux/amd64 无 CGO 构建、Moon oxlint/oxfmt、插件 CLI lint 通过。
+- [x] 真实网关禁网模拟验收 **55/55** 通过，包含同一 Moon 模型的按次渠道别名、按秒售价、提交后调价不改变在途任务、异常上游秒数忽略及失败退款；用户、令牌余额和日志合计 **2690000 quota** 一致。
+- [x] 本轮证据在隔离工作区 `.local-tests/moon-seconds/`。初次夹具在注册模型别名前保存了该别名价格，宿主正确拒绝；调整为先注册渠道和别名后通过，未改生产校验。
+
+主代理完成实现及验收；子代理分派消息未正确到达，相关测试由主代理接管。没有修改实际售价、部署生产或调用真实付费生成。交付使用中文提交及 annotated Tag `v1.0.0-rc.37.custom.10`，仅推送 `fork/main`，远端结果在最终交接中核验。

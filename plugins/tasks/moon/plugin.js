@@ -132,11 +132,16 @@ const H3_FIELDS = [
 /** Grok 仅接收文生视频或 URL 图片参考，其他素材和未知参数不得透传。 */
 const GROK_FIELDS = ["model", "prompt", "seconds", "duration", "size", "resolution", "aspect_ratio", "ratio", "reference_images", "input_reference"];
 
-/** Grok 每次只生成一个视频，时长、分辨率和上游积分不作为额外计费倍数。 */
+/** Grok 提供次数和请求秒数供管理员独立定价；Moon 的按次成本不决定下游售价。 */
 const GROK_USAGE_SCHEMA = {
   video_count: {
     type: "number",
     unit: "count",
+    description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  seconds: {
+    type: "number",
+    unit: "second",
     description: { en: "Video generation unit price", zh: "视频生成单价" },
   },
 };
@@ -217,7 +222,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, ArtsDance, MiniMax H3, and Grok models",
     zh: "Moon Wan、Seedance、ArtsDance、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.3.0",
+  version: "1.3.1",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -625,7 +630,7 @@ function validateH3Request(req, model) {
   };
 }
 
-/** 校验 Moon Grok 图片、别名和尺寸组合；返回规范参数，计费始终为一次生成。 */
+/** 校验 Moon Grok 图片、别名和尺寸组合，返回有界的请求时长等规范参数。 */
 function validateGrokRequest(req, model) {
   validateTopLevelFields(req, GROK_FIELDS, false);
   if (typeof req.prompt !== "string" || !req.prompt.trim() || req.prompt.length > 32000) throw new Error("Moon Grok prompt must contain 1 to 32000 characters");
@@ -650,7 +655,7 @@ function validateGrokRequest(req, model) {
         throw new Error("Moon Grok first_frame requires exactly one image and cannot be combined with other references");
     }
   }
-  return { duration, resolution, ratio, hasReference: req.input_reference !== undefined || req.reference_images !== undefined };
+  return { duration, resolution, ratio, grok: true, hasReference: req.input_reference !== undefined || req.reference_images !== undefined };
 }
 
 /** 按模型系列选择独立请求合同。 */
@@ -890,6 +895,10 @@ function normalizeDecodedRequest(request, facts) {
     delete request.seconds;
   }
   if (facts.h3) request.seconds = facts.duration;
+  if (facts.grok) {
+    request.seconds = facts.duration;
+    delete request.duration;
+  }
   return request;
 }
 
@@ -1112,7 +1121,7 @@ export function extractUsage(ctx) {
   if (!MODELS.includes(model)) throw new Error("unsupported Moon model");
   if (ctx.usagePurpose === "billing_ratios") return null;
   const facts = validateKnownFields(request, model, true);
-  if (isGrok(model)) return { video_count: 1 };
+  if (isGrok(model)) return { video_count: 1, seconds: facts.duration };
   if (isWan(model)) return { seconds: facts.duration + facts.referenceVideoSeconds, resolution: facts.resolution };
   if (isH3(model)) return { seconds: facts.duration, resolution: facts.resolution };
   return { tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount), resolution: facts.resolution, video_input: facts.videoInput };
@@ -1133,7 +1142,7 @@ function actualH3Usage(body) {
   return Object.keys(facts).length ? facts : null;
 }
 
-/** Seedance 以真实 tokens 覆盖预留；H3 仅采纳有界事实，Wan 保留已验证的请求秒数。 */
+/** Seedance 使用实际 tokens，H3 采纳有界事实；Wan/Grok 请求秒数保留于提交快照，不从积分或未确认字段推测。 */
 export function extractUsageOnComplete(task, result, body) {
   if (!result || result.status !== "SUCCESS" || !body || typeof body !== "object") return null;
   const source = taskPayload(body);
