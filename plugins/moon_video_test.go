@@ -21,6 +21,31 @@ func TestMoonVideoContracts(t *testing.T) {
 	const tokenModel = "doubao-seedance-2-0-mini-260615"
 	const fastModel = "doubao-seedance-2-0-fast-260128"
 	const wanModel = "wan3.0-video"
+	t.Run("Moon与官方H3精确ID独立路由", func(t *testing.T) {
+		h3Source, sourceErr := plugins.Source("hailuo")
+		require.NoError(t, sourceErr)
+		h3Registry := jsplugin.NewRegistry()
+		_, registerErr := h3Registry.RegisterFactory(h3Source, jsplugin.Options{})
+		require.NoError(t, registerErr)
+		canonical, found := h3Registry.Generation().CanonicalModel("MINIMAX-H3")
+		require.True(t, found)
+		assert.Equal(t, "MiniMax-H3", canonical)
+		_, registerErr = h3Registry.RegisterFactory(source, jsplugin.Options{})
+		require.NoError(t, registerErr)
+		for _, spec := range []struct{ model, plugin string }{{"minimax-h3", "moon"}, {"MiniMax-H3", "hailuo"}} {
+			canonical, found = h3Registry.Generation().CanonicalModel(spec.model)
+			require.True(t, found)
+			assert.Equal(t, spec.model, canonical)
+			for _, path := range []string{"/v1/videos", "/v1/responses"} {
+				candidates := h3Registry.Generation().LookupEndpointCandidates("POST", path, canonical)
+				require.Len(t, candidates, 1)
+				assert.Equal(t, spec.plugin, candidates[0].Plugin.Meta.Key)
+			}
+		}
+		canonical, found = h3Registry.Generation().CanonicalModel("MINIMAX-H3")
+		assert.False(t, found)
+		assert.Empty(t, canonical)
+	})
 	for _, spec := range []struct{ model, other string }{{wanModel, "alibaba"}, {tokenModel, "doubao"}} {
 		otherSource, sourceErr := plugins.Source(spec.other)
 		require.NoError(t, sourceErr)
@@ -50,6 +75,9 @@ func TestMoonVideoContracts(t *testing.T) {
 		{name: "实际零Token不回退预估", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": tokenModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"total_tokens": 0}}}, want: `{"tokens":0}`},
 		{name: "实际Token覆盖估算", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": tokenModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"total_tokens": 100000}}}, want: `{"tokens":100000}`},
 		{name: "Wan不套用其他供应商用量字段", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": wanModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"input_video_duration": 20, "output_video_duration": 5}}}, want: `null`},
+		{name: "Wan输出及参考视频共同计秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": wanModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 5, "resolution": "720p", "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3.5}}}}}, want: `{"seconds":8.5,"resolution":"720P"}`},
+		{name: "H3正方形按照公布尺寸计费", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": "minimax-h3", "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "seconds": 5, "workflow_id": "text-to-video", "size": "1024x1024"}}}, want: `{"seconds":5,"resolution":"768p"}`},
+		{name: "H3实际秒数与分辨率结算", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": "minimax-h3"}, map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"seconds": 6, "resolution": "768p", "charged_credits": 1.08}}}, want: `{"seconds":6,"resolution":"768p"}`},
 		{name: "CDN下载不带渠道密钥", hook: "buildContentRequest", args: []any{map[string]any{"artifactKey": "video", "baseUrl": "https://moon.example/v1", "apiKey": "fixture", "upstreamTaskId": "private", "clientRequest": map[string]any{"method": "HEAD"}, "data": map[string]any{"status": "completed", "data": []any{map[string]any{"url": "https://cdn.example/video.mp4"}}}}}, want: `{"url":"https://cdn.example/video.mp4","method":"HEAD","credentialless":true}`},
 		{name: "缺直链时走原任务内容接口", hook: "buildContentRequest", args: []any{map[string]any{"artifactKey": "video", "baseUrl": "https://moon.example", "apiKey": "fixture", "upstreamTaskId": "task/a", "clientRequest": map[string]any{"method": "GET"}, "data": map[string]any{}}}, want: `{"url":"https://moon.example/v1/videos/task%2Fa/content","method":"GET","headers":{"Authorization":"Bearer fixture"}}`},
 		{name: "进行中没有可下载制品", hook: "listArtifacts", args: []any{map[string]any{"status": "IN_PROGRESS"}}, want: `[]`},
@@ -69,12 +97,13 @@ func TestMoonVideoContracts(t *testing.T) {
 			assert.JSONEq(t, tc.want, string(encoded))
 		})
 	}
-	t.Run("Canvas纯文元数据解码为Moon顶层合同", func(t *testing.T) {
+	t.Run("Canvas元数据解码为Moon顶层合同", func(t *testing.T) {
 		for _, tc := range []struct {
-			name  string
-			model string
-			body  map[string]any
-			want  string
+			name   string
+			model  string
+			body   map[string]any
+			want   string
+			action string
 		}{
 			{
 				name:  "Wan空媒体",
@@ -83,7 +112,7 @@ func TestMoonVideoContracts(t *testing.T) {
 					"model": wanModel, "prompt": "ocean", "duration": 5, "seconds": "5", "resolution": "720P", "ratio": "16:9",
 					"metadata": map[string]any{"input": map[string]any{"media": []any{}}},
 				},
-				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9"}`,
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9"}`,
 			},
 			{
 				name:  "Seedance Fast文本",
@@ -103,6 +132,48 @@ func TestMoonVideoContracts(t *testing.T) {
 				},
 				want: `{"model":"doubao-seedance-2-0-mini-260615","content":[{"type":"text","text":"ocean"}],"duration":5,"resolution":"720p","ratio":"16:9"}`,
 			},
+			{
+				name: "Wan首尾帧", model: wanModel, action: "reference_to_video",
+				body: map[string]any{"model": wanModel, "prompt": "ocean", "duration": 5, "seconds": "5", "resolution": "720P", "ratio": "16:9",
+					"metadata": map[string]any{"input": map[string]any{"media": []any{
+						map[string]any{"type": "first_frame", "url": "https://cdn.example/first.jpg"},
+						map[string]any{"type": "last_frame", "url": "https://cdn.example/last.jpg"},
+					}}}},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/first.jpg","role":"first_frame"},{"url":"https://cdn.example/last.jpg","role":"last_frame"}]}`,
+			},
+			{
+				name: "Wan参考时长附加元数据", model: wanModel, action: "reference_to_video",
+				body: map[string]any{"model": wanModel, "prompt": "ocean", "duration": 5,
+					"metadata": map[string]any{"reference_video_durations": []any{3.5, 4}, "input": map[string]any{"media": []any{
+						map[string]any{"type": "reference_video", "url": "https://cdn.example/one.mp4"},
+						map[string]any{"type": "reference_image", "url": "https://cdn.example/ref.jpg"},
+						map[string]any{"type": "reference_video", "url": "https://cdn.example/two.mp4"},
+					}}}},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/ref.jpg"}],"reference_videos":[{"url":"https://cdn.example/one.mp4","duration":3.5},{"url":"https://cdn.example/two.mp4","duration":4}]}`,
+			},
+			{
+				name: "Seedance全能参考", model: "seedance-2-0-official", action: "reference_to_video",
+				body: map[string]any{"model": "seedance-2-0-official", "prompt": "ocean", "seconds": "5", "metadata": map[string]any{
+					"resolution": "1080p", "ratio": "adaptive", "omni_reference_task_type": "reference",
+					"content": []any{
+						map[string]any{"type": "text", "text": "ocean"},
+						map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.jpg"}},
+						map[string]any{"type": "video_url", "role": "reference_video", "video_url": map[string]any{"url": "https://cdn.example/ref.mp4"}},
+						map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "https://cdn.example/ref.mp3"}},
+					}}},
+				want: `{"model":"seedance-2-0-official","duration":5,"resolution":"1080p","ratio":"adaptive","omni_reference_task_type":"auto","content":[{"type":"text","text":"ocean"},{"type":"image_url","role":"reference_image","image_url":{"url":"https://cdn.example/ref.jpg"}},{"type":"video_url","role":"reference_video","video_url":{"url":"https://cdn.example/ref.mp4"}},{"type":"audio_url","role":"reference_audio","audio_url":{"url":"https://cdn.example/ref.mp3"}}]}`,
+			},
+			{
+				name: "H3全能参考", model: "minimax-h3", action: "reference_to_video",
+				body: map[string]any{"model": "minimax-h3", "prompt": "ocean", "duration": 5, "seconds": "5", "metadata": map[string]any{
+					"resolution": "768P", "ratio": "16:9", "content": []any{
+						map[string]any{"type": "text", "text": "ocean"},
+						map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.jpg"}},
+						map[string]any{"type": "video_url", "role": "reference_video", "video_url": map[string]any{"url": "https://cdn.example/ref.mp4"}},
+						map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "https://cdn.example/ref.mp3"}},
+					}}},
+				want: `{"model":"minimax-h3","prompt":"ocean","seconds":5,"workflow_id":"multi-reference","size":"1376x768","images":["https://cdn.example/ref.jpg"],"reference_videos":["https://cdn.example/ref.mp4"],"reference_audios":["https://cdn.example/ref.mp3"]}`,
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
@@ -117,13 +188,106 @@ func TestMoonVideoContracts(t *testing.T) {
 					RequestBody map[string]any `json:"requestBody"`
 				}
 				require.NoError(t, common.Unmarshal(encoded, &decoded))
-				assert.Equal(t, "text_to_video", decoded.Action)
+				action := tc.action
+				if action == "" {
+					action = "text_to_video"
+				}
+				assert.Equal(t, action, decoded.Action)
 				assert.NotContains(t, decoded.RequestBody, "metadata")
 
 				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
 					"baseUrl": "https://moon.example/v1", "apiKey": "fixture", "publicTaskId": "task_unique",
 					"upstreamModel": tc.model, "requestBody": decoded.RequestBody,
 				})
+				require.NoError(t, callErr)
+				encoded, encodeErr = common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					Body map[string]any `json:"body"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
+	t.Run("Moon原生参考模式保留已确认字段", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, model string
+			body        map[string]any
+			want        string
+		}{
+			{
+				name: "Wan上传文件与URL", model: wanModel,
+				body: map[string]any{"prompt": "ocean", "duration": 5, "resolution": "720p", "prompt_extend": false,
+					"reference_images": []any{map[string]any{"file_id": "file-fixture"}},
+					"reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3.5}},
+					"reference_audios": []any{map[string]any{"url": "https://cdn.example/ref.mp3"}}},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","prompt_extend":false,"reference_images":[{"file_id":"file-fixture"}],"reference_videos":[{"url":"https://cdn.example/ref.mp4","duration":3.5}],"reference_audios":[{"url":"https://cdn.example/ref.mp3"}]}`,
+			},
+			{
+				name: "Seedance视频编辑", model: "seedance-2-0-fast-official",
+				body: map[string]any{"prompt": "ocean", "duration": -1, "ratio": "adaptive", "omni_reference_task_type": "edit",
+					"videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "role": "reference_video"}}},
+				want: `{"model":"seedance-2-0-fast-official","prompt":"ocean","duration":-1,"resolution":"720p","ratio":"adaptive","omni_reference_task_type":"edit","videos":[{"url":"https://cdn.example/ref.mp4","role":"reference_video"}]}`,
+			},
+			{
+				name: "H3首尾帧超分", model: "minimax-h3",
+				body: map[string]any{"prompt": "ocean", "seconds": 6, "workflow_id": "cf-fl2v", "size": "2K", "aspect_ratio": "16:9", "mode": "first_last_frame", "prompt_enhance": false,
+					"images": []any{"https://cdn.example/first.jpg", "https://cdn.example/last.jpg"}},
+				want: `{"model":"minimax-h3","prompt":"ocean","seconds":6,"workflow_id":"cf-fl2v","size":"2K","aspect_ratio":"16:9","mode":"first_last_frame","prompt_enhance":false,"images":["https://cdn.example/first.jpg","https://cdn.example/last.jpg"]}`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"upstreamModel": tc.model, "baseUrl": "https://moon.example/v1", "apiKey": "fixture", "publicTaskId": "task-reference", "requestBody": tc.body})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var request struct {
+					Body    map[string]any `json:"body"`
+					NoRetry bool           `json:"noRetry"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &request))
+				assert.True(t, request.NoRetry)
+				encoded, encodeErr = common.Marshal(request.Body)
+				require.NoError(t, encodeErr)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
+	t.Run("Responses图片参考按模型转换", func(t *testing.T) {
+		for _, tc := range []struct {
+			model  string
+			fields map[string]any
+			want   string
+		}{
+			{model: wanModel, fields: map[string]any{"duration": 5, "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3}}},
+				want: `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","reference_images":[{"url":"https://cdn.example/ref.jpg"}],"reference_videos":[{"url":"https://cdn.example/ref.mp4","duration":3}]}`},
+			{model: "seedance-2-0-official", fields: map[string]any{"duration": 5},
+				want: `{"model":"seedance-2-0-official","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9","images":[{"url":"https://cdn.example/ref.jpg","role":"reference_image"}]}`},
+			{model: "minimax-h3", fields: map[string]any{"seconds": 5, "workflow_id": "multi-reference", "size": "1024x1024"},
+				want: `{"model":"minimax-h3","prompt":"ocean","seconds":5,"workflow_id":"multi-reference","size":"1024x1024","images":["https://cdn.example/ref.jpg"]}`},
+		} {
+			t.Run(tc.model, func(t *testing.T) {
+				body := map[string]any{"model": tc.model, "input": []any{map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "input_text", "text": "ocean"},
+					map[string]any{"type": "input_image", "image_url": "https://cdn.example/ref.jpg"},
+				}}}}
+				for key, value := range tc.fields {
+					body[key] = value
+				}
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "decodeRequest"}, map[string]any{"model": tc.model, "body": map[string]any{"kind": "json", "value": body}})
+				require.NoError(t, callErr)
+				encoded, encodeErr := common.Marshal(value)
+				require.NoError(t, encodeErr)
+				var decoded struct {
+					Action      string         `json:"action"`
+					RequestBody map[string]any `json:"requestBody"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &decoded))
+				assert.Equal(t, "reference_to_video", decoded.Action)
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"upstreamModel": tc.model, "requestBody": decoded.RequestBody, "baseUrl": "https://moon.example/v1", "apiKey": "fixture", "publicTaskId": "task-responses"})
 				require.NoError(t, callErr)
 				encoded, encodeErr = common.Marshal(value)
 				require.NoError(t, encodeErr)
@@ -232,10 +396,11 @@ func TestMoonVideoContracts(t *testing.T) {
 		{name: "布尔参数字符串", model: tokenModel, fields: map[string]any{"generate_audio": "false"}},
 		{name: "无限分辨率", model: tokenModel, fields: map[string]any{"resolution": "4k"}},
 		{name: "元数据绕过", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"duration": 100000}}},
-		{name: "Wan非空元数据媒体", model: wanModel, fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "reference_image", "url": "https://cdn.example/ref.png"}}}}}},
+		{name: "Wan参考视频缺少时长", model: wanModel, fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "reference_video", "url": "https://cdn.example/ref.mp4"}}}}}},
+		{name: "Wan参考视频附加时长数量不符", model: wanModel, fields: map[string]any{"metadata": map[string]any{"reference_video_durations": []any{3, 4}, "input": map[string]any{"media": []any{map[string]any{"type": "reference_video", "url": "https://cdn.example/ref.mp4"}}}}}},
 		{name: "Wan元数据未知字段", model: wanModel, fields: map[string]any{"metadata": map[string]any{"input": map[string]any{"media": []any{}, "negative_prompt": "blur"}}}},
-		{name: "Seedance元数据参考输入", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.png"}}}, "resolution": "720p", "ratio": "16:9"}}},
-		{name: "Seedance元数据模式字段", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9", "omni_reference_task_type": "auto"}}},
+		{name: "Seedance元数据Base64素材", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}, map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "data:image/png;base64,aW1hZ2U="}}}, "resolution": "720p", "ratio": "16:9"}}},
+		{name: "Seedance元数据未知模式", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9", "omni_reference_task_type": "invalid"}}},
 		{name: "Seedance提示冲突", model: tokenModel, fields: map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "desert"}}, "resolution": "720p", "ratio": "16:9"}}},
 		{name: "Seedance分辨率冲突", model: tokenModel, fields: map[string]any{"resolution": "480p", "metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"}}},
 		{name: "Seedance比例同义字段冲突", model: tokenModel, fields: map[string]any{"aspect_ratio": "9:16", "metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "ocean"}}, "resolution": "720p", "ratio": "16:9"}}},
@@ -247,6 +412,14 @@ func TestMoonVideoContracts(t *testing.T) {
 		{name: "Wan未验证参考输入", model: wanModel, fields: map[string]any{"images": []any{map[string]any{"url": "https://cdn.example/ref.png", "role": "reference_image"}}}},
 		{name: "Wan不能自动时长", model: wanModel, fields: map[string]any{"duration": -1}},
 		{name: "Wan未知参数", model: wanModel, fields: map[string]any{"generate_audio": false}},
+		{name: "Wan参考视频总时长越界", model: wanModel, fields: map[string]any{"reference_videos": []any{map[string]any{"url": "https://cdn.example/one.mp4", "duration": 8}, map[string]any{"url": "https://cdn.example/two.mp4", "duration": 8}}}},
+		{name: "Wan引用地址与文件互斥", model: wanModel, fields: map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "file_id": "file-fixture"}}}},
+		{name: "H3量化不能参考视频", model: "minimax-h3", fields: map[string]any{"workflow_id": "lh-multi-reference", "size": "1376x768", "seconds": 6, "images": []any{"https://cdn.example/ref.jpg"}, "reference_video": "https://cdn.example/ref.mp4"}},
+		{name: "H3量化时长越界", model: "minimax-h3", fields: map[string]any{"workflow_id": "lh-multi-reference", "size": "1376x768", "seconds": 11, "images": []any{"https://cdn.example/ref.jpg"}}},
+		{name: "H3超分缺少比例", model: "minimax-h3", fields: map[string]any{"workflow_id": "cf-multi-reference", "size": "4K", "seconds": 6, "images": []any{"https://cdn.example/ref.jpg"}}},
+		{name: "H3首尾帧超数量", model: "minimax-h3", fields: map[string]any{"workflow_id": "fl2v", "size": "1376x768", "seconds": 6, "images": []any{"https://cdn.example/one.jpg", "https://cdn.example/two.jpg", "https://cdn.example/three.jpg"}}},
+		{name: "H3单复数视频字段互斥", model: "minimax-h3", fields: map[string]any{"workflow_id": "multi-reference", "size": "1376x768", "seconds": 6, "reference_video": "https://cdn.example/one.mp4", "reference_videos": []any{"https://cdn.example/two.mp4"}}},
+		{name: "H3不能借官方ID路由", model: "MiniMax-H3", fields: map[string]any{"workflow_id": "text-to-video", "size": "1376x768", "seconds": 6}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := map[string]any{"model": tc.model, "prompt": "ocean"}

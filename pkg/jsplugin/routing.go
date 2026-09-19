@@ -431,9 +431,8 @@ func (g *RoutingGeneration) SharedModel(model string) bool {
 	return g != nil && len(g.modelPlugins[model]) >= 2
 }
 
-// CanonicalModel returns the declared spelling for model. An exact byModel
-// hit wins and returns the input unchanged; otherwise the ASCII-folded
-// index is consulted. Miss and nil-receiver return ("", false).
+// CanonicalModel 优先返回精确声明的模型；仅在大小写折叠后没有歧义时纠正拼写。
+// 不同插件声明仅大小写不同的 ID 时保留各自身份，其他大小写写法返回 ("", false)。
 func (g *RoutingGeneration) CanonicalModel(model string) (string, bool) {
 	if g == nil || model == "" {
 		return "", false
@@ -442,7 +441,7 @@ func (g *RoutingGeneration) CanonicalModel(model string) (string, bool) {
 		return model, true
 	}
 	declared, ok := g.canonicalModelByFold[asciiFold(model)]
-	return declared, ok
+	return declared, ok && declared != ""
 }
 
 // LookupDeclaredRoute resolves a manifest path declaration. It does not match
@@ -892,11 +891,8 @@ func buildRoutingGenerationFromPlugins(effective map[string]*LoadedPlugin, numbe
 			folded := asciiFold(model)
 			if existing, exists := generation.canonicalModelByFold[folded]; exists {
 				if existing != model {
-					otherKey := plugin.Meta.Key
-					if other, ok := generation.byModel[existing]; ok {
-						otherKey = other.Meta.Key
-					}
-					return nil, fmt.Errorf("plugin %s model %q conflicts with plugin %s model %q", plugin.Meta.Key, model, otherKey, existing)
+					// 精确 ID 独立路由；空值标记歧义，后续同名声明不能恢复折叠匹配。
+					generation.canonicalModelByFold[folded] = ""
 				}
 				continue
 			}
