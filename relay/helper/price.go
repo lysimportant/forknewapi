@@ -356,6 +356,11 @@ func resolveBillingModelName(origin string) string {
 	return matched
 }
 
+// ResolveBillingModelName 返回普通中继实际使用的计费模型名；只解析已配置别名和推理后缀，不修改配置。
+func ResolveBillingModelName(origin string) string {
+	return resolveBillingModelName(origin)
+}
+
 func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billingModelName string, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo hosttypes.GroupRatioInfo) (hosttypes.PriceData, error) {
 	exprStr, ok := billing_setting.GetBillingExpr(billingModelName)
 	if !ok {

@@ -180,10 +180,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Only return quota if downstream failed and quota was actually pre-consumed
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			if common.CanvasBridgeEnabled() {
+				// 先记录独立费用屏障，再启动异步退款，避免已退款回执与随后扣费竞态。
+				service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			}
 			if relayInfo.Billing != nil {
 				relayInfo.Billing.Refund(c)
 			}
-			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			if !common.CanvasBridgeEnabled() {
+				service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			}
 		}
 	}()
 
@@ -774,6 +780,12 @@ func executeTaskSubmissionWith(
 		}
 	}
 	diagnostics.insertStart(task)
+	if receiptErr := service.PrepareCanvasTaskReceipt(relayInfo); receiptErr != nil {
+		common.SysError("initialize task receipt error: " + receiptErr.Error())
+		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to initialize task billing receipt"), "task_billing_receipt_failed", http.StatusInternalServerError)
+		diagnostics.failed("insert", "database_error", taskErr, false)
+		return nil, taskErr
+	}
 	if insertErr := task.InsertWithContext(c.Request.Context()); insertErr != nil {
 		common.SysError("insert task error: " + insertErr.Error())
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
@@ -790,6 +802,9 @@ func executeTaskSubmissionWith(
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to settle task billing"), "task_billing_settlement_failed", http.StatusInternalServerError)
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
+	}
+	if result.Immediate != nil {
+		service.FinalizeCanvasImmediateTaskReceipt(c, relayInfo, task)
 	}
 	service.LogTaskConsumption(c, relayInfo, task)
 	diagnostics.complete(task, result.Quota)

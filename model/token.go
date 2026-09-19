@@ -387,7 +387,7 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 			}
 		})
 	}
-	if common.BatchUpdateEnabled {
+	if common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeTokenQuota, tokenId, quota)
 		return nil
 	}
@@ -395,14 +395,17 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 }
 
 func increaseTokenQuota(id int, quota int) (err error) {
-	err = DB.Model(&Token{}).Where("id = ?", id).Updates(
+	result := DB.Model(&Token{}).Where("id = ?", id).Updates(
 		map[string]any{
 			"remain_quota":  gorm.Expr("remain_quota + ?", quota),
 			"used_quota":    gorm.Expr("used_quota - ?", quota),
 			"accessed_time": common.GetTimestamp(),
 		},
-	).Error
-	return err
+	)
+	if result.Error == nil && result.RowsAffected == 0 && common.CanvasBridgeEnabled() && quota > 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return result.Error
 }
 
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
@@ -416,7 +419,7 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 			}
 		})
 	}
-	if common.BatchUpdateEnabled {
+	if common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, -quota)
 		return nil
 	}
@@ -424,14 +427,17 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 }
 
 func decreaseTokenQuota(id int, quota int) (err error) {
-	err = DB.Model(&Token{}).Where("id = ?", id).Updates(
+	result := DB.Model(&Token{}).Where("id = ?", id).Updates(
 		map[string]any{
 			"remain_quota":  gorm.Expr("remain_quota - ?", quota),
 			"used_quota":    gorm.Expr("used_quota + ?", quota),
 			"accessed_time": common.GetTimestamp(),
 		},
-	).Error
-	return err
+	)
+	if result.Error == nil && result.RowsAffected == 0 && common.CanvasBridgeEnabled() && quota > 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return result.Error
 }
 
 // CountUserTokens returns total number of tokens for the given user, used for pagination

@@ -122,6 +122,8 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		return false
 	}
 
+	// 违规费独立于主请求结算；主请求退款不能作为最终净消费为零的回执。
+	MarkCanvasReceiptUnverified(relayInfo)
 	if err := PostConsumeQuota(relayInfo, feeQuota, 0, true); err != nil {
 		logger.LogError(ctx, fmt.Sprintf("failed to charge violation fee: %s", err.Error()))
 		return false

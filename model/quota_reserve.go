@@ -103,10 +103,10 @@ func cacheApplyTokenQuotaDelta(id int, key string, delta int64) (cacheQuotaResul
 	return quotaResultFromLua(result, err)
 }
 
-// persistUserQuotaDelta 把已在缓存侧预扣成功的增量落库；批量模式下入队，
+// persistUserQuotaDelta 把已在缓存侧预扣成功的增量落库；桥接关闭时批量模式可入队，
 // 直写模式下要求行存在（用户已删除时报错，交由调用方补偿缓存）。
 func persistUserQuotaDelta(id int, delta int) error {
-	if common.BatchUpdateEnabled {
+	if common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeUserQuota, id, delta)
 		return nil
 	}
@@ -120,8 +120,9 @@ func persistUserQuotaDelta(id int, delta int) error {
 	return nil
 }
 
+// persistTokenQuotaDelta 写入缓存预扣的令牌增量；桥接模式要求同步成功才能签发回执。
 func persistTokenQuotaDelta(id int, delta int) error {
-	if common.BatchUpdateEnabled {
+	if common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, delta)
 		return nil
 	}

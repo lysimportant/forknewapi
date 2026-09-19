@@ -116,14 +116,14 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 }
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
-// 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取）。
-func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
+// 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取），失败返回错误供回执判定。
+func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) error {
 	if task.PrivateData.TokenId <= 0 || delta == 0 {
-		return
+		return nil
 	}
 	tokenKey := resolveTokenKey(ctx, task.PrivateData.TokenId, task.TaskID)
 	if tokenKey == "" {
-		return
+		return fmt.Errorf("task token is unavailable")
 	}
 	var err error
 	if delta > 0 {
@@ -134,6 +134,7 @@ func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
 	if err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("调整令牌额度失败 (delta=%d, task=%s): %s", delta, task.TaskID, err.Error()))
 	}
+	return err
 }
 
 // taskBillingOther 从 task 的 BillingContext 构建日志 Other 字段。
@@ -214,19 +215,24 @@ func taskModelName(task *model.Task) string {
 // 当异步任务失败时，退还资金与令牌额度，并回减用户和渠道用量。
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
+	if !beginCanvasTaskReceipt(ctx, task) {
+		return false
+	}
 	quota := task.Quota
 	if quota == 0 {
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptRefunded, 0, true)
 		return true
 	}
 
 	// 1. 退还资金来源（钱包或订阅）
 	if err := taskAdjustFunding(task, -quota); err != nil {
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptRefunded, 0, false)
 		logger.LogWarn(ctx, fmt.Sprintf("退还资金来源失败 task %s: %s", task.TaskID, err.Error()))
 		return false
 	}
 
 	// 2. 退还令牌额度
-	taskAdjustTokenQuota(ctx, task, -quota)
+	tokenErr := taskAdjustTokenQuota(ctx, task, -quota)
 
 	// 3. 回减预扣时累计的用户和渠道用量，请求次数保持不变
 	model.UpdateUserUsedQuota(task.UserId, -quota)
@@ -251,9 +257,11 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	// 5. 资金退款完成后再清除持久化标记。
 	// 回写失败必须显式告警，避免漏掉潜在的重复退款风险。
 	task.Quota = 0
-	if err := task.UpdateQuota(); err != nil {
-		logger.LogError(ctx, fmt.Sprintf("退款成功但清除 task quota 失败 task %s: %s", task.TaskID, err.Error()))
+	updateErr := task.UpdateQuota()
+	if updateErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("退款成功但清除 task quota 失败 task %s: %s", task.TaskID, updateErr.Error()))
 	}
+	finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptRefunded, 0, tokenErr == nil && updateErr == nil)
 	return true
 }
 
@@ -262,7 +270,11 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+	if !beginCanvasTaskReceipt(ctx, task) {
+		return
+	}
 	if actualQuota < 0 {
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, actualQuota, false)
 		return
 	}
 	preConsumedQuota := task.Quota
@@ -271,6 +283,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",
 			task.TaskID, logger.LogQuota(actualQuota), reason))
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, actualQuota, true)
 		return
 	}
 
@@ -284,17 +297,20 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 
 	// 调整资金来源
 	if err := taskAdjustFunding(task, quotaDelta); err != nil {
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, actualQuota, false)
 		logger.LogError(ctx, fmt.Sprintf("差额结算资金调整失败 task %s: %s", task.TaskID, err.Error()))
 		return
 	}
 
 	// 调整令牌额度
-	taskAdjustTokenQuota(ctx, task, quotaDelta)
+	tokenErr := taskAdjustTokenQuota(ctx, task, quotaDelta)
 
 	task.Quota = actualQuota
-	if err := task.UpdateQuota(); err != nil {
-		logger.LogError(ctx, fmt.Sprintf("差额结算回写 quota 失败 task %s: %s", task.TaskID, err.Error()))
+	updateErr := task.UpdateQuota()
+	if updateErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("差额结算回写 quota 失败 task %s: %s", task.TaskID, updateErr.Error()))
 	}
+	finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, actualQuota, tokenErr == nil && updateErr == nil)
 
 	// 提交阶段已经累计过一次请求；结算阶段只调整最终用量。
 	model.UpdateUserUsedQuota(task.UserId, quotaDelta)

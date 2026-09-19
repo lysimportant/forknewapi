@@ -1320,7 +1320,7 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	if err := common.ValidateWalletQuota(quota); err != nil {
 		return err
 	}
-	if !db && common.BatchUpdateEnabled {
+	if !db && common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
 		gopool.Go(func() {
 			if err := cacheIncrUserQuota(id, int64(quota)); err != nil {
@@ -1370,7 +1370,7 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 			common.SysLog("failed to decrease user quota: " + err.Error())
 		}
 	})
-	if !db && common.BatchUpdateEnabled {
+	if !db && common.BatchUpdateEnabled && !common.CanvasBridgeEnabled() {
 		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
 		return nil
 	}
@@ -1378,11 +1378,11 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 }
 
 func decreaseUserQuota(id int, quota int) (err error) {
-	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota - ?", quota)).Error
-	if err != nil {
-		return err
+	result := DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota - ?", quota))
+	if result.Error == nil && result.RowsAffected == 0 && common.CanvasBridgeEnabled() && quota > 0 {
+		return gorm.ErrRecordNotFound
 	}
-	return err
+	return result.Error
 }
 
 func DeltaUpdateUserQuota(id int, delta int) (err error) {

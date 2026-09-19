@@ -94,6 +94,17 @@ func TestGrokVideoContracts(t *testing.T) {
 			require.NoError(t, callErr)
 			encoded, encodeErr := common.Marshal(result)
 			require.NoError(t, encodeErr)
+			if descriptor, ok := result.(map[string]any); ok && descriptor["bodyType"] == "multipart" {
+				var expected, actual map[string]any
+				require.NoError(t, common.UnmarshalJsonStr(test.want, &expected))
+				require.NoError(t, common.Unmarshal(encoded, &actual))
+				// 唯一命名字段来自 Go map，multipart 合同不要求这些字段的排列顺序。
+				assert.ElementsMatch(t, expected["parts"], actual["parts"])
+				delete(expected, "parts")
+				delete(actual, "parts")
+				assert.Equal(t, expected, actual)
+				return
+			}
 			assert.JSONEq(t, test.want, string(encoded))
 		})
 	}

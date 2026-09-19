@@ -82,6 +82,9 @@ func sweepTimedOutTasks(ctx context.Context) {
 	timedOutCount := 0
 
 	for _, task := range tasks {
+		if !canvasTaskSubmissionReady(ctx, task) {
+			continue
+		}
 		isLegacy := task.SubmitTime > 0 && task.SubmitTime < model.TaskRefundLegacyCutoff
 
 		oldStatus := task.Status
@@ -107,7 +110,7 @@ func sweepTimedOutTasks(ctx context.Context) {
 			continue
 		}
 		timedOutCount++
-		if !isLegacy && task.Quota != 0 {
+		if !isLegacy && (task.Quota != 0 || common.CanvasBridgeEnabled()) {
 			RefundTaskQuota(ctx, task, reason)
 		}
 	}
@@ -325,6 +328,9 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 			}
 			continue
 		}
+		if (parsedStatus == model.TaskStatusSuccess || parsedStatus == model.TaskStatusFailure || responseItem.TaskInfo.Reason != "") && !canvasTaskSubmissionReady(ctx, task) {
+			continue
+		}
 		if isNonTerminalPollStatus(parsedStatus) {
 			task.PrivateData.PollFailures = 0
 		}
@@ -372,7 +378,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		}
 		if terminalTransition {
 			billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, &responseItem.TaskInfo)
-			if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
+			if task.Status == model.TaskStatusFailure && !billingSettled && (task.Quota != 0 || common.CanvasBridgeEnabled()) {
 				RefundTaskQuota(ctx, task, task.FailReason)
 			}
 		}
@@ -539,6 +545,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if classifyPollHTTP(resp.StatusCode) == pollClassOtherClient && isNonTerminalPollStatus(parsedStatus) {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassUnrecognized, resp.StatusCode, unrecognizedPollDetail(taskResult.Reason, responseBody))
 	}
+	if (parsedStatus == model.TaskStatusSuccess || parsedStatus == model.TaskStatusFailure) && !canvasTaskSubmissionReady(ctx, task) {
+		return nil
+	}
 
 	task.Data = redactVideoResponseBody(responseBody)
 	if len(taskResult.PluginState) > 0 {
@@ -615,7 +624,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 
 	if shouldFinalizeBilling {
 		billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
-		if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
+		if task.Status == model.TaskStatusFailure && !billingSettled && (task.Quota != 0 || common.CanvasBridgeEnabled()) {
 			RefundTaskQuota(ctx, task, task.FailReason)
 		}
 	}
@@ -671,6 +680,7 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		result, usageFacts, err := EvaluateTaskCompletionUsage(bc.TieredSnapshot, taskResult.UsageFacts)
 		if err != nil {
 			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 表达式结算失败，保留预扣额度: %v", task.TaskID, err))
+			finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, task.Quota, false)
 			return true
 		}
 		if result.Clamp != nil {
@@ -684,6 +694,9 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 	// 按次计费的成功任务保持预扣；失败任务由调用方全额退款。
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
+		if task.Status == model.TaskStatusSuccess && beginCanvasTaskReceipt(ctx, task) {
+			finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, task.Quota, true)
+		}
 		return false
 	}
 	// 优先让 adaptor 决定最终额度。
@@ -697,7 +710,12 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 		tokens = taskResult.CompletionTokens
 	}
 	if tokens > 0 {
-		return RecalculateTaskQuotaByTokens(ctx, task, tokens)
+		if RecalculateTaskQuotaByTokens(ctx, task, tokens) {
+			return true
+		}
+	}
+	if task.Status == model.TaskStatusSuccess && beginCanvasTaskReceipt(ctx, task) {
+		finishCanvasTaskReceipt(ctx, task, model.CanvasReceiptSettled, task.Quota, true)
 	}
 	return false
 }
@@ -795,6 +813,9 @@ func recordPollFailureForTasks(ctx context.Context, adaptor TaskPollingAdaptor, 
 }
 
 func failTaskFromPoll(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, fromStatus model.TaskStatus, reason string) error {
+	if !canvasTaskSubmissionReady(ctx, task) {
+		return nil
+	}
 	now := time.Now().Unix()
 	task.Status = model.TaskStatusFailure
 	task.Progress = taskcommon.ProgressComplete
@@ -811,7 +832,7 @@ func failTaskFromPoll(ctx context.Context, adaptor TaskPollingAdaptor, task *mod
 	}
 	taskResult := relaycommon.FailTaskInfo(reason)
 	billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
-	if !billingSettled && task.Quota != 0 {
+	if !billingSettled && (task.Quota != 0 || common.CanvasBridgeEnabled()) {
 		RefundTaskQuota(ctx, task, reason)
 	}
 	return nil
