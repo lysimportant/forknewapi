@@ -20,7 +20,11 @@ import { describe, expect, test } from 'vitest'
 
 import type { AuthUser } from '@/stores/auth-store'
 
-import { getSavedLanguage, sanitizeAuthRedirect } from './auth-redirect'
+import {
+  getSavedLanguage,
+  isServerAuthRedirect,
+  sanitizeAuthRedirect,
+} from './auth-redirect'
 
 const origin = 'https://dashboard.example.com'
 
@@ -57,6 +61,19 @@ describe('authentication redirect validation', () => {
   test('rejects invalid or non-HTTP application origins', () => {
     expect(sanitizeAuthRedirect('/dashboard', 'not-an-origin')).toBe(null)
     expect(sanitizeAuthRedirect('/dashboard', 'file:///tmp/app')).toBe(null)
+  })
+
+  test('requires a document navigation only for the exact Canvas authorization path', () => {
+    expect(
+      isServerAuthRedirect(
+        '/api/canvas/authorize?client_id=canvas&state=opaque',
+        origin
+      )
+    ).toBe(true)
+    expect(isServerAuthRedirect('/api/canvas/authorize-extra', origin)).toBe(
+      false
+    )
+    expect(isServerAuthRedirect('/dashboard', origin)).toBe(false)
   })
 })
 

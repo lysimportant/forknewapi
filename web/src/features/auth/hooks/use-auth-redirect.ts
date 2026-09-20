@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import {
   getSavedLanguage,
+  isServerAuthRedirect,
   sanitizeAuthRedirect,
 } from '@/features/auth/lib/auth-redirect'
 import { applyAuthBundle, isAuthBundle } from '@/lib/api'
@@ -65,6 +66,11 @@ export function useAuthRedirect() {
 
       const targetPath =
         sanitizeAuthRedirect(redirectTo, window.location.origin) ?? '/dashboard'
+      // Canvas 授权页由 Go 服务端签发一次性请求，不能交给 SPA 路由。
+      if (isServerAuthRedirect(targetPath, window.location.origin)) {
+        window.location.replace(targetPath)
+        return
+      }
       await navigate({ href: targetPath, replace: true })
     },
     [navigate, sessionID]

@@ -59,6 +59,12 @@ func SetApiRouter(router *gin.Engine) {
 		// Standard OAuth providers (GitHub, Discord, OIDC, LinuxDO, Telegram) - unified route
 		apiRouter.GET("/oauth/:provider", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.TryUserAuth(), controller.HandleOAuth)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
+		apiRouter.GET("/canvas/authorize", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetCanvasAuthorize)
+		apiRouter.POST("/canvas/authorize", middleware.SessionCookieOriginGuard(), middleware.UserAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasAuthorize)
+		apiRouter.POST("/canvas/token", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasToken)
+		apiRouter.GET("/canvas/account", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetCanvasAccount)
+		apiRouter.PUT("/canvas/groups/:group", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PutCanvasManagedGroup)
+		apiRouter.POST("/canvas/revoke", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasRevoke)
 
 		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)
 		apiRouter.POST("/creem/webhook", anonymousRequestBodyLimit, controller.CreemWebhook)

@@ -78,3 +78,21 @@ export function sanitizeAuthRedirect(
 
   return `${redirectURL.pathname}${redirectURL.search}${redirectURL.hash}`
 }
+
+/**
+ * 判断登录回跳是否需要重新请求服务端文档。
+ *
+ * @param value 待验证的回跳地址。
+ * @param origin 当前应用来源。
+ * @returns 仅当目标是同源 Canvas 授权页时返回 `true`。
+ */
+export function isServerAuthRedirect(value: string, origin: string): boolean {
+  const redirect = sanitizeAuthRedirect(value, origin)
+  if (!redirect) return false
+
+  try {
+    return new URL(redirect, origin).pathname === '/api/canvas/authorize'
+  } catch {
+    return false
+  }
+}

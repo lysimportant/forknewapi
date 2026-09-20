@@ -30,8 +30,12 @@ const (
 	AuthFlowPurposeTwoFASetup        = "2fa_setup"
 	AuthFlowPurposeSecurityProof     = "security_proof"
 	AuthFlowPurposeEmailBinding      = "email_binding"
-	AuthFlowTokenBytes               = 32
-	AuthFlowDefaultCleanupRetention  = 24 * time.Hour
+	// AuthFlowPurposeCanvasAuthorize 保存尚未由登录用户批准的 Canvas 授权请求。
+	AuthFlowPurposeCanvasAuthorize = "canvas_authorize"
+	// AuthFlowPurposeCanvasCode 保存五分钟内只能兑换一次的 Canvas 授权码。
+	AuthFlowPurposeCanvasCode       = "canvas_code"
+	AuthFlowTokenBytes              = 32
+	AuthFlowDefaultCleanupRetention = 24 * time.Hour
 )
 
 var (
@@ -142,6 +146,17 @@ func authFlowTokenHash(token string) string {
 
 func CreateAuthFlow(input AuthFlowCreate) (string, *AuthFlow, error) {
 	return createAuthFlowWithTx(DB, input)
+}
+
+// CreateAuthFlowWithTx 在调用方事务内创建一次性认证流程。
+//
+// input 必须包含非空 Purpose 和未来的 ExpiresAt；返回的原始 token 仅交给调用方一次，
+// 数据库只保存用途隔离的 HMAC。事务回滚时流程与调用方状态一并回滚。
+func CreateAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow, error) {
+	if tx == nil {
+		return "", nil, ErrAuthFlowInvalid
+	}
+	return createAuthFlowWithTx(tx, input)
 }
 
 func createAuthFlowWithTx(tx *gorm.DB, input AuthFlowCreate) (string, *AuthFlow, error) {

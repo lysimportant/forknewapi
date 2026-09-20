@@ -174,3 +174,218 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 - Redis 限流从近似滑动窗口改为原子固定窗口，存在明确的边界双倍突发语义。
 - 用户级模型成功请求限流的 UTC 时间戳在滚动升级期间存在一个窗口的混合格式过渡，期间可能临时误放行或误拒绝。
 - 自建客户端应按新的 AuthBundle、`flow_token` 和 Security Proof 契约升级；PAT 客户端可直接移除 `New-Api-User`。
+
+## Canvas 账号接入合同
+
+Canvas 账号接入让一个固定 Canvas 实例通过 New API 浏览器登录取得受限授权，并为当前用户的可用分组创建或恢复专用 Token。该接口不接收 New API 密码，也不能读取或管理用户的其他 Token。
+
+### 部署配置
+
+账号接入默认关闭。启用时必须同时配置以下变量：
+
+```env
+CANVAS_ACCOUNT_ENABLED=true
+CANVAS_ACCOUNT_ISSUER=https://api.example.com
+CANVAS_ACCOUNT_CLIENT_ID=canvas
+CANVAS_ACCOUNT_INSTANCE_ID=main
+CANVAS_ACCOUNT_REDIRECT_URI=https://canvas.example.com/v1/auth/newapi/callback
+CANVAS_ACCOUNT_CLIENT_SECRET=
+CANVAS_BRIDGE_ENABLED=true
+```
+
+- `CANVAS_ACCOUNT_ISSUER` 是 New API 的规范化来源，只允许无用户信息、查询和片段的绝对 URL，路径必须为空。issuer 和回调均要求 HTTPS，只有 localhost 或回环 IP 允许 HTTP 本地验收。
+- `CANVAS_ACCOUNT_CLIENT_ID` 最长 64 字节，`CANVAS_ACCOUNT_INSTANCE_ID` 最长 128 字节。服务端只接受与部署值完全相同的客户端和实例。
+- `CANVAS_ACCOUNT_REDIRECT_URI` 是唯一允许的精确回调地址，不支持通配符。
+- `CANVAS_ACCOUNT_CLIENT_SECRET` 为空时使用公开 PKCE 客户端；配置后，兑换授权码必须提供精确 secret。该值不能写入日志或前端。
+- 生产环境应使用 HTTPS，并按现有会话文档配置 `SESSION_SECRET`、Secure Refresh Cookie 和可信 Origin。
+
+固定 scope 为 `identity:read`、`groups:read` 和 `tokens:manage`。授权码有效五分钟、只能消费一次且只接受 S256 PKCE；grant 有效三十天。重新授权沿用 grant ID、轮换 grant Bearer，并使旧 Bearer 立即失效。
+
+### 浏览器授权
+
+Canvas 生成 PKCE verifier、challenge 和一次性 `state`，然后打开：
+
+```http
+GET /api/canvas/authorize
+  ?client_id=canvas
+  &instance_id=main
+  &redirect_uri=https%3A%2F%2Fcanvas.example.com%2Fv1%2Fauth%2Fnewapi%2Fcallback
+  &state=<opaque-state>
+  &code_challenge=<base64url-sha256>
+  &code_challenge_method=S256
+```
+
+New API 返回禁止缓存、禁止嵌入且带 nonce CSP 的授权页。页面通过 HttpOnly Refresh Cookie 恢复现有浏览器会话，Access Token 只保存在页面内存中；用户必须显式点击授权。批准请求为：
+
+```http
+POST /api/canvas/authorize
+Authorization: Bearer <browser-access-token>
+Content-Type: application/json
+
+{"request_token":"<authorization-request-token>"}
+```
+
+该请求只接受浏览器登录 Session，PAT 不能替代。成功响应中的 `redirect_uri` 带一次性 `code` 和原始 `state`。Canvas 必须先核对 `state`，再从后端兑换：
+
+```http
+POST /api/canvas/token
+Content-Type: application/json
+
+{
+  "code": "<one-time-code>",
+  "code_verifier": "<pkce-verifier>",
+  "client_id": "canvas",
+  "instance_id": "main",
+  "redirect_uri": "https://canvas.example.com/v1/auth/newapi/callback",
+  "client_secret": ""
+}
+```
+
+成功响应只在这次兑换中返回 grant Bearer：
+
+```json
+{
+  "success": true,
+  "data": {
+    "issuer": "https://api.example.com",
+    "user": {
+      "id": "123",
+      "display_name": "Example",
+      "status": "active"
+    },
+    "grant": {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "token": "<grant-bearer>",
+      "expires_at": "2026-10-21T00:00:00Z",
+      "scopes": ["identity:read", "groups:read", "tokens:manage"]
+    }
+  }
+}
+```
+
+服务端数据库只保存 grant Bearer 的用途隔离 HMAC。兑换响应未知时必须重新开始浏览器授权，不能重放原授权码。
+
+### 账号与分组 Token
+
+后续接口都使用 `Authorization: Bearer <grant-bearer>`，并返回 `Cache-Control: no-store`。
+
+`GET /api/canvas/account` 返回已验证用户、grant ID 和当前可接入分组：
+
+```json
+{
+  "success": true,
+  "data": {
+    "user": {"id": "123", "display_name": "Example", "status": "active"},
+    "grant_id": "00000000-0000-0000-0000-000000000000",
+    "groups": ["auto", "default", "vip"]
+  }
+}
+```
+
+原始分组标识精确等于 `神秘分组` 时始终排除。它不会创建或检查管理 Token，也不会进入 Auto 范围；相近名称不受影响。
+
+`PUT /api/canvas/groups/:group` 幂等创建、读取或恢复该 grant 的唯一管理 Token：
+
+```json
+{"operation_id":"<stable-operation-id>"}
+```
+
+`operation_id` 只能包含字母、数字、点、下划线、冒号和连字符，长度为 1 至 64。相同 ID 和相同 grant/分组返回原 Token；相同 ID 改用其他分组返回冲突。创建结果未知时重试原操作，不能更换 ID 后再次创建。
+
+```json
+{
+  "success": true,
+  "data": {
+    "token_id": "456",
+    "key": "<managed-api-key>",
+    "group": "default",
+    "status": "active",
+    "credential_revision": "1",
+    "permission_revision": "3",
+    "auto_groups": []
+  }
+}
+```
+
+普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、删除、改组、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突，不会静默改回。
+
+`POST /api/canvas/revoke` 撤销 grant，并只禁用该 grant 明确归属的管理 Token：
+
+```json
+{}
+```
+
+已由 Canvas 撤销且未被修改的 Token 可在显式重新授权后恢复同一 Token ID 和 Key。撤销前已被用户修改的 Token 会标记为不可恢复，不会因重新授权被复活。其他用户 Token 不受影响。
+
+### 执行受理头
+
+Canvas 使用管理 Token 发起创建类请求时，必须且只能发送一个 `x-canvas-execution`。其值是以下 JSON 的 UTF-8 字节经过无填充 canonical base64url 编码后的结果：
+
+```json
+{
+  "version": 1,
+  "issuer": "https://api.example.com",
+  "user_id": "123",
+  "instance_id": "main",
+  "grant_id": "00000000-0000-0000-0000-000000000000",
+  "token_id": "456",
+  "expected_group": "auto",
+  "permission_revision": "3",
+  "auto_groups": ["default", "vip"]
+}
+```
+
+对象必须恰好包含这九个字段。`token_id` 和 `permission_revision` 是无前导零的正十进制字符串。普通分组的 `auto_groups` 必须为空；`expected_group` 为 `auto` 时必须提供非空、有序、无重复的显式实际分组范围。
+
+该头只允许用于以下管理 Token POST 创建接口：
+
+- `/v1/chat/completions`
+- `/v1/images/generations`
+- `/v1/images/edits`
+- `/v1/audio/speech`
+- `/v1/videos`
+
+`GET /v1/videos/...` 轮询不需要该头。New API 在渠道和实际分组确定后复核 issuer、用户、实例、grant、Token、预期策略分组、Auto 范围、权限修订、模型 Ability 和渠道状态；失败会在预扣和供应商 POST 前终止请求。
+
+权限修订只跟随授权和调用资格变化，例如 grant 续期、用户或分组资格、Token 固定权限、Auto 显式范围、模型 Ability 与渠道状态。余额消耗、渠道余额和单纯价格数值变化不会递增该修订，也不构成锁价。
+
+### 错误响应
+
+账号接口统一返回：
+
+```json
+{"success":false,"code":"canvas_authorization_invalid","message":"..."}
+```
+
+主要错误码：
+
+| HTTP | code | 含义 |
+| --- | --- | --- |
+| 400 | `canvas_authorization_invalid` | 授权请求、授权码已失效或被重放 |
+| 400 | `canvas_token_request_invalid` | 兑换请求或 PKCE verifier 无效 |
+| 400 | `canvas_operation_invalid` | 管理 Token 请求体无效 |
+| 400 | `canvas_execution_invalid` | 执行头缺失、重复、非 canonical 或字段不合法 |
+| 401 | `canvas_client_invalid` | 固定客户端配置或 secret 不匹配 |
+| 401 | `canvas_authorization_invalid` | grant 无效、过期或已撤销 |
+| 403 | `canvas_session_required` | 授权批准不是有效浏览器 Session |
+| 403 | `canvas_group_excluded` | 命中精确排除分组 |
+| 403 | `canvas_group_unavailable` | 用户、模型或实际分组当前不可用 |
+| 403 | `canvas_execution_mismatch` | 执行身份、策略分组或 Auto 范围不一致 |
+| 409 | `canvas_operation_conflict` | 相同 operation ID 携带不同请求 |
+| 409 | `canvas_auto_group_empty` | Auto 过滤后没有可用实际分组 |
+| 409 | `canvas_managed_token_changed` | 管理 Token 被修改、删除或不可恢复 |
+| 409 | `canvas_permission_changed` | 权限修订已过期，Canvas 必须刷新后重选 |
+| 409 | `canvas_token_limit_reached` | 用户 Token 数量达到站点上限 |
+| 503 | `canvas_account_misconfigured` | 启用后部署配置不完整或不合法 |
+| 503 | `canvas_account_unavailable` | 权威账号或数据库操作暂不可用 |
+
+安全审计只记录用户、grant、实例、分组和 Token ID 等不可直接使用的标识，不记录授权码、grant Bearer、API Key、客户端 secret 或浏览器 Access Token。
+
+### 验证记录（2026-09-21）
+
+认证实现参考 OWASP ASVS 稳定版 5.0.0，以及 [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 和 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) 指南。核对范围是本次新增的授权与管理 Token 合同，不代表整站 ASVS 认证。
+
+- 回归覆盖固定回调、S256 PKCE、短期一次性授权码、拒绝重放、仅浏览器会话批准、grant 轮换/撤销、分组精确排除、Key 人工变更、Auto 范围与受理身份不一致时在供应商 POST 前拒绝；Redis 缓存失效失败时管理变更回滚。
+- 本地真实浏览器完成 Canvas → New API 登录授权 → 全部分组同步 → 文字生成和 Worker 归档 → 退出；双用户项目、凭据与 Run 隔离通过。供应商出口为本机 Mock，不证明真实供应商计费或生成成功。
+- `go test ./model -run '^TestCanvasAccountDatabaseMatrix$' -count=1 -v`，显式设置隔离 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN` 和 `CANVAS_REQUIRE_DATABASE_MATRIX=true`：SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的 fresh、upgrade、重复迁移、索引/唯一约束及数据保留均通过。日志数据库结构不在本次变更范围。
+- 升级增加 Canvas 专属表，不改现有用户资金或渠道数据；账号端点默认关闭。回退前禁用账号接入并停止 Canvas 新提交，保留表和管理记录以恢复既有授权，不删除仍被任务引用的 Token。
