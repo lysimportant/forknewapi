@@ -499,3 +499,74 @@ export function buildContentRequest(){throw new Error("must never query");}
 		})
 	}
 }
+
+// TestCanvasBridgeHailuoMappedH3 验证官方协议的 h3 上游名称保留对外模型及价格，目录、预算和视频入口一致。
+// 使用临时 SQLite 和内置插件，只构造请求描述，不访问上游或扣减账户余额。
+func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
+	for _, channelType := range []int{constant.ChannelTypeMiniMax, constant.ChannelTypeTaskPlugin} {
+		t.Run(fmt.Sprint(channelType), func(t *testing.T) {
+			db := setupCanvasBridgeDB(t, "sqlite")
+			channel := canvasFixtureChannel(t, db, "default", "MiniMax-H3")
+			require.NoError(t, db.Model(channel).Updates(map[string]any{
+				"type": channelType, "setting": `{"task_plugin_key":"hailuo"}`,
+				"model_mapping": `{"MiniMax-H3":"h3"}`,
+			}).Error)
+			withTieredBillingConfig(t, map[string]string{"MiniMax-H3": "tiered_expr"}, map[string]string{
+				"MiniMax-H3": `u("seconds") * 0.2 + u("input_images") * 0.001 + u("input_video_seconds") * 0.002`,
+			})
+			plugin, found := jsplugin.DefaultRegistry.Generation().Get("hailuo")
+			require.True(t, found)
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				defer common.CleanupBodyStorage(c)
+				common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+				common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+				c.Next()
+			})
+			router.GET("/v1/canvas/catalog", GetCanvasCatalog)
+			router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
+			router.POST("/v1/videos", middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), func(c *gin.Context) {
+				info := &relaycommon.RelayInfo{OriginModelName: "MiniMax-H3", ChannelMeta: &relaycommon.ChannelMeta{
+					UpstreamModelName: "h3", ChannelBaseUrl: "https://canvas.example",
+				}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+				adaptor := taskplugin.New(plugin)
+				adaptor.Init(info)
+				if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
+					c.JSON(taskErr.StatusCode, gin.H{"code": taskErr.Code})
+					return
+				}
+				c.Status(http.StatusNoContent)
+			})
+			response := canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+			require.Equal(t, http.StatusOK, response.Code)
+			var catalog struct {
+				Models []canvasCatalogModel `json:"models"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+			require.Len(t, catalog.Models, 1)
+			assert.Equal(t, "MiniMax-H3", catalog.Models[0].ID)
+			assert.True(t, catalog.Models[0].Available)
+			assert.Equal(t, "newapi-video-v1", catalog.Models[0].Contract)
+			assert.Empty(t, catalog.Models[0].UnavailableReason)
+			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+				Model: "MiniMax-H3", Contract: "newapi-video-v1",
+				Parameters: map[string]any{"seconds": 5, "resolution": "768P"}, InputText: "A still landscape",
+			})
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var estimate canvasEstimatePayload
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &estimate))
+			assert.Equal(t, "500000", estimate.EstimatedQuota)
+			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/videos", "", map[string]any{
+				"model": "MiniMax-H3", "prompt": "A still landscape", "seconds": 5, "resolution": "768P",
+			})
+			require.Equal(t, http.StatusNoContent, response.Code, response.Body.String())
+			require.NoError(t, db.Model(channel).Update("model_mapping", `{"MiniMax-H3":"unconfirmed-h3"}`).Error)
+			response = canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+			require.Equal(t, http.StatusOK, response.Code)
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+			require.Len(t, catalog.Models, 1)
+			assert.False(t, catalog.Models[0].Available)
+			assert.Equal(t, "missing_profile", catalog.Models[0].UnavailableReason)
+		})
+	}
+}

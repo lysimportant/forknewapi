@@ -7,11 +7,12 @@ export const meta = {
     en: "MiniMax Hailuo video generation (text-to-video, image-to-video, and MiniMax-H3 multimodal reference)",
     zh: "MiniMax 海螺视频生成（文生视频、图生视频、MiniMax-H3 多模态参考生视频）",
   },
-  version: "1.1.3",
+  version: "1.1.4",
   author: { name: "QuantumNous" },
   channelTypes: [35],
   models: [
     "MiniMax-H3",
+    "h3",
     "MiniMax-Hailuo-2.3",
     "MiniMax-Hailuo-2.3-Fast",
     "MiniMax-Hailuo-02",
@@ -129,11 +130,13 @@ const H3_MAX_REFERENCE_AUDIOS = 3;
 const H3_MAX_INPUT_VIDEO_SECONDS = 15;
 const H3_RATIOS = ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
 
-// MiniMax-H3 speaks the /v2 video generation contract: a multimodal `content`
-// array instead of flat frame fields, an explicit `ratio`, 768P/2K resolutions,
-// a task id path parameter on query, and a `{task: {...}}` query envelope.
+/**
+ * 判断精确模型名是否使用 H3 的 /v2 协议、content 输入及 768P/2K 计量。
+ * @param {string} model 渠道映射后的模型名；h3 已确认仅名称不同，请求仍保留该原值。
+ * @returns {boolean} 仅 MiniMax-H3 和 h3 返回 true，不推断其他别名或改写名称。
+ */
 function isH3(model) {
-  return model === H3_MODEL;
+  return model === H3_MODEL || model === "h3";
 }
 
 function h3Duration(req) {

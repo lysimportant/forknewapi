@@ -555,3 +555,73 @@ func TestHailuoH3PassesOpenAIVideoDecode(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, float64(12), requestBody["duration"])
 }
+
+// TestHailuoH3MappedUpstream 验证对外 MiniMax-H3 映射为 h3 后仍使用 H3 协议及计量。
+// 仅调用插件的请求构造和解析 hook，不访问上游或产生扣费。
+func TestHailuoH3MappedUpstream(t *testing.T) {
+	plugin := loadHailuoPlugin(t)
+	ctx := map[string]any{
+		"body": map[string]any{"kind": "json", "value": map[string]any{
+			"model": "MiniMax-H3", "prompt": "A still landscape", "seconds": 12,
+			"size": "2K", "input_reference": "https://cdn.example/frame.png",
+		}},
+		"model": "MiniMax-H3", "upstreamModel": "h3",
+		"baseUrl": "https://api.minimax.example", "apiKey": "test-ak",
+	}
+	value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, ctx)
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var intent map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &intent))
+	assert.Equal(t, "MiniMax-H3", intent["model"])
+	requestBody, ok := intent["requestBody"].(map[string]any)
+	require.True(t, ok)
+	ctx["requestBody"] = requestBody
+
+	descriptor := callHailuoHook(t, plugin, "buildSubmitRequest", ctx)
+	assert.Equal(t, "https://api.minimax.example/v2/video_generation", descriptor["url"])
+	assert.Equal(t, "POST", descriptor["method"])
+	assert.Equal(t, "image_to_video", descriptor["action"])
+	body, err := common.Marshal(descriptor["body"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model":"h3","content":[{"type":"text","text":"A still landscape"},{"type":"image_url","role":"first_frame","image_url":{"url":"https://cdn.example/frame.png"}}],"resolution":"2K","duration":12,"ratio":"adaptive"}`, string(body))
+	assert.Equal(t, map[string]any{
+		"seconds": float64(12), "resolution": "2K", "input_images": float64(1), "input_video_seconds": float64(0),
+	}, callHailuoHook(t, plugin, "extractUsage", ctx))
+
+	parsed := callHailuoHook(t, plugin, "parseSubmitResponse", ctx, map[string]any{
+		"body": map[string]any{"task_id": "mapped/task"},
+	})
+	assert.Equal(t, "mapped/task", parsed["taskId"])
+	ctx["taskId"] = parsed["taskId"]
+	query := callHailuoHook(t, plugin, "buildQueryRequest", ctx)
+	assert.Equal(t, "GET", query["method"])
+	assert.Equal(t, "https://api.minimax.example/v2/query/video_generation/mapped%2Ftask", query["url"])
+
+	for _, duration := range []int{4, 15} {
+		requestBody["duration"] = duration
+		for _, hook := range []string{"buildSubmitRequest", "extractUsage"} {
+			_, err := plugin.Engine.Call(t.Context(), hook, ctx)
+			require.NoError(t, err)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"duration below H3 minimum", map[string]any{"prompt": "A still landscape", "duration": 3}, "duration must be an integer between 4 and 15"},
+		{"duration above H3 maximum", map[string]any{"prompt": "A still landscape", "duration": 16}, "duration must be an integer between 4 and 15"},
+		{"unsupported H3 resolution", map[string]any{"prompt": "A still landscape", "duration": 5, "resolution": "1080P"}, "resolution must be 768P or 2K"},
+		{"too many frame images", map[string]any{"prompt": "A still landscape", "duration": 5, "images": []string{"first.png", "middle.png", "last.png"}}, "accepts at most 2 frame images"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx["requestBody"] = test.body
+			for _, hook := range []string{"buildSubmitRequest", "extractUsage"} {
+				_, err := plugin.Engine.Call(t.Context(), hook, ctx)
+				require.ErrorContains(t, err, test.want)
+			}
+		})
+	}
+}
