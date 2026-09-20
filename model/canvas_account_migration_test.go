@@ -106,8 +106,54 @@ func TestCanvasAccountDatabaseMatrix(t *testing.T) {
 			t.Run("upgrade", func(t *testing.T) {
 				testCanvasAccountBaselineUpgrade(t, db, recorder)
 			})
+			t.Run("token-configuration", func(t *testing.T) {
+				testCanvasTokenConfiguration(t, db)
+			})
 		})
 	}
+}
+
+// testCanvasTokenConfiguration 验证普通令牌更新及人工改期与管理状态的事务一致性。
+func testCanvasTokenConfiguration(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	previousDB, previousRedis := DB, common.RedisEnabled
+	DB, common.RedisEnabled = db, false
+	t.Cleanup(func() { DB, common.RedisEnabled = previousDB, previousRedis })
+	require.NoError(t, db.AutoMigrate(&Token{}, &CanvasManagedToken{}))
+	t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&CanvasManagedToken{}, &Token{})) })
+	token := Token{UserId: 7101, Key: "canvas-expiry-matrix", Name: "Canvas-expiry", ExpiredTime: time.Now().Unix() + 3600}
+	require.NoError(t, db.Create(&token).Error)
+	token.Name = "ordinary-token-renamed"
+	require.NoError(t, token.Update(), "ordinary tokens must remain editable")
+	managed := CanvasManagedToken{GrantID: "expiry-grant", UserID: token.UserId, TokenID: token.Id, GroupID: "default", Status: CanvasManagedTokenStatusActive}
+	require.NoError(t, db.Create(&managed).Error)
+	token.Name = "managed-token-renamed"
+	require.NoError(t, token.Update())
+	require.NoError(t, db.First(&managed, managed.ID).Error)
+	assert.Equal(t, CanvasManagedTokenStatusActive, managed.Status, "renaming must not revoke management")
+
+	originalExpiry := token.ExpiredTime
+	token.ExpiredTime = time.Now().Unix() - 1
+	const callback = "canvas_test:reject_token_update"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "tokens" {
+			tx.AddError(ErrCanvasManagedTokenChanged)
+		}
+	}))
+	updateErr := token.Update()
+	require.NoError(t, db.Callback().Update().Remove(callback))
+	require.ErrorIs(t, updateErr, ErrCanvasManagedTokenChanged)
+	var stored Token
+	require.NoError(t, db.First(&stored, token.Id).Error)
+	require.NoError(t, db.First(&managed, managed.ID).Error)
+	assert.Equal(t, originalExpiry, stored.ExpiredTime)
+	assert.Equal(t, CanvasManagedTokenStatusActive, managed.Status, "failed token updates must roll back management status")
+
+	require.NoError(t, token.Update())
+	require.NoError(t, db.First(&stored, token.Id).Error)
+	require.NoError(t, db.First(&managed, managed.ID).Error)
+	assert.Equal(t, token.ExpiredTime, stored.ExpiredTime)
+	assert.Equal(t, CanvasManagedTokenStatusChanged, managed.Status)
 }
 
 // testCanvasAccountFreshMigration 校验全新表的默认值、索引、唯一性和幂等迁移。

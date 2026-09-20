@@ -306,14 +306,36 @@ func (token *Token) Insert() error {
 	return err
 }
 
-// Update Make sure your token's fields is completed, because this will update non-zero values
+// Update 保存管理界面提交的令牌配置，包括零值；人工改期会终止 Canvas 自动管理。
+// 令牌和管理关系在同一事务中写入，数据库错误会回滚两者。
 func (token *Token) Update() (err error) {
 	// 写库前失效缓存并设置 fence，防止并发读者把过期快照重新写回缓存。
 	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
 		common.SysLog("failed to invalidate token cache before update: " + cacheErr.Error())
 	}
-	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var managed CanvasManagedToken
+		err := lockForUpdate(tx).Where("token_id = ?", token.Id).First(&managed).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil {
+			var stored Token
+			if err := lockForUpdate(tx).First(&stored, token.Id).Error; err != nil {
+				return err
+			}
+			// 不能用秒级时间推断修改来源；Canvas 自身续期不经过此入口。
+			if stored.ExpiredTime != token.ExpiredTime {
+				if err := tx.Model(&managed).Updates(map[string]any{
+					"status": CanvasManagedTokenStatusChanged, "updated_at": common.GetTimestamp(),
+				}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return tx.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
+			"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	})
 }
 
 func (token *Token) SelectUpdate() (err error) {

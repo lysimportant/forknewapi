@@ -33,6 +33,7 @@ func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
 func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)
+	require.NoError(t, DB.AutoMigrate(&CanvasManagedToken{}))
 	token := Token{
 		UserId:          7,
 		Key:             "token-auto-groups-update-cache-key",

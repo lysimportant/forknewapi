@@ -31,7 +31,7 @@ const (
 	CanvasManagedTokenStatusActive = "active"
 	// CanvasManagedTokenStatusRevoked 表示管理关系已随授权撤销。
 	CanvasManagedTokenStatusRevoked = "revoked"
-	// CanvasManagedTokenStatusChanged 表示 Token 在撤销前已被人工修改，后续重新授权不得恢复。
+	// CanvasManagedTokenStatusChanged 表示 Token 已被人工修改，后续同步或重新授权不得自动恢复。
 	CanvasManagedTokenStatusChanged = "changed"
 )
 

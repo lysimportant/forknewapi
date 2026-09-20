@@ -10,11 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -268,6 +270,75 @@ func TestCanvasAccountAuthorizationManagementAndRecovery(t *testing.T) {
 	var autoManaged model.CanvasManagedToken
 	require.NoError(t, model.DB.First(&autoManaged, "token_id = ?", autoRecord.Id).Error)
 	assert.Equal(t, model.CanvasManagedTokenStatusChanged, autoManaged.Status)
+}
+
+// TestCanvasAccountPartialGroups 验证令牌数量达限和 auto 空范围不会破坏已有分组。
+func TestCanvasAccountPartialGroups(t *testing.T) {
+	_, identity := setupCanvasAccountControllerTest(t)
+	login := authorizeCanvasAccountForTest(t, identity)
+	existing := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "default-limited"))
+	previousLimit := operation_setting.GetMaxUserTokens()
+	operation_setting.GetTokenSetting().MaxUserTokens = 1
+	t.Cleanup(func() { operation_setting.GetTokenSetting().MaxUserTokens = previousLimit })
+	limited := canvasManagedGroupRequestForTest(t, login.Grant.Token, "vip", "vip-limited")
+	assert.Equal(t, http.StatusConflict, limited.Code)
+	assert.Contains(t, limited.Body.String(), "canvas_token_limit_reached")
+	reused := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "default-limited"))
+	assert.Equal(t, existing.TokenID, reused.TokenID)
+	assert.Equal(t, existing.Key, reused.Key)
+	operation_setting.GetTokenSetting().MaxUserTokens = previousLimit
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["神秘分组"]`))
+	empty := canvasManagedGroupRequestForTest(t, login.Grant.Token, "auto", "empty-auto")
+	assert.Equal(t, http.StatusConflict, empty.Code)
+	assert.Contains(t, empty.Body.String(), "canvas_auto_group_empty")
+	var tokens []model.Token
+	require.NoError(t, model.DB.Find(&tokens).Error)
+	require.Len(t, tokens, 1)
+	assert.False(t, tokens[0].CrossGroupRetry)
+	assert.Equal(t, "default", tokens[0].Group)
+}
+
+// TestCanvasAccountManualExpiryIsNotRestored 验证人工改期不会被同步或重新授权抵消。
+func TestCanvasAccountManualExpiryIsNotRestored(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		expiry       int64
+		revokeBefore bool
+	}{
+		{name: "already-expired", expiry: time.Now().Unix() - 1},
+		{name: "shorter-lifetime", expiry: time.Now().Unix() + 3600},
+		{name: "unlimited-lifetime", expiry: -1},
+		{name: "changed-after-revoke", expiry: time.Now().Unix() - 1, revokeBefore: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, identity := setupCanvasAccountControllerTest(t)
+			login := authorizeCanvasAccountForTest(t, identity)
+			created := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "manual-expiry"))
+			if test.revokeBefore {
+				revoked := canvasAccountControllerRequest(http.MethodPost, "/api/canvas/revoke", `{}`, login.Grant.Token, PostCanvasRevoke)
+				require.Equal(t, http.StatusOK, revoked.Code)
+			}
+			var token model.Token
+			require.NoError(t, model.DB.First(&token, "id = ?", created.TokenID).Error)
+			token.ExpiredTime = test.expiry
+			require.NoError(t, token.Update())
+			if !test.revokeBefore {
+				response := canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "manual-expiry")
+				assert.Equal(t, http.StatusConflict, response.Code)
+				var failure canvasAccountTestResponse[any]
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &failure))
+				assert.Equal(t, "canvas_managed_token_changed", failure.Code)
+			}
+			reauthorized := authorizeCanvasAccountForTest(t, identity)
+			response := canvasManagedGroupRequestForTest(t, reauthorized.Grant.Token, "default", "manual-expiry")
+			assert.Equal(t, http.StatusConflict, response.Code)
+			require.NoError(t, model.DB.First(&token, "id = ?", created.TokenID).Error)
+			assert.Equal(t, test.expiry, token.ExpiredTime)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+		})
+	}
 }
 
 // canvasManagedGroupRequestForTest 向管理分组处理器发送隔离请求。

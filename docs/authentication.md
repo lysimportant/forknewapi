@@ -307,7 +307,7 @@ Content-Type: application/json
 }
 ```
 
-普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、删除、改组、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突，不会静默改回。
+普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、删除、改组、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突，不会静默改回。通过令牌管理接口人工修改期限时，令牌与管理关系在同一事务中更新为不可自动恢复；同一秒内的修改、改为永久或撤销后的改期也适用。普通改名不终止管理关系，Canvas 内部续期不走人工配置入口。
 
 `POST /api/canvas/revoke` 撤销 grant，并只禁用该 grant 明确归属的管理 Token：
 
@@ -386,6 +386,7 @@ Canvas 使用管理 Token 发起创建类请求时，必须且只能发送一个
 认证实现参考 OWASP ASVS 稳定版 5.0.0，以及 [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 和 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) 指南。核对范围是本次新增的授权与管理 Token 合同，不代表整站 ASVS 认证。
 
 - 回归覆盖固定回调、S256 PKCE、短期一次性授权码、拒绝重放、仅浏览器会话批准、grant 轮换/撤销、分组精确排除、Key 人工变更、Auto 范围与受理身份不一致时在供应商 POST 前拒绝；Redis 缓存失效失败时管理变更回滚。
+- 追加人工期限回归：同步与重新授权都不抵消用户改期；事务写入失败时期限和管理状态一起回滚。参照 ASVS 5.0.0 V7.3/V7.4 的到期和终止要求，不把时间戳先后当作修改来源；三库矩阵新增 `token-configuration` 用例。
 - 本地真实浏览器完成 Canvas → New API 登录授权 → 全部分组同步 → 文字生成和 Worker 归档 → 退出；双用户项目、凭据与 Run 隔离通过。供应商出口为本机 Mock，不证明真实供应商计费或生成成功。
 - `go test ./model -run '^TestCanvasAccountDatabaseMatrix$' -count=1 -v`，显式设置隔离 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN` 和 `CANVAS_REQUIRE_DATABASE_MATRIX=true`：SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的 fresh、upgrade、重复迁移、索引/唯一约束及数据保留均通过。日志数据库结构不在本次变更范围。
 - 升级增加 Canvas 专属表，不改现有用户资金或渠道数据；账号端点默认关闭。回退前禁用账号接入并停止 Canvas 新提交，保留表和管理记录以恢复既有授权，不删除仍被任务引用的 Token。
