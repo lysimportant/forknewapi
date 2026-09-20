@@ -272,6 +272,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 				{canvasEstimateRequest{Model: "Canvas-Text", Contract: "openai-chat-completions", Parameters: map[string]any{"max_tokens": 18446744073709551615.0}}, http.StatusBadRequest},
 				{canvasEstimateRequest{Model: "Canvas-Text", Contract: "openai-chat-completions", Parameters: map[string]any{"temperature": true}}, http.StatusBadRequest},
 				{map[string]any{"model": "Canvas-Text", "contract": "openai-chat-completions", "price": 0}, http.StatusBadRequest},
+				{map[string]any{"model": "Canvas-Text", "contract": "openai-chat-completions", "input_media": []any{}}, http.StatusBadRequest},
 			} {
 				response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", token.Key, test.body)
 				assert.Equal(t, test.status, response.Code, response.Body.String())
@@ -503,13 +504,21 @@ export function buildContentRequest(){throw new Error("must never query");}
 // TestCanvasBridgeHailuoMappedH3 验证官方协议的 h3 上游名称保留对外模型及价格，目录、预算和视频入口一致。
 // 使用临时 SQLite 和内置插件，只构造请求描述，不访问上游或扣减账户余额。
 func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
-	for _, channelType := range []int{constant.ChannelTypeMiniMax, constant.ChannelTypeTaskPlugin} {
-		t.Run(fmt.Sprint(channelType), func(t *testing.T) {
+	for _, test := range []struct {
+		channelType int
+		upstream    string
+	}{
+		{constant.ChannelTypeMiniMax, "MiniMax-H3"},
+		{constant.ChannelTypeMiniMax, "h3"},
+		{constant.ChannelTypeTaskPlugin, "MiniMax-H3"},
+		{constant.ChannelTypeTaskPlugin, "h3"},
+	} {
+		t.Run(fmt.Sprintf("%d/%s", test.channelType, test.upstream), func(t *testing.T) {
 			db := setupCanvasBridgeDB(t, "sqlite")
 			channel := canvasFixtureChannel(t, db, "default", "MiniMax-H3")
 			require.NoError(t, db.Model(channel).Updates(map[string]any{
-				"type": channelType, "setting": `{"task_plugin_key":"hailuo"}`,
-				"model_mapping": `{"MiniMax-H3":"h3"}`,
+				"type": test.channelType, "setting": `{"task_plugin_key":"hailuo"}`,
+				"model_mapping": fmt.Sprintf(`{"MiniMax-H3":%q}`, test.upstream),
 			}).Error)
 			withTieredBillingConfig(t, map[string]string{"MiniMax-H3": "tiered_expr"}, map[string]string{
 				"MiniMax-H3": `u("seconds") * 0.2 + u("input_images") * 0.001 + u("input_video_seconds") * 0.002`,
@@ -527,7 +536,7 @@ func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
 			router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
 			router.POST("/v1/videos", middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), func(c *gin.Context) {
 				info := &relaycommon.RelayInfo{OriginModelName: "MiniMax-H3", ChannelMeta: &relaycommon.ChannelMeta{
-					UpstreamModelName: "h3", ChannelBaseUrl: "https://canvas.example",
+					UpstreamModelName: test.upstream, ChannelBaseUrl: "https://canvas.example",
 				}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
 				adaptor := taskplugin.New(plugin)
 				adaptor.Init(info)
@@ -548,6 +557,8 @@ func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
 			assert.True(t, catalog.Models[0].Available)
 			assert.Equal(t, "newapi-video-v1", catalog.Models[0].Contract)
 			assert.Empty(t, catalog.Models[0].UnavailableReason)
+			assert.Equal(t, []string{"text", "image", "video", "audio"}, catalog.Models[0].InputMediaTypes)
+			assert.Equal(t, []any{"text", "image", "video", "audio"}, catalog.Models[0].Capabilities["mentionMediaTypes"])
 			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
 				Model: "MiniMax-H3", Contract: "newapi-video-v1",
 				Parameters: map[string]any{"seconds": 5, "resolution": "768P"}, InputText: "A still landscape",
@@ -556,6 +567,56 @@ func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
 			var estimate canvasEstimatePayload
 			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &estimate))
 			assert.Equal(t, "500000", estimate.EstimatedQuota)
+			image := map[string]any{"type": "image", "role": "reference_image"}
+			video := map[string]any{"type": "video", "role": "reference_video"}
+			audio := map[string]any{"type": "audio", "role": "reference_audio"}
+			firstFrame := map[string]any{"type": "image", "role": "first_frame"}
+			lastFrame := map[string]any{"type": "image", "role": "last_frame"}
+			for _, mediaTest := range []struct {
+				name   string
+				media  any
+				status int
+				quota  string
+			}{
+				{"empty", []any{}, http.StatusOK, "500000"},
+				{"one-image", []any{image}, http.StatusOK, "500500"},
+				{"two-images", []any{image, image}, http.StatusOK, "501000"},
+				{"two-frames", []any{firstFrame, lastFrame}, http.StatusOK, "501000"},
+				{"video-reservation", []any{video}, http.StatusOK, "515000"},
+				{"maximum-media", []any{image, image, image, image, image, image, image, image, image, video, video, video, audio, audio, audio}, http.StatusOK, "519500"},
+				{"null", nil, http.StatusBadRequest, ""},
+				{"object", image, http.StatusBadRequest, ""},
+				{"negative", -1, http.StatusBadRequest, ""},
+				{"scalar-item", []any{1}, http.StatusBadRequest, ""},
+				{"null-item", []any{nil}, http.StatusBadRequest, ""},
+				{"unknown-type", []any{map[string]any{"type": "file", "role": "reference_image"}}, http.StatusBadRequest, ""},
+				{"unknown-role", []any{map[string]any{"type": "image", "role": "middle_frame"}}, http.StatusBadRequest, ""},
+				{"mismatched-role", []any{map[string]any{"type": "video", "role": "reference_image"}}, http.StatusBadRequest, ""},
+				{"url-forbidden", []any{map[string]any{"type": "image", "role": "reference_image", "url": "https://secret.example/input.png"}}, http.StatusBadRequest, ""},
+				{"missing-role", []any{map[string]any{"type": "image"}}, http.StatusBadRequest, ""},
+				{"wrong-role-type", []any{map[string]any{"type": "image", "role": 1}}, http.StatusBadRequest, ""},
+				{"too-many-images", []any{image, image, image, image, image, image, image, image, image, image}, http.StatusBadRequest, ""},
+				{"too-many-videos", []any{video, video, video, video}, http.StatusBadRequest, ""},
+				{"too-many-audios", []any{audio, audio, audio, audio}, http.StatusBadRequest, ""},
+				{"too-many-items", []any{image, image, image, image, image, image, image, image, image, video, video, video, audio, audio, audio, audio}, http.StatusBadRequest, ""},
+				{"duplicate-first-frame", []any{firstFrame, firstFrame}, http.StatusBadRequest, ""},
+				{"duplicate-last-frame", []any{lastFrame, lastFrame}, http.StatusBadRequest, ""},
+				{"mixed-frame-reference", []any{firstFrame, image}, http.StatusBadRequest, ""},
+			} {
+				t.Run(mediaTest.name, func(t *testing.T) {
+					response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", map[string]any{
+						"model": "MiniMax-H3", "contract": "newapi-video-v1",
+						"parameters": map[string]any{"seconds": 5, "resolution": "768P"},
+						"input_text": "A still landscape", "input_media": mediaTest.media,
+					})
+					require.Equal(t, mediaTest.status, response.Code, response.Body.String())
+					if mediaTest.status == http.StatusOK {
+						var estimate canvasEstimatePayload
+						require.NoError(t, common.Unmarshal(response.Body.Bytes(), &estimate))
+						assert.Equal(t, mediaTest.quota, estimate.EstimatedQuota)
+					}
+				})
+			}
 			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/videos", "", map[string]any{
 				"model": "MiniMax-H3", "prompt": "A still landscape", "seconds": 5, "resolution": "768P",
 			})
@@ -567,6 +628,94 @@ func TestCanvasBridgeHailuoMappedH3(t *testing.T) {
 			require.Len(t, catalog.Models, 1)
 			assert.False(t, catalog.Models[0].Available)
 			assert.Equal(t, "missing_profile", catalog.Models[0].UnavailableReason)
+			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", map[string]any{
+				"model": "MiniMax-H3", "contract": "newapi-video-v1", "parameters": map[string]any{"seconds": 5},
+				"input_text": "A still landscape", "input_media": []any{image},
+			})
+			assert.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+			assert.Contains(t, response.Body.String(), `"code":"media_input_unsupported"`)
 		})
 	}
+	t.Run("unadapted-public-alias", func(t *testing.T) {
+		db := setupCanvasBridgeDB(t, "sqlite")
+		channel := canvasFixtureChannel(t, db, "default", "canvas-h3-alias")
+		require.NoError(t, db.Model(channel).Updates(map[string]any{
+			"type": constant.ChannelTypeTaskPlugin, "setting": `{"task_plugin_key":"hailuo"}`,
+			"model_mapping": `{"canvas-h3-alias":"h3"}`,
+		}).Error)
+		withTieredBillingConfig(t, map[string]string{"canvas-h3-alias": "tiered_expr"}, map[string]string{
+			"canvas-h3-alias": `u("seconds") * 0.2 + u("input_images") * 0.001`,
+		})
+		router := gin.New()
+		router.Use(func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+			c.Next()
+		})
+		router.GET("/v1/canvas/catalog", GetCanvasCatalog)
+		router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
+		response := canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+		require.Equal(t, http.StatusOK, response.Code)
+		var catalog struct {
+			Models []canvasCatalogModel `json:"models"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+		require.Len(t, catalog.Models, 1)
+		assert.Equal(t, []string{"text"}, catalog.Models[0].InputMediaTypes)
+		response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", map[string]any{
+			"model": "canvas-h3-alias", "contract": "newapi-video-v1", "parameters": map[string]any{"seconds": 5},
+			"input_text": "Animate this image", "input_media": []any{map[string]any{"type": "image", "role": "reference_image"}},
+		})
+		assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+		assert.Contains(t, response.Body.String(), `"code":"media_input_unsupported"`)
+	})
+	t.Run("mixed-routes", func(t *testing.T) {
+		db := setupCanvasBridgeDB(t, "sqlite")
+		source := `
+export const meta = {apiVersion:1,key:"canvas-h3-text-only",name:"Canvas H3 text fixture",version:"1.0.0",author:{name:"Test"},models:["MiniMax-H3"],fetchMode:"per_task",protocols:["openai_video"],usageSchema:{seconds:{type:"number",unit:"second"},resolution:{enum:["768P"]},input_images:{type:"number",unit:"count"},input_video_seconds:{type:"number",unit:"second"}}};
+export const protocols = {openai_video:{decodeRequest(ctx){return {kind:"submit",model:ctx.model,action:"text_to_video",requestBody:ctx.body.value};},render(){return {};}}};
+export function extractUsage(){return {seconds:5,resolution:"768P",input_images:0,input_video_seconds:0};}
+export function buildSubmitRequest(){throw new Error("must never submit");}
+export function parseSubmitResponse(){throw new Error("must never submit");}
+export function buildQueryRequest(){throw new Error("must never query");}
+export function parseTaskResult(){throw new Error("must never query");}
+export function listArtifacts(){throw new Error("must never query");}
+export function buildContentRequest(){throw new Error("must never query");}
+`
+		_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister("canvas-h3-text-only")) })
+		for _, pluginKey := range []string{"hailuo", "canvas-h3-text-only"} {
+			channel := canvasFixtureChannel(t, db, "default", "MiniMax-H3")
+			require.NoError(t, db.Model(channel).Updates(map[string]any{
+				"type": constant.ChannelTypeTaskPlugin, "setting": fmt.Sprintf(`{"task_plugin_key":%q}`, pluginKey),
+			}).Error)
+		}
+		withTieredBillingConfig(t, map[string]string{"MiniMax-H3": "tiered_expr"}, map[string]string{
+			"MiniMax-H3": `u("seconds") * 0.2 + u("input_images") * 0.001 + u("input_video_seconds") * 0.002`,
+		})
+		router := gin.New()
+		router.Use(func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+			c.Next()
+		})
+		router.GET("/v1/canvas/catalog", GetCanvasCatalog)
+		router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
+		response := canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var catalog struct {
+			Models []canvasCatalogModel `json:"models"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+		require.Len(t, catalog.Models, 1)
+		assert.True(t, catalog.Models[0].Available)
+		assert.Equal(t, []string{"text"}, catalog.Models[0].InputMediaTypes)
+		response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", map[string]any{
+			"model": "MiniMax-H3", "contract": "newapi-video-v1", "parameters": map[string]any{"seconds": 5},
+			"input_text": "A still landscape", "input_media": []any{map[string]any{"type": "image", "role": "reference_image"}},
+		})
+		assert.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+		assert.Contains(t, response.Body.String(), `"code":"media_input_unsupported"`)
+	})
 }

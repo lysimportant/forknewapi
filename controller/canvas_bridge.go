@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"mime"
 	"net/http"
@@ -45,13 +46,20 @@ type canvasCatalogModel struct {
 	PricingVersion    string         `json:"pricing_version"`
 }
 
-// canvasEstimateRequest 仅接受调用合同和标量参数；不接收任意 URL、凭据或计费表达式。
+// canvasEstimateRequest 接受合同、标量参数和无 URL 的媒体描述；不接收凭据或计费表达式。
 type canvasEstimateRequest struct {
-	Model        string         `json:"model"`
-	Contract     string         `json:"contract"`
-	Parameters   map[string]any `json:"parameters"`
-	InputText    string         `json:"input_text"`
-	InputPending bool           `json:"input_pending"`
+	Model        string              `json:"model"`
+	Contract     string              `json:"contract"`
+	Parameters   map[string]any      `json:"parameters"`
+	InputText    string              `json:"input_text"`
+	InputPending bool                `json:"input_pending"`
+	InputMedia   []canvasInputMedium `json:"input_media,omitempty"`
+}
+
+// canvasInputMedium 仅描述冻结输入的媒体类型和角色；每项对应一份真实发送的媒体，不包含资源地址。
+type canvasInputMedium struct {
+	Type string `json:"type"`
+	Role string `json:"role"`
 }
 
 // canvasCandidate 保存授权范围内的一条路由；Channel 从数据库读取时排除渠道凭据。
@@ -308,6 +316,30 @@ func (candidate canvasCandidate) priced(name string) bool {
 	return billing_setting.GetBillingMode(name) == billing_setting.BillingModeTieredExpr && exists && strings.TrimSpace(expression) != ""
 }
 
+// canvasInputMediaTypes 返回所有可执行且已定价路由的能力交集；仅已适配的 Hailuo H3 协议开放媒体。
+// Canvas 当前只适配对外 MiniMax-H3；未知别名、插件、映射或混合路由保持仅文字。
+func canvasInputMediaTypes(name string, profile canvasProfile, candidates []canvasCandidate) []string {
+	textOnly := []string{"text"}
+	if profile.Contract != "newapi-video-v1" || name != "MiniMax-H3" {
+		return textOnly
+	}
+	matched := false
+	for _, candidate := range candidates {
+		if !candidate.supports(name, profile) || !candidate.priced(name) {
+			continue
+		}
+		if candidate.Plugin == nil || candidate.Plugin.Meta.Key != "hailuo" ||
+			!slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
+			return textOnly
+		}
+		matched = true
+	}
+	if !matched {
+		return textOnly
+	}
+	return []string{"text", "image", "video", "audio"}
+}
+
 // GetCanvasCatalog 返回 Key 授权目录、明确调用合同和人民币换算信息；无钱包或上游请求副作用。
 func GetCanvasCatalog(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -346,8 +378,8 @@ func GetCanvasCatalog(c *gin.Context) {
 		} else {
 			profile := profiles[0]
 			item.MediaType, item.Contract = profile.MediaType, profile.Contract
-			item.InputMediaTypes = []string{"text"}
-			item.Capabilities = map[string]any{"mediaTypes": []string{profile.MediaType}, "mentionMediaTypes": []string{"text"}}
+			item.InputMediaTypes = canvasInputMediaTypes(name, profile, candidates)
+			item.Capabilities = map[string]any{"mediaTypes": []string{profile.MediaType}, "mentionMediaTypes": item.InputMediaTypes}
 			item.Available = slices.ContainsFunc(candidates, func(candidate canvasCandidate) bool {
 				return candidate.supports(name, profile) && candidate.priced(name)
 			})
@@ -383,12 +415,44 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 		return request, canvasProfile{}, errors.New("预估请求必须是有效 JSON 对象")
 	}
 	for field := range fields {
-		if !slices.Contains([]string{"model", "contract", "parameters", "input_text", "input_pending"}, field) {
+		if !slices.Contains([]string{"model", "contract", "parameters", "input_text", "input_pending", "input_media"}, field) {
 			return request, canvasProfile{}, errors.New("预估请求包含不支持的字段")
 		}
 	}
 	if err := common.Unmarshal(data, &request); err != nil || !canvasModelIDValid(request.Model) {
 		return request, canvasProfile{}, errors.New("模型 ID 或预估字段类型无效")
+	}
+	if raw, exists := fields["input_media"]; exists {
+		items, ok := raw.([]any)
+		if !ok || len(items) > 15 || request.Contract != "newapi-video-v1" {
+			return request, canvasProfile{}, errors.New("input_media 仅接受视频合同的媒体描述数组，最多 15 项")
+		}
+		counts := make(map[string]int)
+		roleTypes := map[string]string{
+			"first_frame": "image", "last_frame": "image", "reference_image": "image",
+			"reference_video": "video", "reference_audio": "audio",
+		}
+		for _, item := range items {
+			media, ok := item.(map[string]any)
+			if !ok || len(media) != 2 {
+				return request, canvasProfile{}, errors.New("媒体描述仅接受 type 和 role，不接受 URL 或其他字段")
+			}
+			mediaType, typeOK := media["type"].(string)
+			role, roleOK := media["role"].(string)
+			if !typeOK || !roleOK || mediaType == "" || roleTypes[role] != mediaType {
+				return request, canvasProfile{}, errors.New("媒体类型与角色不匹配或尚未支持")
+			}
+			counts[mediaType]++
+			counts[role]++
+		}
+		if counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3 ||
+			counts["first_frame"] > 1 || counts["last_frame"] > 1 {
+			return request, canvasProfile{}, errors.New("媒体输入超过数量限制：图片 9 张、视频 3 段、音频 3 段，首尾帧各 1 张")
+		}
+		if counts["first_frame"]+counts["last_frame"] > 0 &&
+			counts["reference_image"]+counts["reference_video"]+counts["reference_audio"] > 0 {
+			return request, canvasProfile{}, errors.New("首尾帧不能与参考媒体混用")
+		}
 	}
 	for _, profile := range canvasProfiles {
 		if profile.Contract == request.Contract {
@@ -470,6 +534,20 @@ func canvasCanonicalBody(request canvasEstimateRequest, profile canvasProfile) (
 
 // estimateQuota 复用原请求校验和预估计费引擎；不预扣、不创建任务、不构造上游请求。
 func (candidate canvasCandidate) estimateQuota(c *gin.Context, groups modelListGroups, request canvasEstimateRequest, profile canvasProfile, body map[string]any) (int, error) {
+	if len(request.InputMedia) != 0 {
+		body = maps.Clone(body)
+		content := make([]any, 0, len(request.InputMedia)+1)
+		content = append(content, map[string]any{"type": "text", "text": request.InputText})
+		for i, media := range request.InputMedia {
+			mediaType := media.Type + "_url"
+			content = append(content, map[string]any{
+				"type": mediaType, "role": media.Role,
+				mediaType: map[string]any{"url": fmt.Sprintf("https://canvas-estimate.invalid/%d", i)},
+			})
+		}
+		// 占位地址只用于本地插件计量；此路径不调用提交、下载或查询 hook。
+		body["metadata"] = map[string]any{"content": content}
+	}
 	encoded, err := common.Marshal(body)
 	if err != nil {
 		return 0, err
@@ -606,6 +684,15 @@ func EstimateCanvasPrice(c *gin.Context) {
 	if len(candidates) == 0 || (meta.Id != 0 && meta.Status != 1) {
 		canvasBridgeError(c, http.StatusForbidden, "model_not_allowed", "当前 Key 无权使用该模型或模型已停用")
 		return
+	}
+	if len(request.InputMedia) != 0 {
+		inputTypes := canvasInputMediaTypes(request.Model, profile, candidates)
+		for _, media := range request.InputMedia {
+			if !slices.Contains(inputTypes, media.Type) {
+				canvasBridgeError(c, http.StatusUnprocessableEntity, "media_input_unsupported", "当前模型的可执行渠道未统一支持这些媒体输入，请检查模型映射和插件")
+				return
+			}
+		}
 	}
 	estimatedQuota, selectedGroup := -1, ""
 	failure := &canvasEstimateFailure{http.StatusUnprocessableEntity, "estimate_unavailable", "当前 Key 下没有同时支持该调用合同和价格的渠道，请检查模型授权、合同与上游定价"}

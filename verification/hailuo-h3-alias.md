@@ -46,3 +46,21 @@ Hailuo `1.1.4` 增加精确 `h3` 声明，并在现有 `isH3` 判断中将它识
 画布继续通过 `/v1/canvas/estimate` 取得上游预算，通过原冻结 Key 的 `/v1/canvas/receipts/:requestId` 核对最终净 quota，以冻结汇率换算 CNY 并按确认预算封顶。缺失或未完成回执保持待核实，不使用 Key 总余额差值结算。账务链路本轮仅核查，未重写。
 
 交付目标：`fork/main` 与中文附注 Tag `v1.0.0-rc.37.custom.12`；最终提交及远端一致性以交付回复的 Git 核验为准。线上插件仍未更新，本记录不表示生产验收完成。
+
+## 2026-09-20 后续：H3 图片提及与媒体预估
+
+最新状态覆盖上节历史部署检查点：8080 的 H3 已发布、`missing_profile` 已消失；本次错误为“模型 MiniMax-H3 不支持 image 类型资源提及”。P1 起点 `main @ 9470bf372`，工作区干净。目录的 `mentionMediaTypes` 固定为 `text`，与 Hailuo 已实现的 H3 多模态协议不符。
+
+修复仅涉及宿主桥接和原有桥接测试。目录仅为画布已适配的对外 `MiniMax-H3`，按实际 `hailuo` 插件、精确上游 `MiniMax-H3`/`h3` 与 `newapi-video-v1` 的可执行且已定价路由交集声明 `text,image,video,audio`；其他对外别名及未知/混合渠道仍保持保守。估算新增可选 `input_media` 数组，每项仅含 `type` 和 `role`，不接受真实 URL、资产身份或其他字段。图片最多 9 张、视频与音频各 3 段，首尾帧各一张且不能与参考混用。
+
+示例：`{"model":"MiniMax-H3","contract":"newapi-video-v1","parameters":{"seconds":5,"resolution":"768P"},"input_text":"Animate this image","input_media":[{"type":"image","role":"reference_image"}]}`。合法角色为 `first_frame`、`last_frame`、`reference_image`、`reference_video`、`reference_audio`，必须与类型配对。宿主只在估算内存中补安全占位内容，再调用现有插件解码/用量提取及原定价表达式；不提交、下载或查询任务，不改价格。视频用量沿用 H3 原有 15 秒预留规则。
+
+验证均为本地合成请求：
+
+- `go test -mod=readonly ./controller -run '^TestCanvas' -count=1` 通过；`TestCanvasBridgeHailuoMappedH3` 覆盖 type 35/61、原名/映射、未适配对外别名、未知和混合插件、未知字段/URL/数量边界。5 秒合成表达式的纯文本为 500000 quota，1 图 500500、2 图 501000、含视频 515000，证明复用了输入用量。
+- `go test -mod=readonly ./... -count=1`、`go vet -mod=readonly ./...`、`go build -mod=readonly -o .local-tests/h3-media-new-api.exe .`、gofmt 和 diff 检查通过。
+- Canvas 侧同时实现冻结媒体描述，真实报价入口测试覆盖同步前拒绝、同步后仅报价；能力同步新增绑定而不改历史绑定/价格。全量 lint/typecheck/test/build/runtime 通过，详见 Canvas `docs/newapi-pricing-sync-checkpoint.md`。
+
+没有数据库、依赖、迁移或插件文件变更，无需数据迁移；默认 SQLite 桥接测试不代表未启用的 MySQL/PostgreSQL 验收。生产部署前保留两端旧镜像和生效插件版本；回滚代码后重同步目录，不能恢复旧账务数据库覆盖新流水。旧文本客户端兼容，旧宿主会拒绝新媒体字段，部署须两端配套。
+
+交付目标为 `fork/main` 和中文附注 Tag `v1.0.0-rc.37.custom.13`。生产更新仍待授权：需要重建并更新 Go 宿主，单独上传 Hailuo JS 不能修复目录；更新后再同步原 Canvas 连接。尚未部署、未真实付费生成、未核验线上最终扣款。
