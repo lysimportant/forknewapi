@@ -3,6 +3,7 @@ package controller
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -393,6 +394,44 @@ func TestCanvasAccountManualExpiryIsNotRestored(t *testing.T) {
 			assert.EqualValues(t, 1, count)
 		})
 	}
+}
+
+// TestCanvasControlledRotation 验证维护入口与读取入口严格区分并限制在当前 grant。
+func TestCanvasControlledRotation(t *testing.T) {
+	_, identity := setupCanvasAccountControllerTest(t)
+	login := authorizeCanvasAccountForTest(t, identity)
+	old := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "initial"))
+	tokenID, err := strconv.Atoi(old.TokenID)
+	require.NoError(t, err)
+	fingerprint := sha256.Sum256([]byte(old.Key))
+	body, err := common.Marshal(canvasManagedGroupRequest{OperationID: "rotate-1", Rotation: &model.CanvasManagedTokenRotation{TokenID: tokenID, CredentialRevision: 1, KeyFingerprint: hex.EncodeToString(fingerprint[:])}})
+	require.NoError(t, err)
+	request := func(bearer, group string, rotate bool, value []byte) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(response)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/canvas/groups/"+url.PathEscape(group)+"/rotate", strings.NewReader(string(value)))
+		c.Request.Header.Set("Authorization", "Bearer "+bearer)
+		c.Params = gin.Params{{Key: "group", Value: group}}
+		if rotate {
+			PostCanvasRotateGroup(c)
+		} else {
+			PutCanvasManagedGroup(c)
+		}
+		return response
+	}
+	assert.Equal(t, http.StatusUnauthorized, request("invalid-grant", "default", true, body).Code)
+	assert.Equal(t, http.StatusBadRequest, request(login.Grant.Token, "default", false, body).Code)
+	assert.Equal(t, http.StatusBadRequest, request(login.Grant.Token, "default", true, []byte(`{"operation_id":"missing-version"}`)).Code)
+	assert.Equal(t, http.StatusForbidden, request(login.Grant.Token, model.CanvasExcludedGroup, true, body).Code)
+	rotated := decodeCanvasManagedGroupForTest(t, request(login.Grant.Token, "default", true, body))
+	assert.Equal(t, old.TokenID, rotated.TokenID)
+	assert.Equal(t, "2", rotated.CredentialRevision)
+	assert.NotEqual(t, old.Key, rotated.Key)
+	retried := decodeCanvasManagedGroupForTest(t, request(login.Grant.Token, "default", true, body))
+	assert.Equal(t, rotated, retried)
+	revoked := canvasAccountControllerRequest(http.MethodPost, "/api/canvas/revoke", "{}", login.Grant.Token, PostCanvasRevoke)
+	require.Equal(t, http.StatusOK, revoked.Code)
+	assert.Equal(t, http.StatusUnauthorized, request(login.Grant.Token, "default", true, body).Code)
 }
 
 // canvasManagedGroupRequestForTest 向管理分组处理器发送隔离请求。

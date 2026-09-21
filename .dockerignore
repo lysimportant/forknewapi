@@ -13,6 +13,7 @@ docs
 
 # 本地验证数据、生产挂载数据及凭据不能进入 Docker 构建上下文。
 .local-tests
+.tmp
 /data
 /logs
 .env

@@ -64,6 +64,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/canvas/token", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasToken)
 		apiRouter.GET("/canvas/account", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetCanvasAccount)
 		apiRouter.PUT("/canvas/groups/:group", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PutCanvasManagedGroup)
+		apiRouter.POST("/canvas/groups/:group/rotate", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasRotateGroup)
 		apiRouter.POST("/canvas/revoke", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PostCanvasRevoke)
 
 		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)

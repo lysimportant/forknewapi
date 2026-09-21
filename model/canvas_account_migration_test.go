@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,8 +86,12 @@ func TestCanvasAccountDatabaseMatrix(t *testing.T) {
 			}
 			t.Cleanup(func() { common.SQLitePath = previousSQLitePath })
 
-			db, _, err := chooseDB(dsnEnv, false)
+			db, databaseType, err := chooseDB(dsnEnv, false)
 			require.NoError(t, err)
+			previousType := common.MainDatabaseType()
+			common.SetMainDatabaseType(databaseType)
+			initCol()
+			t.Cleanup(func() { common.SetMainDatabaseType(previousType); initCol() })
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			sqlDB.SetMaxOpenConns(1)
@@ -109,8 +115,78 @@ func TestCanvasAccountDatabaseMatrix(t *testing.T) {
 			t.Run("token-configuration", func(t *testing.T) {
 				testCanvasTokenConfiguration(t, db)
 			})
+			t.Run("controlled-rotation", func(t *testing.T) {
+				testCanvasControlledRotation(t, db)
+			})
 		})
 	}
+}
+
+// testCanvasControlledRotation 在三种实际数据库中验证回滚、原操作重试及人工修改边界。
+func testCanvasControlledRotation(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	previousDB, previousRedis := DB, common.RedisEnabled
+	DB, common.RedisEnabled = db, false
+	t.Cleanup(func() { DB, common.RedisEnabled = previousDB, previousRedis })
+	models := []any{&User{}, &Token{}, &Channel{}, &Ability{}, &Option{}, &CanvasGrant{}, &CanvasManagedToken{}, &CanvasIdempotencyOperation{}}
+	require.NoError(t, db.AutoMigrate(models...))
+	t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(models...)) })
+	initCol()
+	user := User{Id: 7301, Username: "canvas-rotation-test", Group: "default", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+	var grant *CanvasGrant
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		grant, err = UpsertCanvasGrantWithTx(tx, "canvas-test", "rotation-test", user.Id, strings.Repeat("b", 64), "tokens:manage", time.Now().Unix()+3600)
+		return err
+	}))
+	initial := CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "initial"}
+	old, err := EnsureCanvasManagedToken(initial)
+	require.NoError(t, err)
+	fingerprint := sha256.Sum256([]byte(old.Token.GetFullKey()))
+	rotation := initial
+	rotation.OperationID = "rotate-1"
+	rotation.Rotation = &CanvasManagedTokenRotation{TokenID: old.Token.Id, CredentialRevision: 1, KeyFingerprint: hex.EncodeToString(fingerprint[:])}
+	const callback = "canvas_test:reject_rotation_intent"
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "canvas_idempotency_operations" {
+			tx.AddError(ErrCanvasIdempotencyConflict)
+		}
+	}))
+	_, err = EnsureCanvasManagedToken(rotation)
+	require.NoError(t, db.Callback().Create().Remove(callback))
+	require.ErrorIs(t, err, ErrCanvasIdempotencyConflict)
+	unchanged, err := EnsureCanvasManagedToken(initial)
+	require.NoError(t, err)
+	assert.Equal(t, old.Token.Key, unchanged.Token.Key)
+	assert.Equal(t, int64(1), unchanged.Managed.CredentialRevision)
+	rotated, err := EnsureCanvasManagedToken(rotation)
+	require.NoError(t, err)
+	assert.Equal(t, old.Token.Id, rotated.Token.Id)
+	assert.NotEqual(t, old.Token.Key, rotated.Token.Key)
+	assert.Equal(t, int64(2), rotated.Managed.CredentialRevision)
+	assert.Greater(t, rotated.Managed.PermissionRevision, old.Managed.PermissionRevision)
+	retried, err := EnsureCanvasManagedToken(rotation)
+	require.NoError(t, err)
+	assert.Equal(t, rotated.Token.Key, retried.Token.Key)
+	assert.Equal(t, int64(2), retried.Managed.CredentialRevision)
+	_, err = GetTokenByKey(old.Token.Key, true)
+	assert.Error(t, err)
+	conflict := rotation
+	conflict.OperationID = "different-operation-same-version"
+	_, err = EnsureCanvasManagedToken(conflict)
+	assert.ErrorIs(t, err, ErrCanvasManagedTokenChanged)
+	var count int64
+	require.NoError(t, db.Model(&Token{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+	require.NoError(t, db.Model(&Token{}).Where("id = ?", rotated.Token.Id).Update("key", "manually-replaced-key").Error)
+	_, err = EnsureCanvasManagedToken(rotation)
+	assert.ErrorIs(t, err, ErrCanvasManagedTokenChanged, "replay cannot adopt a manual key change")
+	require.NoError(t, db.Model(&Token{}).Where("id = ?", rotated.Token.Id).Update("key", rotated.Token.Key).Error)
+	rotated.Token.ExpiredTime = -1
+	require.NoError(t, rotated.Token.Update())
+	_, err = EnsureCanvasManagedToken(rotation)
+	assert.ErrorIs(t, err, ErrCanvasManagedTokenChanged, "rotation cannot reverse a manual expiry change")
 }
 
 // testCanvasTokenConfiguration 验证普通令牌更新及人工改期与管理状态的事务一致性。
@@ -241,12 +317,20 @@ func testCanvasAccountBaselineUpgrade(t *testing.T, db *gorm.DB, recorder *migra
 	assert.EqualValues(t, 1, grant.Revision)
 	assert.Equal(t, legacyGrant.TokenHash, grant.TokenHash)
 	assert.Equal(t, legacyManaged.PermissionFingerprint, managed.PermissionFingerprint)
+	assert.Empty(t, managed.KeyFingerprint)
 	assert.Empty(t, managed.AutoGroups)
 	assert.Equal(t, legacyOperation.RequestDigest, operation.RequestDigest)
 
 	require.NoError(t, db.Model(&CanvasManagedToken{}).Where("id = ?", managed.ID).Update("auto_groups", `["default","vip"]`).Error)
 	require.NoError(t, db.First(&managed, legacyManaged.ID).Error)
 	assert.Equal(t, `["default","vip"]`, managed.AutoGroups)
+	// custom.16 已含 Revision/AutoGroups，仅缺轮换指纹列；升级时不能丢失已有非空范围。
+	require.NoError(t, db.Migrator().DropColumn(&CanvasManagedToken{}, "KeyFingerprint"))
+	require.NoError(t, db.AutoMigrate(&CanvasGrant{}, &CanvasManagedToken{}, &CanvasIdempotencyOperation{}))
+	require.NoError(t, db.First(&managed, legacyManaged.ID).Error)
+	assert.Empty(t, managed.KeyFingerprint)
+	assert.Equal(t, `["default","vip"]`, managed.AutoGroups)
+	assert.Equal(t, legacyManaged.CredentialRevision, managed.CredentialRevision)
 
 	recorder.reset()
 	require.NoError(t, db.AutoMigrate(&CanvasGrant{}, &CanvasManagedToken{}, &CanvasIdempotencyOperation{}))

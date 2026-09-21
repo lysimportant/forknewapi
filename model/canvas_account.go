@@ -79,12 +79,14 @@ type CanvasGrant struct {
 // CanvasManagedToken 保存 grant、原始分组和实际 Token 的服务端归属关系。
 // PermissionRevision 只跟随授权元数据变化，不跟随余额扣减或价格变化。
 type CanvasManagedToken struct {
-	ID                    int64  `json:"id" gorm:"primaryKey"`
-	GrantID               string `json:"grant_id" gorm:"type:varchar(36);not null;index;uniqueIndex:idx_canvas_managed_group,priority:1"`
-	UserID                int    `json:"user_id" gorm:"not null;index"`
-	GroupID               string `json:"group_id" gorm:"type:varchar(191);not null;uniqueIndex:idx_canvas_managed_group,priority:2"`
-	TokenID               int    `json:"token_id" gorm:"not null;uniqueIndex"`
-	CredentialRevision    int64  `json:"credential_revision" gorm:"type:bigint;not null"`
+	ID                 int64  `json:"id" gorm:"primaryKey"`
+	GrantID            string `json:"grant_id" gorm:"type:varchar(36);not null;index;uniqueIndex:idx_canvas_managed_group,priority:1"`
+	UserID             int    `json:"user_id" gorm:"not null;index"`
+	GroupID            string `json:"group_id" gorm:"type:varchar(191);not null;uniqueIndex:idx_canvas_managed_group,priority:2"`
+	TokenID            int    `json:"token_id" gorm:"not null;uniqueIndex"`
+	CredentialRevision int64  `json:"credential_revision" gorm:"type:bigint;not null"`
+	// KeyFingerprint 在受控轮换后固定新 Key；旧版空值仍由 Canvas 的已存指纹校验。
+	KeyFingerprint        string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 	PermissionRevision    int64  `json:"permission_revision" gorm:"type:bigint;not null"`
 	PermissionFingerprint string `json:"-" gorm:"type:char(64);not null"`
 	AutoGroups            string `json:"-" gorm:"type:text"`
@@ -120,6 +122,15 @@ type CanvasManagedTokenInput struct {
 	GroupID     string
 	OperationID string
 	AutoGroups  []string
+	Rotation    *CanvasManagedTokenRotation
+}
+
+// CanvasManagedTokenRotation 绑定调用方已排空任务的原 Token、版本和完整 Key 的 SHA-256。
+// 正常轮换保留 Token ID 及账务归属；不接受人工修改后的 Key，也不恢复撤销 Token。
+type CanvasManagedTokenRotation struct {
+	TokenID            int    `json:"token_id"`
+	CredentialRevision int64  `json:"credential_revision"`
+	KeyFingerprint     string `json:"key_fingerprint"`
 }
 
 // CanvasAcceptanceInput 描述供应商调用受理前必须匹配的冻结授权事实。
@@ -235,6 +246,18 @@ func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuth
 		input.AutoGroups = nil
 	}
 	digest := canvasOperationDigest(input.GrantID, input.GroupID)
+	if rotation := input.Rotation; rotation != nil {
+		fingerprint, err := hex.DecodeString(rotation.KeyFingerprint)
+		if rotation.TokenID <= 0 || rotation.CredentialRevision < 1 || rotation.CredentialRevision >= 9007199254740991 || err != nil || len(fingerprint) != sha256.Size {
+			return nil, ErrCanvasIdempotencyConflict
+		}
+		encoded, err := common.Marshal(rotation)
+		if err != nil {
+			return nil, err
+		}
+		hash := sha256.Sum256([]byte("rotate:" + digest + ":" + string(encoded)))
+		digest = hex.EncodeToString(hash[:])
+	}
 	var managedID int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		// 第一条写语句在 SQLite 获取写锁；在 MySQL/PostgreSQL 也串行化同一 grant 的并发创建。
@@ -262,6 +285,9 @@ func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuth
 			if err := lockForUpdate(tx).First(&managed, operation.ManagedTokenID).Error; err != nil {
 				return err
 			}
+			if rotation := input.Rotation; rotation != nil && (managed.Status != CanvasManagedTokenStatusActive || managed.TokenID != rotation.TokenID || managed.CredentialRevision != rotation.CredentialRevision+1) {
+				return ErrCanvasManagedTokenChanged
+			}
 			if err := validateCanvasManagedTokenWithTx(tx, &grant, &managed, input.AutoGroups); err != nil {
 				return err
 			}
@@ -275,10 +301,41 @@ func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuth
 		var managed CanvasManagedToken
 		err = lockForUpdate(tx).Where("grant_id = ? AND group_id = ?", grant.ID, input.GroupID).First(&managed).Error
 		if err == nil {
+			if input.Rotation != nil && managed.Status != CanvasManagedTokenStatusActive {
+				return ErrCanvasManagedTokenChanged
+			}
 			if err := validateCanvasManagedTokenWithTx(tx, &grant, &managed, input.AutoGroups); err != nil {
 				return err
 			}
+			if rotation := input.Rotation; rotation != nil {
+				var token Token
+				if err := lockForUpdate(tx).First(&token, managed.TokenID).Error; err != nil {
+					return err
+				}
+				fingerprint := sha256.Sum256([]byte(token.GetFullKey()))
+				if managed.TokenID != rotation.TokenID || managed.CredentialRevision != rotation.CredentialRevision || hex.EncodeToString(fingerprint[:]) != rotation.KeyFingerprint {
+					return ErrCanvasManagedTokenChanged
+				}
+				key, err := common.GenerateKey()
+				if err != nil {
+					return err
+				}
+				if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+					return fmt.Errorf("invalidate rotating token cache: %w", err)
+				}
+				if err := tx.Model(&Token{}).Where("id = ?", token.Id).Update("key", key).Error; err != nil {
+					return err
+				}
+				managed.CredentialRevision++
+				newFingerprint := sha256.Sum256([]byte(key))
+				if err := tx.Model(&managed).Updates(map[string]any{"credential_revision": managed.CredentialRevision, "key_fingerprint": hex.EncodeToString(newFingerprint[:]), "updated_at": time.Now().Unix()}).Error; err != nil {
+					return err
+				}
+			}
 		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			if input.Rotation != nil {
+				return ErrCanvasManagedTokenChanged
+			}
 			created, createErr := createCanvasManagedTokenWithTx(tx, &grant, input.GroupID, input.AutoGroups)
 			if createErr != nil {
 				return createErr
@@ -301,7 +358,11 @@ func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuth
 	if err != nil {
 		return nil, err
 	}
-	return ReconcileCanvasManagedAuthority(managedID)
+	authority, err := ReconcileCanvasManagedAuthority(managedID)
+	if err == nil && input.Rotation != nil && authority.Managed.CredentialRevision != input.Rotation.CredentialRevision+1 {
+		return nil, ErrCanvasManagedTokenChanged
+	}
+	return authority, err
 }
 
 // ReconcileCanvasManagedAuthority 读取权威表并在权限指纹变化时单调递增修订。
@@ -707,6 +768,12 @@ func canvasManagedTokenContractValid(managed *CanvasManagedToken, token *Token) 
 	if token.AllowIps != nil && strings.TrimSpace(*token.AllowIps) != "" {
 		return false
 	}
+	if managed.KeyFingerprint != "" {
+		fingerprint := sha256.Sum256([]byte(token.GetFullKey()))
+		if hex.EncodeToString(fingerprint[:]) != managed.KeyFingerprint {
+			return false
+		}
+	}
 	groups, err := token.GetAutoGroups()
 	if err != nil {
 		return false
@@ -728,7 +795,7 @@ func canvasPermissionOptionsWithTx(tx *gorm.DB, authority *CanvasManagedAuthorit
 		"group_ratio_setting.group_ratio", "group_ratio_setting.group_special_usable_group",
 	}
 	var options []Option
-	if err := tx.Where("key IN ?", keys).Order("key ASC").Find(&options).Error; err != nil {
+	if err := tx.Where(commonKeyCol+" IN ?", keys).Order(commonKeyCol + " ASC").Find(&options).Error; err != nil {
 		return canvasPermissionOptions{}, err
 	}
 	snapshot := canvasPermissionOptions{}

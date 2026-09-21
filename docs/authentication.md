@@ -314,6 +314,12 @@ Content-Type: application/json
 
 普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、删除、改组、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突，不会静默改回。通过令牌管理接口人工修改期限时，令牌与管理关系在同一事务中更新为不可自动恢复；同一秒内的修改、改为永久或撤销后的改期也适用。普通改名不终止管理关系，Canvas 内部续期不走人工配置入口。
 
+受控轮换使用 `POST /api/canvas/groups/:group/rotate`，请求体为 `{"operation_id":"固定操作编号","rotation":{"token_id":123,"credential_revision":1,"key_fingerprint":"原完整 Key 的 SHA-256 小写十六进制"}}`。调用方必须先持久化意图、停止该组新提交并收尾旧任务及回执；New API 不掌握 Canvas 队列状态，不能代替这个检查。接口要求本人有效 grant、纳入组、原 Token、版本和指纹匹配，保留 Token ID 与账务归属，原子更换 Key 并递增修订；响应格式与 PUT 相同。原操作重试返回同一新 Key，换操作编号重试旧版本返回 409，读取 PUT 不接受 rotation 字段。
+
+轮换失效旧 Key 缓存，缓存失效失败时不写数据库；人工改 Key/期限、禁用、删除或撤销不被轮换覆盖。新增 `key_fingerprint` 仅保存摘要且不对外返回，轮换后再人工改 Key 时连原操作重试也拒绝。用户主动撤销仍立即生效，不能为了任务收尾延迟撤销。旧任务继续持有原版本引用，轮换后不承诺旧 Key 可查询，不得切换到新 Key 重发收费请求。审计只记录 grant、组、Token ID、修订和操作 ID，不记录 Key、指纹、请求体或响应体。
+
+升级先备份数据库，AutoMigrate 增加 `key_fingerprint VARCHAR(64) NOT NULL DEFAULT ''`；已有行不重写 Key。回退前停止轮换与新提交并核实待处理操作，保留新列和操作记录，不恢复旧 Key。三数据库验证包含 SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的事务回滚、幂等重试、人工修改、迁移及重复迁移；权限选项查询使用已引用的保留字列名。
+
 `POST /api/canvas/revoke` 撤销 grant，并只禁用该 grant 明确归属的管理 Token：
 
 ```json

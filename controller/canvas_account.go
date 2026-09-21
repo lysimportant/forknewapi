@@ -67,7 +67,8 @@ type canvasTokenExchangeRequest struct {
 
 // canvasManagedGroupRequest 提供幂等管理 Token 操作标识。
 type canvasManagedGroupRequest struct {
-	OperationID string `json:"operation_id"`
+	OperationID string                            `json:"operation_id"`
+	Rotation    *model.CanvasManagedTokenRotation `json:"rotation,omitempty"`
 }
 
 // canvasAccountUser 是返回给受信 Canvas 的最小用户身份投影。
@@ -318,6 +319,17 @@ func GetCanvasAccount(c *gin.Context) {
 // PutCanvasManagedGroup 为 grant 的指定可用分组幂等创建或恢复唯一管理 Token。
 // 普通分组固定路由；auto 保存排除后的非空显式范围且关闭跨组重试。
 func PutCanvasManagedGroup(c *gin.Context) {
+	canvasManagedGroup(c, false)
+}
+
+// PostCanvasRotateGroup 在 Canvas 已持久化轮换意图并排空旧任务后，幂等更新指定管理 Key。
+// 仅接受有效 grant；旧 Token、版本及指纹必须匹配，响应不进入审计日志。
+func PostCanvasRotateGroup(c *gin.Context) {
+	canvasManagedGroup(c, true)
+}
+
+// canvasManagedGroup 共用账号、分组和响应边界，读取与轮换使用不同操作摘要。
+func canvasManagedGroup(c *gin.Context, rotate bool) {
 	if _, ok := canvasAccountConfiguration(c); !ok {
 		return
 	}
@@ -339,7 +351,7 @@ func PutCanvasManagedGroup(c *gin.Context) {
 		return
 	}
 	var request canvasManagedGroupRequest
-	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || rotate != (request.Rotation != nil) {
 		canvasAccountJSONError(c, http.StatusBadRequest, "canvas_operation_invalid", "Canvas 分组操作无效")
 		return
 	}
@@ -349,6 +361,7 @@ func PutCanvasManagedGroup(c *gin.Context) {
 	}
 	authority, err := model.EnsureCanvasManagedToken(model.CanvasManagedTokenInput{
 		GrantID: grant.ID, GroupID: group, OperationID: request.OperationID, AutoGroups: autoGroups,
+		Rotation: request.Rotation,
 	})
 	if err != nil {
 		canvasAccountModelError(c, err)
@@ -366,8 +379,13 @@ func PutCanvasManagedGroup(c *gin.Context) {
 	if storedAutoGroups == nil {
 		storedAutoGroups = []string{}
 	}
-	recordUserSecurityAudit(c, user.Id, "canvas.token.manage", map[string]any{
+	action := "canvas.token.manage"
+	if rotate {
+		action = "canvas.token.rotate"
+	}
+	recordUserSecurityAudit(c, user.Id, action, map[string]any{
 		"success": true, "grant_id": grant.ID, "group": group, "token_id": authority.Token.Id,
+		"credential_revision": authority.Managed.CredentialRevision, "operation_id": request.OperationID,
 	})
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
