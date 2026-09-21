@@ -50,7 +50,7 @@ type canvasAuthorizationPayload struct {
 	Identity      model.AuthSessionIdentity `json:"identity"`
 }
 
-// canvasAuthorizeApproval 是浏览器明确批准授权时提交的请求。
+// canvasAuthorizeApproval 是已登录浏览器连接受信 Canvas 时提交的请求。
 type canvasAuthorizeApproval struct {
 	RequestToken string `json:"request_token"`
 }
@@ -83,9 +83,11 @@ type canvasAuthorizePageData struct {
 	Nonce        string
 	RequestToken string
 	CancelURI    string
+	// SelectAccount 控制授权页是否显示显式选号提示。
+	SelectAccount bool
 }
 
-// GetCanvasAuthorize 校验固定客户端、回调地址与 S256 PKCE 后显示同源授权页。
+// GetCanvasAuthorize 校验固定客户端、回调地址与 S256 PKCE 后自动连接同源登录身份。
 // 页面通过现有 Refresh Cookie 恢复短期登录令牌；长期授权和浏览器 Access Token 不进入 URL，
 // 一次性授权码只进入已校验的固定回调查询参数。
 func GetCanvasAuthorize(c *gin.Context) {
@@ -96,14 +98,15 @@ func GetCanvasAuthorize(c *gin.Context) {
 	query := c.Request.URL.Query()
 	allowed := map[string]bool{
 		"client_id": true, "instance_id": true, "redirect_uri": true,
-		"state": true, "code_challenge": true, "code_challenge_method": true,
+		"state": true, "code_challenge": true, "code_challenge_method": true, "prompt": true,
 	}
-	for key := range query {
-		if !allowed[key] || len(query[key]) != 1 {
+	for key, values := range query {
+		if !allowed[key] || len(values) != 1 || key == "prompt" && values[0] != "select_account" {
 			canvasAccountJSONError(c, http.StatusBadRequest, "canvas_authorization_invalid", "Canvas 授权请求无效")
 			return
 		}
 	}
+	selectAccount := query.Get("prompt") == "select_account"
 	clientID, clientOK := canvasSingleQueryValue(query, "client_id", 64)
 	instanceID, instanceOK := canvasSingleQueryValue(query, "instance_id", 128)
 	redirectURI, redirectOK := canvasSingleQueryValue(query, "redirect_uri", 2048)
@@ -153,12 +156,14 @@ func GetCanvasAuthorize(c *gin.Context) {
 	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'nonce-"+nonce+"'; script-src 'nonce-"+nonce+"'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Status(http.StatusOK)
-	if err := canvasAuthorizePage.Execute(c.Writer, canvasAuthorizePageData{Nonce: nonce, RequestToken: requestToken, CancelURI: cancelURI}); err != nil {
+	if err := canvasAuthorizePage.Execute(c.Writer, canvasAuthorizePageData{
+		Nonce: nonce, RequestToken: requestToken, CancelURI: cancelURI, SelectAccount: selectAccount,
+	}); err != nil {
 		c.Abort()
 	}
 }
 
-// PostCanvasAuthorize 由已登录浏览器批准一次授权请求，并签发五分钟单次授权码。
+// PostCanvasAuthorize 为部署配置中受信的 Canvas 签发五分钟单次登录码。
 // PAT 不能替代浏览器会话；会话版本会冻结到授权码并在兑换时再次校验。
 func PostCanvasAuthorize(c *gin.Context) {
 	config, ok := canvasAccountConfiguration(c)
@@ -561,13 +566,13 @@ func canvasAccountJSONError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"success": false, "code": code, "message": message})
 }
 
-// canvasAuthorizePageHTML 是不依赖外部资源的同源授权页模板。
+// canvasAuthorizePageHTML 恢复浏览器会话并自动连接固定 Canvas，仅显式换号展示账号选择。
 const canvasAuthorizePageHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>授权 Canvas</title>
+  <title>登录 Canvas</title>
   <style nonce="{{.Nonce}}">
     :root { color-scheme: light dark; font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; }
     * { box-sizing: border-box; }
@@ -591,16 +596,17 @@ const canvasAuthorizePageHTML = `<!doctype html>
 </head>
 <body>
   <main id="authorization" data-request-token="{{.RequestToken}}" data-cancel-uri="{{.CancelURI}}">
-    <h1>授权 Canvas</h1>
-    <p>Canvas 将读取你的账号身份和可用分组，并为本实例管理专用 API Token。费用仍由当前 New API 账号承担。</p>
+    <h1>{{if .SelectAccount}}选择登录账号{{else}}正在登录画布{{end}}</h1>
+    <p>登录后自动同步可用分组和模型，生成费用由当前 New API 账号结算。</p>
+    {{if .SelectAccount}}<p id="account-choice">继续使用当前账号，或换一个账号登录。</p>{{end}}
     <dl>
       <div class="row"><dt>当前账号</dt><dd id="account">正在确认登录状态</dd></div>
-      <div class="row"><dt>授权范围</dt><dd>身份、分组、Canvas 专用 Token</dd></div>
     </dl>
     <p id="status" role="status" aria-live="polite">正在恢复登录会话</p>
     <div class="actions">
+      {{if .SelectAccount}}<button id="switch-account" type="button" disabled>换一个账号</button>{{end}}
       <button id="cancel" type="button">取消</button>
-      <button id="approve" class="primary" type="button" disabled>授权</button>
+      {{if .SelectAccount}}<button id="continue" class="primary" type="button" disabled>继续登录</button>{{end}}
     </div>
   </main>
   <script nonce="{{.Nonce}}">
@@ -608,17 +614,50 @@ const canvasAuthorizePageHTML = `<!doctype html>
       const root = document.getElementById('authorization');
       const account = document.getElementById('account');
       const status = document.getElementById('status');
-      const approve = document.getElementById('approve');
+      const continueLogin = document.getElementById('continue');
       const cancel = document.getElementById('cancel');
+      const switchAccount = document.getElementById('switch-account');
       let accessToken = '';
+      let sessionID = '';
+      let connecting = false;
       const showError = (message) => { status.textContent = message; status.dataset.error = 'true'; };
+      // 已选择新账号或尚未登录时，完成登录就直接回画布，不再重复展示选择页。
+      const signIn = () => {
+        const target = new URL(window.location.href);
+        target.searchParams.delete('prompt');
+        window.location.replace('/sign-in?redirect=' + encodeURIComponent(target.pathname + target.search));
+      };
       cancel.addEventListener('click', () => window.location.assign(root.dataset.cancelUri));
-      approve.addEventListener('click', async () => {
-        if (!accessToken) return;
-        approve.disabled = true;
+      switchAccount?.addEventListener('click', async () => {
+        if (!accessToken || !sessionID) return;
+        switchAccount.disabled = true;
+        continueLogin.disabled = true;
         cancel.disabled = true;
         status.dataset.error = 'false';
-        status.textContent = '正在签发一次性授权码';
+        status.textContent = '正在退出当前账号';
+        try {
+          const response = await fetch('/api/user/auth/logout', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'accept': 'application/json', 'authorization': 'Bearer ' + accessToken, 'x-auth-session': sessionID },
+          });
+          if (!response.ok) throw new Error('logout rejected');
+          signIn();
+        } catch {
+          showError('账号切换未完成，请稍后重试');
+          switchAccount.disabled = false;
+          continueLogin.disabled = false;
+          cancel.disabled = false;
+        }
+      });
+      // 仅连接服务端严格白名单中的一体化实例；身份来自当前有效浏览器会话。
+      const connectCanvas = async () => {
+        if (!accessToken || connecting) return;
+        connecting = true;
+        if (switchAccount) switchAccount.disabled = true;
+        if (continueLogin) continueLogin.disabled = true;
+        cancel.disabled = true;
+        status.dataset.error = 'false';
+        status.textContent = '正在进入画布并同步分组';
         try {
           const response = await fetch('/api/canvas/authorize', {
             method: 'POST', credentials: 'same-origin',
@@ -629,24 +668,30 @@ const canvasAuthorizePageHTML = `<!doctype html>
           if (!response.ok || body.success !== true || !body.data?.redirect_uri) throw new Error('authorization rejected');
           window.location.assign(body.data.redirect_uri);
         } catch {
-          showError('授权未完成，请返回 Canvas 后重新发起登录');
+          showError('登录未完成，请返回画布后重试');
           cancel.disabled = false;
         }
-      });
+      };
+      continueLogin?.addEventListener('click', connectCanvas);
       (async () => {
         try {
           const response = await fetch('/api/user/auth/refresh', { method: 'POST', credentials: 'same-origin', headers: { 'accept': 'application/json' } });
           if (response.status === 401 || response.status === 403) {
-            const redirect = window.location.pathname + window.location.search;
-            window.location.replace('/sign-in?redirect=' + encodeURIComponent(redirect));
+            signIn();
             return;
           }
           const body = await response.json();
-          if (!response.ok || body.success !== true || !body.data?.access_token || !body.data?.user) throw new Error('session unavailable');
+          if (!response.ok || body.success !== true || !body.data?.access_token || !body.data?.user || !body.data?.session?.sid) throw new Error('session unavailable');
           accessToken = body.data.access_token;
+          sessionID = body.data.session.sid;
           account.textContent = body.data.user.display_name || body.data.user.username || String(body.data.user.id);
-          status.textContent = '请确认是否授权当前账号';
-          approve.disabled = false;
+          if (continueLogin) {
+            status.textContent = '请选择登录账号';
+            switchAccount.disabled = false;
+            continueLogin.disabled = false;
+          } else {
+            await connectCanvas();
+          }
         } catch {
           showError('暂时无法确认登录状态，请稍后重试');
         }

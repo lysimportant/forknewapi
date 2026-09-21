@@ -194,14 +194,14 @@ CANVAS_BRIDGE_ENABLED=true
 ```
 
 - `CANVAS_ACCOUNT_ISSUER` 是 New API 的规范化来源，只允许无用户信息、查询和片段的绝对 URL，路径必须为空。issuer 和回调均要求 HTTPS，只有 localhost 或回环 IP 允许 HTTP 本地验收。
-- `CANVAS_ACCOUNT_CLIENT_ID` 最长 64 字节，`CANVAS_ACCOUNT_INSTANCE_ID` 最长 128 字节。服务端只接受与部署值完全相同的客户端和实例。
+- `CANVAS_ACCOUNT_CLIENT_ID` 最长 64 字节，`CANVAS_ACCOUNT_INSTANCE_ID` 最长 128 字节。服务端只接受与部署值完全相同的客户端和实例。开启 `CANVAS_ACCOUNT_ENABLED` 即表示将该实例作为受信的一体化应用，用户登录后自动接入本人分组，不再显示单独授权确认；不能用于未受信的第三方客户端。
 - `CANVAS_ACCOUNT_REDIRECT_URI` 是唯一允许的精确回调地址，不支持通配符。
 - `CANVAS_ACCOUNT_CLIENT_SECRET` 为空时使用公开 PKCE 客户端；配置后，兑换授权码必须提供精确 secret。该值不能写入日志或前端。
 - 生产环境应使用 HTTPS，并按现有会话文档配置 `SESSION_SECRET`、Secure Refresh Cookie 和可信 Origin。
 
 固定 scope 为 `identity:read`、`groups:read` 和 `tokens:manage`。授权码有效五分钟、只能消费一次且只接受 S256 PKCE；grant 有效三十天。重新授权沿用 grant ID、轮换 grant Bearer，并使旧 Bearer 立即失效。
 
-### 浏览器授权
+### 浏览器一体化登录
 
 Canvas 生成 PKCE verifier、challenge 和一次性 `state`，然后打开：
 
@@ -213,9 +213,14 @@ GET /api/canvas/authorize
   &state=<opaque-state>
   &code_challenge=<base64url-sha256>
   &code_challenge_method=S256
+  &prompt=select_account
 ```
 
-New API 返回禁止缓存、禁止嵌入且带 nonce CSP 的授权页。页面通过 HttpOnly Refresh Cookie 恢复现有浏览器会话，Access Token 只保存在页面内存中；用户必须显式点击授权。批准请求为：
+普通登录省略 `prompt`；主动切换账号时才传唯一的 `select_account`。空值、重复值或其他值都返回 `400 canvas_authorization_invalid`。
+
+New API 返回禁止缓存、禁止嵌入且带 nonce CSP 的登录中间页。页面通过 HttpOnly Refresh Cookie 恢复浏览器会话，未登录时进入 New API 登录页；登录成功后自动执行同源 POST，后台连接固定 Canvas 并返回工作区，不需要点击“授权”。Access Token 只在页面内存中使用，长期 Key 不进入浏览器。
+
+只有 `prompt=select_account` 显示“继续登录”和“换一个账号”。打开选择页不会注销会话；点击“换一个账号”才携带当前 Access Token 和 Session ID 调用同源 `POST /api/user/auth/logout`，成功后进入 `/sign-in`。站内 `redirect` 保留原登录事务和 PKCE 参数，并删除 `prompt`，使新账号登录后直接回画布。取消返回固定回调的 `error=access_denied`；Canvas 校验并消费本人 state/浏览器事务后清理临时 Cookie，保留原有作品会话。自动连接请求为：
 
 ```http
 POST /api/canvas/authorize
@@ -386,6 +391,7 @@ Canvas 使用管理 Token 发起创建类请求时，必须且只能发送一个
 认证实现参考 OWASP ASVS 稳定版 5.0.0，以及 [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[OAuth 2.0](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) 和 [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) 指南。核对范围是本次新增的授权与管理 Token 合同，不代表整站 ASVS 认证。
 
 - 回归覆盖固定回调、S256 PKCE、短期一次性授权码、拒绝重放、仅浏览器会话批准、grant 轮换/撤销、分组精确排除、Key 人工变更、Auto 范围与受理身份不一致时在供应商 POST 前拒绝；Redis 缓存失效失败时管理变更回滚。
+- 一体化登录参照 ASVS 5.0.0 的 V7.2/V7.4 会话更换与服务端失效要求，以及 OAuth 2.0 指南中的固定回调、浏览器绑定 state 和 S256 PKCE。普通登录在部署方信任的固定实例内自动连接；换号仍为显式操作。参数回归覆盖非法、空值和重复 prompt 拒绝；SID/Cookie 不匹配和旧会话使用仍由现有会话测试覆盖。局部回归不构成整站 ASVS 认证，PC 实测记录见 Canvas 账号接入检查点。
 - 追加人工期限回归：同步与重新授权都不抵消用户改期；事务写入失败时期限和管理状态一起回滚。参照 ASVS 5.0.0 V7.3/V7.4 的到期和终止要求，不把时间戳先后当作修改来源；三库矩阵新增 `token-configuration` 用例。
 - 本地真实浏览器完成 Canvas → New API 登录授权 → 全部分组同步 → 文字生成和 Worker 归档 → 退出；双用户项目、凭据与 Run 隔离通过。供应商出口为本机 Mock，不证明真实供应商计费或生成成功。
 - `go test ./model -run '^TestCanvasAccountDatabaseMatrix$' -count=1 -v`，显式设置隔离 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN` 和 `CANVAS_REQUIRE_DATABASE_MATRIX=true`：SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的 fresh、upgrade、重复迁移、索引/唯一约束及数据保留均通过。日志数据库结构不在本次变更范围。

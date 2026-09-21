@@ -169,6 +169,60 @@ func TestCanvasAccountTransportConfiguration(t *testing.T) {
 	}
 }
 
+// TestCanvasAccountAuthorizePrompt 覆盖一体化登录与显式换号的参数边界。
+func TestCanvasAccountAuthorizePrompt(t *testing.T) {
+	_, _ = setupCanvasAccountControllerTest(t)
+	challenge := sha256.Sum256([]byte(strings.Repeat("a", 64)))
+	query := url.Values{
+		"client_id":             {"canvas"},
+		"instance_id":           {"controller-test"},
+		"redirect_uri":          {"http://localhost:5173/v1/auth/newapi/callback"},
+		"state":                 {"canvas-prompt-state"},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
+		"code_challenge_method": {"S256"},
+	}.Encode()
+
+	for _, test := range []struct {
+		name          string
+		promptQuery   string
+		status        int
+		selectAccount bool
+	}{
+		{name: "without prompt", status: http.StatusOK},
+		{name: "select account", promptQuery: "&prompt=select_account", status: http.StatusOK, selectAccount: true},
+		{name: "unsupported prompt", promptQuery: "&prompt=consent", status: http.StatusBadRequest},
+		{name: "empty prompt", promptQuery: "&prompt=", status: http.StatusBadRequest},
+		{name: "duplicate prompt", promptQuery: "&prompt=select_account&prompt=select_account", status: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := canvasAccountControllerRequest(
+				http.MethodGet,
+				"/api/canvas/authorize?"+query+test.promptQuery,
+				"",
+				"",
+				GetCanvasAuthorize,
+			)
+			require.Equal(t, test.status, response.Code, response.Body.String())
+			if test.status != http.StatusOK {
+				var body canvasAccountTestResponse[struct{}]
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
+				assert.False(t, body.Success)
+				assert.Equal(t, "canvas_authorization_invalid", body.Code)
+				return
+			}
+
+			body := response.Body.String()
+			assert.NotContains(t, body, `id="approve"`)
+			assert.Equal(t, test.selectAccount, strings.Contains(body, `<button id="switch-account"`))
+			assert.Equal(t, test.selectAccount, strings.Contains(body, `<button id="continue"`))
+			assert.Equal(t, test.selectAccount, strings.Contains(body, `id="account-choice"`))
+			assert.Contains(t, body, "登录后自动同步可用分组和模型")
+			assert.Contains(t, body, "await connectCanvas();")
+			assert.Contains(t, body, "target.searchParams.delete('prompt')")
+		})
+	}
+}
+
 // TestCanvasAccountAuthorizationManagementAndRecovery 覆盖账号授权、管理、撤销和恢复合同。
 func TestCanvasAccountAuthorizationManagementAndRecovery(t *testing.T) {
 	user, identity := setupCanvasAccountControllerTest(t)
