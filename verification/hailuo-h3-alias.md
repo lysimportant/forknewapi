@@ -64,3 +64,13 @@ Hailuo `1.1.4` 增加精确 `h3` 声明，并在现有 `isH3` 判断中将它识
 没有数据库、依赖、迁移或插件文件变更，无需数据迁移；默认 SQLite 桥接测试不代表未启用的 MySQL/PostgreSQL 验收。生产部署前保留两端旧镜像和生效插件版本；回滚代码后重同步目录，不能恢复旧账务数据库覆盖新流水。旧文本客户端兼容，旧宿主会拒绝新媒体字段，部署须两端配套。
 
 交付目标为 `fork/main` 和中文附注 Tag `v1.0.0-rc.37.custom.13`。生产更新仍待授权：需要重建并更新 Go 宿主，单独上传 Hailuo JS 不能修复目录；更新后再同步原 Canvas 连接。尚未部署、未真实付费生成、未核验线上最终扣款。
+
+## 2026-09-22 后续：H3 提交响应未知的重复保护
+
+本地 Canvas 的一次 H3 创建在 New API `hailuo@1.1.4` 解析提交响应时返回 `missing task_id`。Canvas 将该发送意图记录为 `unknown`，后续 Worker 重试被“原请求可能已经送达，禁止重复创建”拦截；没有第二次 Canvas 创建 POST。该原请求没有平台任务号，必须由渠道或供应商日志核实，不能重新提交。
+
+本次将 Hailuo 升级到 `1.1.5`，声明 `task-submit-no-retry@1`，并仅为 H3 `/v2/video_generation` 提交设置 `noRetry: true`。宿主对已经收到提交响应后的读取、解析或结果校验失败统一设置 `NoRetry`，防止 JSON 插件把未知受理结果当作可安全重试。旧 Hailuo `/v1` 描述不设置该选项，保持原有策略。
+
+上游 `https://shumai.siphot.com` 从本机访问根路径、`/docs`、`/openapi.json` 和 H3 路径均返回区域阻断，New API 日志也未保存原始响应体。因此不能推测 `task_id` 的替代字段；待获得脱敏原始响应或供应商合同后，再为该精确格式补解析测试和适配。
+
+验证使用合成 HTTP 响应和插件 hook，不发送付费创建请求：`TestTaskSubmissionAcceptanceAndSingleAttempt` 覆盖未声明 `noRetry` 的 JSON 解析失败仍不可重试；`TestHailuoH3BuildSubmitRequest` 与 `TestHailuoH3MappedUpstream` 覆盖 H3 描述，`TestHailuoLegacySubmitRequestUnchanged` 确认旧 `/v1` 路径不变。发布需更新整个 New API 宿主及其嵌入的 Hailuo 插件到 `v1.0.0-rc.37.custom.20`，然后核对实际插件版本；本记录不表示真实 H3 生成已验收。

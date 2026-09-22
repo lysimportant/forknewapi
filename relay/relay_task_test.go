@@ -35,19 +35,20 @@ func TestTaskSubmissionAcceptanceAndSingleAttempt(t *testing.T) {
 	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
 	service.InitHttpClient()
 	for _, tc := range []struct {
-		name       string
-		status     int
-		body       string
-		noRetry    bool
-		wantError  bool
-		disconnect bool
+		name        string
+		status      int
+		body        string
+		noRetry     bool
+		wantNoRetry bool
+		wantError   bool
+		disconnect  bool
 	}{
 		{name: "异步202保留任务编号", status: 202, body: `{"id":"accepted-video"}`, noRetry: true},
 		{name: "已有200响应仍可用", status: 200, body: `{"id":"accepted-video"}`},
-		{name: "服务端失败禁止重复提交", status: 503, body: `{"error":"submission unknown"}`, noRetry: true, wantError: true},
-		{name: "受理后缺少编号禁止重复提交", status: 202, body: `{}`, noRetry: true, wantError: true},
-		{name: "受理后JSON损坏禁止重复提交", status: 202, body: `{`, noRetry: true, wantError: true},
-		{name: "响应断开禁止重复提交", noRetry: true, wantError: true, disconnect: true},
+		{name: "服务端失败禁止重复提交", status: 503, body: `{"error":"submission unknown"}`, noRetry: true, wantNoRetry: true, wantError: true},
+		{name: "受理后缺少编号禁止重复提交", status: 202, body: `{}`, wantNoRetry: true, wantError: true},
+		{name: "受理后JSON损坏禁止重复提交", status: 202, body: `{`, wantNoRetry: true, wantError: true},
+		{name: "响应断开禁止重复提交", noRetry: true, wantNoRetry: true, wantError: true, disconnect: true},
 		{name: "既有插件保留重试行为", status: 503, body: `{"error":"unavailable"}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,7 +91,7 @@ export function parseTaskResult(){return {status:"QUEUED"};}
 			assert.Equal(t, 1, requests)
 			if tc.wantError {
 				require.NotNil(t, taskErr)
-				assert.Equal(t, tc.noRetry, taskErr.NoRetry)
+				assert.Equal(t, tc.wantNoRetry, taskErr.NoRetry)
 				assert.Nil(t, result)
 				return
 			}

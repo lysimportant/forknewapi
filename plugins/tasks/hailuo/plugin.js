@@ -7,7 +7,7 @@ export const meta = {
     en: "MiniMax Hailuo video generation (text-to-video, image-to-video, and MiniMax-H3 multimodal reference)",
     zh: "MiniMax 海螺视频生成（文生视频、图生视频、MiniMax-H3 多模态参考生视频）",
   },
-  version: "1.1.4",
+  version: "1.1.5",
   author: { name: "QuantumNous" },
   channelTypes: [35],
   models: [
@@ -24,6 +24,7 @@ export const meta = {
     "S2V-01",
   ],
   fetchMode: "per_task",
+  requiredCapabilities: ["task-submit-no-retry@1"],
   usageSchema: {
     // Requested video duration in seconds. MiniMax-H3 allows 4 to 15; Hailuo 2.3/02/2.3-Fast allow 6 or 10; 01-series allow 6.
     seconds: {
@@ -393,6 +394,7 @@ export function buildSubmitRequest(ctx) {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: "Bearer " + ctx.apiKey },
       body: h3Body,
+      noRetry: true,
       action: h3HasVisualContent(content) ? "image_to_video" : "text_to_video",
     };
   }

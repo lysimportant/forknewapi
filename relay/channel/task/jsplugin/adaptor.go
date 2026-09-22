@@ -465,7 +465,8 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	acceptedStream := streaming || mediaType == "text/event-stream"
 	defer func() {
-		if acceptedStream && taskErr != nil {
+		// 上游已经返回提交响应，解析失败时无法证明任务未被受理。
+		if taskErr != nil {
 			taskErr.NoRetry = true
 		}
 	}()
@@ -473,8 +474,6 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("unexpected SSE response for a JSON submission"), "plugin_submit_response_invalid", http.StatusBadGateway)
 	}
 	if streaming {
-		// Every failure after accepting this stream is non-retryable: the
-		// upstream may already have performed billable work.
 		defer resp.Body.Close()
 		responseBody, err = a.readSubmitEvents(c.Request.Context(), resp, a.submitContext(c, info))
 	} else {
@@ -491,7 +490,6 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	}
 	if err != nil {
 		failure := service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusBadGateway)
-		failure.NoRetry = streaming
 		return nil, failure
 	}
 	headers := make(map[string][]string, len(resp.Header))

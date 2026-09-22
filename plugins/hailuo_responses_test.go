@@ -192,6 +192,7 @@ func TestHailuoH3BuildSubmitRequest(t *testing.T) {
 			descriptor := callHailuoHook(t, plugin, "buildSubmitRequest", hailuoH3SubmitContext(testCase.request))
 			assert.Equal(t, "https://api.minimax.example/v2/video_generation", descriptor["url"])
 			assert.Equal(t, "POST", descriptor["method"])
+			assert.Equal(t, true, descriptor["noRetry"])
 			assert.Equal(t, testCase.wantAction, descriptor["action"])
 			body, err := common.Marshal(descriptor["body"])
 			require.NoError(t, err)
@@ -285,6 +286,7 @@ func TestHailuoLegacySubmitRequestUnchanged(t *testing.T) {
 	ctx["upstreamModel"] = "MiniMax-Hailuo-2.3"
 	descriptor := callHailuoHook(t, plugin, "buildSubmitRequest", ctx)
 	assert.Equal(t, "https://api.minimax.example/v1/video_generation", descriptor["url"])
+	assert.NotContains(t, descriptor, "noRetry")
 	body, err := common.Marshal(descriptor["body"])
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"model":"MiniMax-Hailuo-2.3","prompt":"p","duration":10,"resolution":"768P"}`, string(body))
@@ -582,6 +584,7 @@ func TestHailuoH3MappedUpstream(t *testing.T) {
 	descriptor := callHailuoHook(t, plugin, "buildSubmitRequest", ctx)
 	assert.Equal(t, "https://api.minimax.example/v2/video_generation", descriptor["url"])
 	assert.Equal(t, "POST", descriptor["method"])
+	assert.Equal(t, true, descriptor["noRetry"])
 	assert.Equal(t, "image_to_video", descriptor["action"])
 	body, err := common.Marshal(descriptor["body"])
 	require.NoError(t, err)
