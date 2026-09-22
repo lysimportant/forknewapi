@@ -274,6 +274,8 @@ Content-Type: application/json
 
 后续接口都使用 `Authorization: Bearer <grant-bearer>`，并返回 `Cache-Control: no-store`。
 
+浏览器授权页、同源批准、一次性 code 兑换继续使用按来源 IP 的 `CriticalRateLimit`，用于限制自动化登录和兑换尝试。取得 grant 后的账号读取、分组 Token 创建/轮换和撤销是 Canvas 后台一次同步中的连续请求，不再占用这个登录额度；它们仍经过 `/api` 全局 IP 限流，并在处理任何账号数据前校验有效 grant、scope、实例、到期和撤销状态。这样同一 Canvas 服务出口的分组数量不会锁死后续登录，伪造或失效 grant 也不能绕过服务端授权。
+
 `GET /api/canvas/account` 返回已验证用户、grant ID 和当前可接入分组：
 
 ```json
@@ -398,6 +400,7 @@ Canvas 使用管理 Token 发起创建类请求时，必须且只能发送一个
 
 - 回归覆盖固定回调、S256 PKCE、短期一次性授权码、拒绝重放、仅浏览器会话批准、grant 轮换/撤销、分组精确排除、Key 人工变更、Auto 范围与受理身份不一致时在供应商 POST 前拒绝；Redis 缓存失效失败时管理变更回滚。
 - 一体化登录参照 ASVS 5.0.0 的 V7.2/V7.4 会话更换与服务端失效要求，以及 OAuth 2.0 指南中的固定回调、浏览器绑定 state 和 S256 PKCE。普通登录在部署方信任的固定实例内自动连接；换号仍为显式操作。参数回归覆盖非法、空值和重复 prompt 拒绝；SID/Cookie 不匹配和旧会话使用仍由现有会话测试覆盖。局部回归不构成整站 ASVS 认证，PC 实测记录见 Canvas 账号接入检查点。
+- 登录与同步限流参照 ASVS 5.0.0 V6.1.1、V6.3.1 和 Authentication Cheat Sheet 的自动化攻击防护要求：授权页、浏览器批准和一次性 code 兑换保留 `CriticalRateLimit`；已授权后台同步使用全局 IP 限流与逐请求 grant 校验，避免多个分组共用登录额度造成合法账户锁定。路由回归先耗尽登录额度，再验证后台接口仍进入授权校验且无效 grant 返回 401。
 - 追加人工期限回归：同步与重新授权都不抵消用户改期；事务写入失败时期限和管理状态一起回滚。参照 ASVS 5.0.0 V7.3/V7.4 的到期和终止要求，不把时间戳先后当作修改来源；三库矩阵新增 `token-configuration` 用例。
 - 本地真实浏览器完成 Canvas → New API 登录授权 → 全部分组同步 → 文字生成和 Worker 归档 → 退出；双用户项目、凭据与 Run 隔离通过。供应商出口为本机 Mock，不证明真实供应商计费或生成成功。
 - `go test ./model -run '^TestCanvasAccountDatabaseMatrix$' -count=1 -v`，显式设置隔离 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN` 和 `CANVAS_REQUIRE_DATABASE_MATRIX=true`：SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的 fresh、upgrade、重复迁移、索引/唯一约束及数据保留均通过。日志数据库结构不在本次变更范围。
