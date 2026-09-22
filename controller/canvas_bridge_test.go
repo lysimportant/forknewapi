@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -122,7 +123,7 @@ func setupCanvasBridgeDB(t *testing.T, dialect string) *gorm.DB {
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":2,"secret":9}`))
 	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"vip":1.5}}`))
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP","auto":"Auto"}`))
-	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"Canvas-Text":0.02,"canvas-text":0.03,"canvas-image":0.1,"canvas-audio":0.02,"canvas-unprofiled":0.02,"canvas-hidden":0.02,"canvas-other-group":0.02,"canvas-free":0,"canvas-video":0.1}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"Canvas-Text":0.02,"canvas-text":0.03,"canvas-image":0.1,"gpt-image-auto":0.1,"canvas-audio":0.02,"canvas-unprofiled":0.02,"canvas-hidden":0.02,"canvas-other-group":0.02,"canvas-free":0,"canvas-video":0.1}`))
 	common.QuotaPerUnit, operation_setting.USDExchangeRate = 500000, 7.3
 	operation_setting.SelfUseModeEnabled = false
 	require.NoError(t, i18n.Init())
@@ -160,6 +161,86 @@ func canvasBridgeRequest(t *testing.T, router http.Handler, method, path, key st
 	return response
 }
 
+// TestCanvasCatalogProfilesFromAuthorizedCandidates 验证目录只从当前 Key 的候选渠道推导，并保留显式元数据的失败关闭语义。
+func TestCanvasCatalogProfilesFromAuthorizedCandidates(t *testing.T) {
+	textCandidate := canvasCandidate{Channel: &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI}}
+	generation := jsplugin.DefaultRegistry.Generation()
+	sharedTaskModelTextCandidate := canvasCandidate{Channel: &model.Channel{Id: 5, Type: constant.ChannelTypeOpenAI}, Generation: generation}
+	videoPlugin, found := generation.Get("hailuo")
+	require.True(t, found)
+	videoCandidate := canvasCandidate{
+		Channel: &model.Channel{Id: 4, Type: constant.ChannelTypeTaskPlugin}, Plugin: videoPlugin,
+		Generation: generation, UpstreamModel: "MiniMax-H3",
+	}
+	advancedImageCandidate := canvasCandidate{
+		Channel: &model.Channel{Id: 2, Type: constant.ChannelTypeAdvancedCustom},
+		OtherSettings: dto.ChannelOtherSettings{AdvancedCustom: &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{
+			{IncomingPath: "/v1/images/generations", Models: []string{"advanced-image", "mixed-model"}},
+		}}},
+	}
+	for _, test := range []struct {
+		name       string
+		modelName  string
+		metadata   model.Model
+		candidates []canvasCandidate
+		contracts  []string
+	}{
+		{name: "openai text without metadata", modelName: "plain-model", candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-chat-completions"}},
+		{name: "openai image without metadata", modelName: "gpt-image-auto", candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-images"}},
+		{name: "empty metadata object", modelName: "plain-model", metadata: model.Model{Endpoints: `{}`}, candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-chat-completions"}},
+		{name: "explicit endpoint type array", modelName: "plain-model", metadata: model.Model{Endpoints: `["image-generation"]`}, candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-images"}},
+		{name: "explicit image overrides inferred text", modelName: "plain-model", metadata: model.Model{Endpoints: `{"image-generation":"/v1/images/generations"}`}, candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-images"}},
+		{name: "explicit text resolves candidate ambiguity", modelName: "mixed-model", metadata: model.Model{Endpoints: `{"openai":"/v1/chat/completions"}`}, candidates: []canvasCandidate{textCandidate, advancedImageCandidate}, contracts: []string{"openai-chat-completions"}},
+		{name: "explicit ambiguity", modelName: "plain-model", metadata: model.Model{Endpoints: `{"openai":"/v1/chat/completions","image-generation":"/v1/images/generations"}`}, candidates: []canvasCandidate{textCandidate}, contracts: []string{"openai-chat-completions", "openai-images"}},
+		{name: "invalid metadata", modelName: "plain-model", metadata: model.Model{Endpoints: `{invalid`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "partially invalid endpoint array", modelName: "plain-model", metadata: model.Model{Endpoints: `["openai",1]`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "partially invalid endpoint object", modelName: "plain-model", metadata: model.Model{Endpoints: `{"openai":"/v1/chat/completions","broken":1}`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "invalid method type", modelName: "plain-model", metadata: model.Model{Endpoints: `{"openai":{"path":"/v1/chat/completions","method":1}}`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "explicit get method", modelName: "plain-model", metadata: model.Model{Endpoints: `{"openai":{"path":"/v1/chat/completions","method":"GET"}}`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "unsupported explicit responses protocol", modelName: "plain-model", metadata: model.Model{Endpoints: `{"openai-response":"/v1/responses"}`}, candidates: []canvasCandidate{textCandidate}},
+		{name: "video without metadata", modelName: "MiniMax-H3", candidates: []canvasCandidate{videoCandidate}, contracts: []string{"newapi-video-v1"}},
+		{name: "explicit video endpoint type array", modelName: "MiniMax-H3", metadata: model.Model{Endpoints: `["openai-video"]`}, candidates: []canvasCandidate{videoCandidate}, contracts: []string{"newapi-video-v1"}},
+		{name: "explicit text does not relabel video candidate", modelName: "MiniMax-H3", metadata: model.Model{Endpoints: `{"openai":"/v1/chat/completions"}`}, candidates: []canvasCandidate{videoCandidate}},
+		{name: "explicit text resolves text and video candidates", modelName: "MiniMax-H3", metadata: model.Model{Endpoints: `{"openai":"/v1/chat/completions"}`}, candidates: []canvasCandidate{textCandidate, videoCandidate}, contracts: []string{"openai-chat-completions"}},
+		{name: "unrelated channel may expose a shared task model as text", modelName: "MiniMax-H3", candidates: []canvasCandidate{sharedTaskModelTextCandidate}, contracts: []string{"openai-chat-completions"}},
+		{name: "advanced custom image", modelName: "advanced-image", candidates: []canvasCandidate{advancedImageCandidate}, contracts: []string{"openai-images"}},
+		{name: "advanced custom missing config", modelName: "advanced-image", candidates: []canvasCandidate{{Channel: &model.Channel{Id: 3, Type: constant.ChannelTypeAdvancedCustom}}}},
+		{name: "advanced custom model mismatch", modelName: "other-model", candidates: []canvasCandidate{advancedImageCandidate}},
+		{name: "candidate ambiguity", modelName: "mixed-model", candidates: []canvasCandidate{textCandidate, advancedImageCandidate}, contracts: []string{"openai-chat-completions", "openai-images"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profiles := canvasCatalogProfiles(test.metadata, test.candidates, test.modelName)
+			contracts := make([]string, 0, len(profiles))
+			for _, profile := range profiles {
+				contracts = append(contracts, profile.Contract)
+			}
+			if test.contracts == nil {
+				assert.Empty(t, contracts)
+				return
+			}
+			assert.Equal(t, test.contracts, contracts)
+		})
+	}
+}
+
+// TestCanvasModelPricingVersionTracksAdvancedCustomEndpoints 验证高级自定义路由改变目录合同时会刷新价格版本。
+func TestCanvasModelPricingVersionTracksAdvancedCustomEndpoints(t *testing.T) {
+	candidate := canvasCandidate{
+		Group: "default", UpstreamModel: "advanced-model",
+		Channel: &model.Channel{Id: 1, Type: constant.ChannelTypeAdvancedCustom},
+		OtherSettings: dto.ChannelOtherSettings{AdvancedCustom: &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{
+			{IncomingPath: "/v1/chat/completions", Models: []string{"advanced-model"}},
+		}}},
+	}
+	textVersion := canvasModelPricingVersion("base", "advanced-model", "default", model.Model{}, []canvasCandidate{candidate})
+	candidate.OtherSettings.AdvancedCustom.Routes[0].IncomingPath = "/v1/images/generations"
+	imageVersion := canvasModelPricingVersion("base", "advanced-model", "default", model.Model{}, []canvasCandidate{candidate})
+	assert.NotEqual(t, textVersion, imageVersion)
+	candidate.PluginManaged = true
+	pluginManagedVersion := canvasModelPricingVersion("base", "advanced-model", "default", model.Model{}, []canvasCandidate{candidate})
+	assert.NotEqual(t, imageVersion, pluginManagedVersion)
+}
+
 // canvasEstimatePayload 只解析面向 Canvas 的额度和元数据，不复算表达式或操纵钱包。
 type canvasEstimatePayload struct {
 	EstimatedQuota string `json:"estimated_quota"`
@@ -180,7 +261,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 			require.NoError(t, db.Create(user).Error)
 			token := &model.Token{UserId: user.Id, Key: strings.Repeat("b", 48), Status: common.TokenStatusEnabled, RemainQuota: 700000, ExpiredTime: -1}
 			require.NoError(t, db.Create(token).Error)
-			canvasFixtureChannel(t, db, "default", "Canvas-Text", "canvas-image", "canvas-audio", "canvas-unprofiled", "canvas-free", "canvas-unpriced", "canvas-hidden")
+			canvasFixtureChannel(t, db, "default", "Canvas-Text", "canvas-image", "gpt-image-auto", "canvas-audio", "canvas-unprofiled", "canvas-free", "canvas-unpriced", "canvas-hidden")
 			canvasFixtureChannel(t, db, "default", "canvas-text")
 			canvasFixtureChannel(t, db, "secret", "canvas-other-group")
 			canvasFixtureChannel(t, db, "vip", "Canvas-Text")
@@ -196,6 +277,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 				{ModelName: "Canvas-Text", Status: 1, Endpoints: `{"openai":"/v1/chat/completions"}`},
 				{ModelName: "canvas-image", Status: 1, Endpoints: `{"image":"/v1/images/generations"}`},
 				{ModelName: "canvas-audio", Status: 1, Endpoints: `{"audio":"/v1/audio/speech"}`},
+				{ModelName: "canvas-unprofiled", Status: 1, Endpoints: `{"openai":"/v1/chat/completions","image":"/v1/images/generations"}`},
 				{ModelName: "canvas-unpriced", Status: 1, Endpoints: `{"openai":"/v1/chat/completions"}`},
 				{ModelName: "canvas-hidden", Status: 2, Endpoints: `{"openai":"/v1/chat/completions"}`},
 			} {
@@ -219,13 +301,17 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 			for _, item := range catalog.Models {
 				items[item.ID] = item
 			}
-			assert.Len(t, items, 10)
+			assert.Len(t, items, 11)
 			assert.True(t, items[longModel].Available)
 			assert.False(t, items[oversizedModel].Available)
 			assert.Equal(t, "invalid_model_id", items[oversizedModel].UnavailableReason)
 			assert.True(t, items["Canvas-Text"].Available)
-			assert.Equal(t, "missing_profile", items["canvas-text"].UnavailableReason)
+			assert.True(t, items["canvas-text"].Available)
+			assert.Equal(t, "openai-chat-completions", items["canvas-text"].Contract)
 			assert.Equal(t, "openai-images", items["canvas-image"].Contract)
+			assert.True(t, items["gpt-image-auto"].Available)
+			assert.Equal(t, "image", items["gpt-image-auto"].MediaType)
+			assert.Equal(t, "openai-images", items["gpt-image-auto"].Contract)
 			assert.Equal(t, "openai-audio", items["canvas-audio"].Contract)
 			assert.Equal(t, "missing_profile", items["canvas-unprofiled"].UnavailableReason)
 			assert.Equal(t, "missing_pricing", items["canvas-unpriced"].UnavailableReason)

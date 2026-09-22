@@ -68,6 +68,7 @@ type canvasCandidate struct {
 	Channel       *model.Channel
 	OtherSettings dto.ChannelOtherSettings
 	Plugin        *jsplugin.LoadedPlugin
+	PluginManaged bool
 	Generation    *jsplugin.RoutingGeneration
 	UpstreamModel string
 }
@@ -183,9 +184,11 @@ func canvasAuthorizedModels(c *gin.Context) (modelListGroups, map[string][]canva
 				candidate.UpstreamModel = mappedInfo.UpstreamModelName
 			}
 			if channel.Type == constant.ChannelTypeTaskPlugin {
+				candidate.PluginManaged = true
 				candidate.Plugin, _ = generation.Get(channelSetting.TaskPluginKey)
 			} else {
 				candidate.Plugin, _ = generation.GetByChannelType(channel.Type)
+				candidate.PluginManaged = candidate.Plugin != nil && (slices.Contains(candidate.Plugin.Meta.Models, ability.Model) || slices.Contains(candidate.Plugin.Meta.Models, candidate.UpstreamModel))
 				if candidate.Plugin != nil && !slices.Contains(candidate.Plugin.Meta.Models, candidate.UpstreamModel) {
 					candidate.Plugin = nil
 				}
@@ -238,32 +241,117 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 	})
 }
 
-// canvasDeclaredProfiles 只解析管理员明确填写的标准端点；歧义端点保持待确认状态。
-func canvasDeclaredProfiles(metadata model.Model, candidates []canvasCandidate, name string) []canvasProfile {
-	paths := make(map[string]bool)
-	var endpoints map[string]any
-	if common.UnmarshalJsonStr(metadata.Endpoints, &endpoints) == nil {
-		for _, value := range endpoints {
-			switch endpoint := value.(type) {
-			case string:
-				paths[endpoint] = true
-			case map[string]any:
-				method, _ := endpoint["method"].(string)
-				path, _ := endpoint["path"].(string)
-				if method == "" || strings.EqualFold(method, http.MethodPost) {
-					paths[path] = true
-				}
+// endpointTypes 返回当前候选渠道对模型开放的有序端点能力，不读取其他分组或渠道的全站缓存。
+func (candidate canvasCandidate) endpointTypes(name string) []constant.EndpointType {
+	if candidate.Channel.Type == constant.ChannelTypeAdvancedCustom {
+		config := candidate.OtherSettings.AdvancedCustom
+		if config == nil {
+			return nil
+		}
+		return config.SupportedEndpointTypesForModel(name)
+	}
+	return common.GetEndpointTypesByChannelType(candidate.Channel.Type, name)
+}
+
+// preferredProfile 返回渠道为当前模型提供的首个 Canvas 标准合同；渠道端点顺序就是站点的优先顺序。
+func (candidate canvasCandidate) preferredProfile(name string) (canvasProfile, bool) {
+	for _, profile := range canvasProfiles {
+		if profile.Contract == "newapi-video-v1" && candidate.supports(name, profile) {
+			return profile, true
+		}
+	}
+	if candidate.PluginManaged {
+		return canvasProfile{}, false
+	}
+	for _, endpointType := range candidate.endpointTypes(name) {
+		endpoint, ok := common.GetDefaultEndpointInfo(endpointType)
+		if !ok || !strings.EqualFold(endpoint.Method, http.MethodPost) {
+			continue
+		}
+		for _, profile := range canvasProfiles {
+			if profile.Path == endpoint.Path && candidate.supports(name, profile) {
+				return profile, true
 			}
 		}
 	}
+	return canvasProfile{}, false
+}
+
+// canvasCatalogProfiles 优先采用管理员明确声明的端点；空声明才按当前 Key 可用渠道的首选标准端点推导。
+// 非空声明即使损坏、方法不兼容或只有 Canvas 尚未适配的协议，也保持失败关闭。
+func canvasCatalogProfiles(metadata model.Model, candidates []canvasCandidate, name string) []canvasProfile {
 	profiles := make([]canvasProfile, 0)
-	for _, profile := range canvasProfiles {
-		for _, candidate := range candidates {
-			if candidate.supports(name, profile) && (paths[profile.Path] || profile.Contract == "newapi-video-v1") {
-				profiles = append(profiles, profile)
-				break
+	paths := make(map[string]bool)
+	hasDeclaredEndpoints := false
+	if strings.TrimSpace(metadata.Endpoints) != "" {
+		if model.ValidateModelEndpoints(metadata.Endpoints) != nil {
+			return profiles
+		}
+		var declared any
+		if common.UnmarshalJsonStr(metadata.Endpoints, &declared) != nil {
+			return profiles
+		}
+		switch endpoints := declared.(type) {
+		case []any:
+			hasDeclaredEndpoints = len(endpoints) > 0
+			for _, value := range endpoints {
+				endpointType, ok := value.(string)
+				if !ok {
+					return profiles
+				}
+				declaredType := constant.EndpointType(strings.TrimSpace(endpointType))
+				if declaredType == constant.EndpointTypeOpenAIVideo {
+					paths["/v1/videos"] = true
+					continue
+				}
+				endpoint, ok := common.GetDefaultEndpointInfo(declaredType)
+				if ok && strings.EqualFold(endpoint.Method, http.MethodPost) {
+					paths[endpoint.Path] = true
+				}
+			}
+		case map[string]any:
+			hasDeclaredEndpoints = len(endpoints) > 0
+			for _, value := range endpoints {
+				switch endpoint := value.(type) {
+				case string:
+					paths[endpoint] = true
+				case map[string]any:
+					method, _ := endpoint["method"].(string)
+					path, _ := endpoint["path"].(string)
+					if method == "" || strings.EqualFold(method, http.MethodPost) {
+						paths[path] = true
+					}
+				}
+			}
+		default:
+			return profiles
+		}
+	}
+	if hasDeclaredEndpoints {
+		for _, profile := range canvasProfiles {
+			if !paths[profile.Path] {
+				continue
+			}
+			for _, candidate := range candidates {
+				if candidate.supports(name, profile) {
+					profiles = append(profiles, profile)
+					break
+				}
 			}
 		}
+		return profiles
+	}
+	seen := make(map[string]struct{})
+	for _, candidate := range candidates {
+		profile, ok := candidate.preferredProfile(name)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[profile.Contract]; exists {
+			continue
+		}
+		seen[profile.Contract] = struct{}{}
+		profiles = append(profiles, profile)
 	}
 	return profiles
 }
@@ -289,7 +377,10 @@ func canvasModelPricingVersion(base, name, userGroup string, metadata model.Mode
 		if !special {
 			ratio = ratio_setting.GetGroupRatio(candidate.Group)
 		}
-		route := map[string]any{"group": candidate.Group, "ratio": ratio, "channel": candidate.Channel.Id, "type": candidate.Channel.Type, "upstream_model": candidate.UpstreamModel}
+		route := map[string]any{
+			"group": candidate.Group, "ratio": ratio, "channel": candidate.Channel.Id, "type": candidate.Channel.Type,
+			"upstream_model": candidate.UpstreamModel, "endpoint_types": candidate.endpointTypes(name), "plugin_managed": candidate.PluginManaged,
+		}
 		if candidate.Plugin != nil {
 			route["plugin"] = candidate.Plugin.Meta.Key
 			route["version"] = candidate.Plugin.Meta.Version
@@ -368,7 +459,7 @@ func GetCanvasCatalog(c *gin.Context) {
 		meta := metadata[name]
 		candidates := byModel[name]
 		item := canvasCatalogModel{ID: name, Name: name, Description: meta.Description, PricingVersion: canvasModelPricingVersion(baseVersion, name, groups.userGroup, meta, candidates)}
-		profiles := canvasDeclaredProfiles(meta, candidates, name)
+		profiles := canvasCatalogProfiles(meta, candidates, name)
 		if !canvasModelIDValid(name) {
 			item.UnavailableReason = "invalid_model_id"
 		} else if meta.Id != 0 && meta.Status != 1 {
