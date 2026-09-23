@@ -190,8 +190,25 @@ const BUDGET_LIMITS = {
   "sd2.5-30-10-10-per-request": { resolutions: { "720p": [5, 30] }, images: 30, videos: 3, audios: 3, total: 36 },
 };
 
-/** Grok 提供次数和请求秒数供管理员独立定价；Moon 的按次成本不决定下游售价。 */
+/** 引用素材按文件数提供可选的输入单价；只计算已校验的引用条目，不读取文件内容。 */
+const INPUT_USAGE_SCHEMA = {
+  image_input_count: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "image", zh: "张" },
+    description: { en: "Image input unit price", zh: "图片输入单价" },
+  },
+  video_input_count: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "video", zh: "段" },
+    description: { en: "Video input unit price", zh: "视频输入单价" },
+  },
+};
+
+/** Grok 的生成次数、请求秒数及图片引用分别可定价；上游按次成本不决定下游售价。 */
 const GROK_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   video_count: {
     type: "number",
     unit: "count",
@@ -204,8 +221,9 @@ const GROK_USAGE_SCHEMA = {
   },
 };
 
-/** Moon Seedance Token 模型的计费事实；tokens 是用量数量，不是价格。 */
+/** Moon Seedance 的 Token 用量与输入素材数可分别定价；tokens 不是金额。 */
 const TOKEN_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   tokens: {
     type: "number",
     unit: "token",
@@ -231,8 +249,9 @@ const TOKEN_USAGE_SCHEMA = {
   },
 };
 
-/** Wan 视频按请求输出秒数和参考视频秒数计费；不套用未经确认的阿里云完成用量字段。 */
+/** Wan 的原秒数事实保留输出加参考视频时长；输入素材数可另行定价。 */
 const WAN_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   seconds: {
     type: "number",
     unit: "second",
@@ -249,8 +268,9 @@ const WAN_USAGE_SCHEMA = {
   },
 };
 
-/** 官转只使用请求输出秒数，不把参考素材时长计入价格。 */
+/** 官转的秒数事实只含输出时长；参考素材另按文件数计。 */
 const PT_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   resolution: {
     enum: ["480p", "720p"],
@@ -258,18 +278,21 @@ const PT_USAGE_SCHEMA = {
     description: { en: "Output video resolution", zh: "输出视频分辨率" },
   },
 };
-/** 底价按次模型只暴露一次生成事实，不把输出时长变成计费倍数。 */
+/** 底价按次模型的生成事实固定为一次；输入素材可单独定价。 */
 const BUDGET_PER_REQUEST_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   video_count: { type: "number", unit: "count", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   resolution: PT_USAGE_SCHEMA.resolution,
 };
-/** 底价按秒模型暴露请求输出时长，不把供应商参考素材时长计入计费。 */
+/** 底价按秒模型的秒数事实只含输出时长；输入素材按文件数另计。 */
 const BUDGET_PER_SECOND_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   resolution: PT_USAGE_SCHEMA.resolution,
 };
-/** H3 仅暴露管理员可定价的有界请求事实，不把 Moon 积分换算为美元。 */
+/** H3 暴露输出秒数和输入素材数；不把 Moon 积分换算为美元。 */
 const H3_USAGE_SCHEMA = {
+  ...INPUT_USAGE_SCHEMA,
   seconds: {
     type: "number",
     unit: "second",
@@ -299,7 +322,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, ArtsDance, PT, budget, MiniMax H3, and Grok models",
     zh: "Moon Wan、Seedance、ArtsDance、官转、底价、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.4.0",
+  version: "1.5.0",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -315,9 +338,13 @@ export const meta = {
     { models: [GROK_MODEL], schema: GROK_USAGE_SCHEMA },
   ],
   usageExamples: [
-    { label: "5s · 720p", facts: { tokens: 108000, resolution: "720p", video_input: "none" } },
-    { label: "5s · 1080p", facts: { tokens: 243000, resolution: "1080p", video_input: "none" } },
-    { label: "5s · 4k", facts: { tokens: 972000, resolution: "4k", video_input: "none" } },
+    { label: "5s · 720p", facts: { tokens: 108000, resolution: "720p", video_input: "none", image_input_count: 0, video_input_count: 0 } },
+    { label: "5s · 1080p", facts: { tokens: 243000, resolution: "1080p", video_input: "none", image_input_count: 0, video_input_count: 0 } },
+    { label: "5s · 4k", facts: { tokens: 972000, resolution: "4k", video_input: "none", image_input_count: 0, video_input_count: 0 } },
+    {
+      label: "2.0 · 5s · 720p · 1 image · 1 video",
+      facts: { tokens: 432000, resolution: "720p", video_input: "video", image_input_count: 1, video_input_count: 1 },
+    },
   ],
   protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }],
 };
@@ -559,7 +586,7 @@ function validateTokenReferences(req, duration, ratio, model) {
   if ((req.omni_reference_task_type === "edit" || req.omni_reference_task_type === "extend") && ratio !== "adaptive")
     throw new Error("edit and extend require adaptive ratio");
   if (req.omni_reference_task_type === "edit" && duration !== -1) throw new Error("edit requires duration -1");
-  return { videoCount, hasReference: imageCount + videoCount + audioCount > 0 };
+  return { imageCount, videoCount, hasReference: imageCount + videoCount + audioCount > 0 };
 }
 
 /** 将 image_urls 的 URL 或图片对象归一为已确认的 images 合同；两个字段不得同时出现。 */
@@ -656,6 +683,7 @@ function validateWanRequest(req, model) {
     ratio: ratio,
     referenceVideoSeconds: videos.videoSeconds,
     videoInput: videos.count > 0 ? "video" : "none",
+    imageCount: images.count,
     videoCount: videos.count,
     hasReference: referenceCount + documentCount > 0,
   };
@@ -832,7 +860,14 @@ function validatePTRequest(req, model) {
     (frames.length && counts.images + counts.videos + counts.audios !== frames.length)
   )
     throw new Error("Moon PT first/last frames cannot be mixed with other references");
-  return { duration, resolution, ratio, hasReference: counts.images + counts.videos + counts.audios > 0 };
+  return {
+    duration,
+    resolution,
+    ratio,
+    imageCount: counts.images,
+    videoCount: counts.videos,
+    hasReference: counts.images + counts.videos + counts.audios > 0,
+  };
 }
 
 /** 底价渠道允许素材字段原序透传，但每一项仍须为公网 URL 且符合模型上限。 */
@@ -885,7 +920,15 @@ function validateBudgetRequest(req, model) {
     counts.images + counts.videos + counts.audios > limits.total
   )
     throw new Error("Moon budget reference limit exceeded");
-  return { duration, resolution, ratio, model, hasReference: counts.images + counts.videos + counts.audios > 0 };
+  return {
+    duration,
+    resolution,
+    ratio,
+    model,
+    imageCount: counts.images,
+    videoCount: counts.videos,
+    hasReference: counts.images + counts.videos + counts.audios > 0,
+  };
 }
 
 /** 校验 H3 URL 数组，素材只能使用可直接访问的 HTTP(S) 地址。 */
@@ -950,6 +993,7 @@ function validateH3Request(req, model) {
     duration: duration,
     resolution: resolution,
     videoInput: videoCount > 0 ? "video" : "none",
+    imageCount: imageCount,
     videoCount: videoCount,
     hasReference: hasReference,
     h3: true,
@@ -981,7 +1025,15 @@ function validateGrokRequest(req, model) {
         throw new Error("Moon Grok first_frame requires exactly one image and cannot be combined with other references");
     }
   }
-  return { duration, resolution, ratio, grok: true, hasReference: req.input_reference !== undefined || req.reference_images !== undefined };
+  return {
+    duration,
+    resolution,
+    ratio,
+    grok: true,
+    imageCount: req.input_reference !== undefined ? 1 : req.reference_images ? req.reference_images.length : 0,
+    videoCount: 0,
+    hasReference: req.input_reference !== undefined || req.reference_images !== undefined,
+  };
 }
 
 /** 按模型系列选择独立请求合同。 */
@@ -1539,6 +1591,14 @@ function estimateTokens(duration, resolution, videoInputCount, model) {
   return (totalSeconds * pixels[0] * pixels[1] * 24) / 1024;
 }
 
+/** 将已校验的请求素材条目转换为输入计费事实；零素材也返回 0，重复引用不去重。 */
+function inputUsageFacts(facts) {
+  return {
+    image_input_count: facts.imageCount || 0,
+    video_input_count: facts.videoCount || 0,
+  };
+}
+
 /** 返回宿主用量事实；billing_ratios 不伪造 Moon 的币值或倍率。 */
 export function extractUsage(ctx) {
   const request = ctx.requestBody || {};
@@ -1546,16 +1606,21 @@ export function extractUsage(ctx) {
   if (!MODELS.includes(model)) throw new Error("unsupported Moon model");
   if (ctx.usagePurpose === "billing_ratios") return null;
   const facts = validateKnownFields(request, model, true);
-  if (isGrok(model)) return { video_count: 1, seconds: facts.duration };
-  if (isPT(model)) return { seconds: facts.duration, resolution: facts.resolution };
+  if (isGrok(model)) return { video_count: 1, seconds: facts.duration, ...inputUsageFacts(facts) };
+  if (isPT(model)) return { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   if (isBudget(model)) {
     return BUDGET_PER_REQUEST_MODELS.includes(model)
-      ? { video_count: 1, resolution: facts.resolution }
-      : { seconds: facts.duration, resolution: facts.resolution };
+      ? { video_count: 1, resolution: facts.resolution, ...inputUsageFacts(facts) }
+      : { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   }
-  if (isWan(model)) return { seconds: facts.duration + facts.referenceVideoSeconds, resolution: facts.resolution };
-  if (isH3(model)) return { seconds: facts.duration, resolution: facts.resolution };
-  return { tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount, model), resolution: facts.resolution, video_input: facts.videoInput };
+  if (isWan(model)) return { seconds: facts.duration + facts.referenceVideoSeconds, resolution: facts.resolution, ...inputUsageFacts(facts) };
+  if (isH3(model)) return { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
+  return {
+    tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount, model),
+    resolution: facts.resolution,
+    video_input: facts.videoInput,
+    ...inputUsageFacts(facts),
+  };
 }
 
 /** 提取 H3 完成响应中的有界秒数和规范分辨率；积分字段不参与美元定价。 */

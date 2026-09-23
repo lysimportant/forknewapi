@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,6 +73,11 @@ func TestMoonAdditionalModelsContracts(t *testing.T) {
 				}
 				schema, _ := plugin.Meta.UsageForModel(tc.id)
 				require.Contains(t, schema, "resolution")
+				for _, field := range []string{"image_input_count", "video_input_count"} {
+					assert.Equal(t, "count", schema[field].Unit)
+					assert.NotEmpty(t, schema[field].Description["en"])
+					assert.NotEmpty(t, schema[field].Description["zh"])
+				}
 				switch tc.billing {
 				case "token":
 					assert.Equal(t, "token", schema["tokens"].Unit)
@@ -385,10 +392,10 @@ func TestMoonAdditionalModelsContracts(t *testing.T) {
 			body  map[string]any
 			want  map[string]any
 		}{
-			{"seedance-2-0-mini-official", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none"}},
-			{"wan3.0-video", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"seconds": float64(5), "resolution": "720P"}},
-			{"grok-v1.5-video", map[string]any{"prompt": "ocean", "seconds": 6}, map[string]any{"video_count": float64(1), "seconds": float64(6)}},
-			{"minimax-h3", map[string]any{"prompt": "ocean", "workflow_id": "text-to-video", "seconds": 5, "size": "1376x768"}, map[string]any{"seconds": float64(5), "resolution": "768p"}},
+			{"seedance-2-0-mini-official", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none", "image_input_count": float64(0), "video_input_count": float64(0)}},
+			{"wan3.0-video", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"seconds": float64(5), "resolution": "720P", "image_input_count": float64(0), "video_input_count": float64(0)}},
+			{"grok-v1.5-video", map[string]any{"prompt": "ocean", "seconds": 6}, map[string]any{"video_count": float64(1), "seconds": float64(6), "image_input_count": float64(0), "video_input_count": float64(0)}},
+			{"minimax-h3", map[string]any{"prompt": "ocean", "workflow_id": "text-to-video", "seconds": 5, "size": "1376x768"}, map[string]any{"seconds": float64(5), "resolution": "768p", "image_input_count": float64(0), "video_input_count": float64(0)}},
 		} {
 			t.Run(tc.model, func(t *testing.T) {
 				assert.Equal(t, tc.want, callObject(t, "extractUsage", map[string]any{
@@ -396,5 +403,114 @@ func TestMoonAdditionalModelsContracts(t *testing.T) {
 				}))
 			})
 		}
+	})
+
+	t.Run("引用素材按请求条目直接计数", func(t *testing.T) {
+		image := "https://cdn.example/ref.jpg"
+		video := "https://cdn.example/ref.mp4"
+		for _, tc := range []struct {
+			name, model string
+			body        map[string]any
+			images      float64
+			videos      float64
+		}{
+			{"Seedance content", "seedance-2-5-official", map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "ocean"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": image}, "role": "reference_image"},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": video}, "role": "reference_video"},
+			}}, 1, 1},
+			{"Seedance 首尾帧", "seedance-2-5-official", map[string]any{"prompt": "ocean", "ratio": "adaptive", "first_frame": image, "last_frame": image}, 2, 0},
+			{"Wan 文件 ID 和文档", "wan3.0-video", map[string]any{
+				"prompt": "ocean", "reference_images": []any{map[string]any{"file_id": "file-fixture"}, map[string]any{"url": image}},
+				"reference_videos": []any{map[string]any{"url": video, "duration": 3}},
+				"input":            map[string]any{"media": []any{map[string]any{"type": "link", "url": "https://example.com/article"}}},
+			}, 2, 1},
+			{"PT content", "seedance2.5-30-10-10-PT", map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "ocean"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": image}, "role": "reference_image"},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": video}, "role": "reference_video", "durationSeconds": 5},
+			}}, 1, 1},
+			{"PT materials", "seedance2.0-9-3-3-PT", map[string]any{"prompt": "ocean", "materials": []any{
+				map[string]any{"type": "image", "url": image},
+				map[string]any{"type": "video", "url": video, "durationSeconds": 5},
+			}}, 1, 1},
+			{"底价别名重复引用不去重", "sd2.5-30-10-10", map[string]any{"prompt": "ocean", "images": []any{image}, "image_refs": []any{image}, "videos": []any{video}, "video_refs": []any{video}}, 2, 2},
+			{"H3 单数和复数素材", "minimax-h3", map[string]any{"prompt": "ocean", "workflow_id": "multi-reference", "seconds": 5, "size": "1376x768", "images": []any{image, image}, "input_reference": image, "reference_video": video}, 3, 1},
+			{"Grok 仅图片", "grok-v1.5-video", map[string]any{"prompt": "ocean", "reference_images": []any{map[string]any{"url": image}, map[string]any{"url": image}}}, 2, 0},
+			{"纯文生视频零输入", "sd2-930-fast", map[string]any{"prompt": "ocean"}, 0, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				schema, _ := plugin.Meta.UsageForModel(tc.model)
+				assert.Equal(t, "count", schema["image_input_count"].Unit)
+				assert.Equal(t, "count", schema["video_input_count"].Unit)
+				facts := callObject(t, "extractUsage", map[string]any{
+					"upstreamModel": tc.model, "usagePurpose": "facts", "requestBody": tc.body,
+				})
+				assert.Equal(t, tc.images, facts["image_input_count"])
+				assert.Equal(t, tc.videos, facts["video_input_count"])
+			})
+		}
+	})
+
+	t.Run("图片和视频单价仅在价格表达式启用时叠加", func(t *testing.T) {
+		facts := callObject(t, "extractUsage", map[string]any{
+			"upstreamModel": "sd2.5-30-10-10", "usagePurpose": "facts", "requestBody": map[string]any{
+				"prompt": "ocean", "seconds": 5,
+				"images": []any{"https://cdn.example/a.jpg", "https://cdn.example/b.jpg"},
+				"videos": []any{"https://cdn.example/a.mp4", "https://cdn.example/b.mp4"},
+			},
+		})
+		for _, tc := range []struct {
+			expression string
+			quota      int
+		}{
+			{`tier("base", u("seconds") * 0.02)`, 50000},
+			{`tier("base", u("seconds") * 0.02 + u("image_input_count") * 0.10 + u("video_input_count") * 0.30)`, 450000},
+		} {
+			snapshot := &billingexpr.BillingSnapshot{
+				ExprString: tc.expression, ExprHash: billingexpr.ExprHashString(tc.expression),
+				GroupRatio: 1, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true, UsageFacts: facts,
+			}
+			reserved, _, err := service.EvaluateTaskCompletionUsage(snapshot, nil)
+			require.NoError(t, err)
+			completed, callErr := plugin.Engine.Call(t.Context(), "extractUsageOnComplete",
+				map[string]any{"upstreamModel": "sd2.5-30-10-10"}, map[string]any{"status": "SUCCESS"},
+				map[string]any{"billing": map[string]any{"seconds": 999, "charged_credits": 999}})
+			require.NoError(t, callErr)
+			assert.Nil(t, completed)
+			settled, finalFacts, err := service.EvaluateTaskCompletionUsage(snapshot, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.quota, reserved.ActualQuotaAfterGroup)
+			assert.Equal(t, tc.quota, settled.ActualQuotaAfterGroup)
+			assert.Equal(t, facts, finalFacts)
+		}
+	})
+
+	t.Run("实际Token结算保留请求素材数", func(t *testing.T) {
+		facts := callObject(t, "extractUsage", map[string]any{
+			"upstreamModel": "seedance-2-5-official", "usagePurpose": "facts", "requestBody": map[string]any{
+				"prompt": "ocean", "duration": 5,
+				"images": []any{map[string]any{"url": "https://cdn.example/ref.jpg", "role": "reference_image"}},
+				"videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "role": "reference_video"}},
+			},
+		})
+		assert.Equal(t, float64(756000), facts["tokens"])
+		expression := `tier("base", u("tokens") * 70 / 1000000 + u("image_input_count") * 0.10 + u("video_input_count") * 0.30)`
+		snapshot := &billingexpr.BillingSnapshot{
+			ExprString: expression, ExprHash: billingexpr.ExprHashString(expression),
+			GroupRatio: 1, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true, UsageFacts: facts,
+		}
+		reserved, _, err := service.EvaluateTaskCompletionUsage(snapshot, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 26660000, reserved.ActualQuotaAfterGroup)
+		actual := callObject(t, "extractUsageOnComplete", map[string]any{"upstreamModel": "seedance-2-5-official"},
+			map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"total_tokens": 100000}})
+		settled, finalFacts, err := service.EvaluateTaskCompletionUsage(snapshot, actual)
+		require.NoError(t, err)
+		assert.Equal(t, 3700000, settled.ActualQuotaAfterGroup)
+		assert.Equal(t, float64(100000), finalFacts["tokens"])
+		assert.Equal(t, float64(1), finalFacts["image_input_count"])
+		assert.Equal(t, float64(1), finalFacts["video_input_count"])
+		assert.Equal(t, float64(756000), snapshot.UsageFacts["tokens"])
 	})
 }
