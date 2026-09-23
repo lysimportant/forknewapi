@@ -151,6 +151,7 @@ export function CommonLogMobileCard<TData>(props: {
               actualModel={model.actualModel}
               responseModel={model.responseModel}
               isMismatch={model.isMismatch}
+              reasoningEffort={other?.reasoning_effort}
               wrapText
               onInspect={() => setSelectedField('model')}
             />

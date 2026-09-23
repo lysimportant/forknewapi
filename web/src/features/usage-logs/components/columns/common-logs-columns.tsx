@@ -663,6 +663,7 @@ export function useCommonLogsColumns(
         if (!isDisplayableLogType(log.type)) return null
 
         const modelInfo = formatModelName(log)
+        const other = parseLogOther(log.other)
 
         return (
           <div className='flex w-fit flex-col gap-0.5'>
@@ -671,6 +672,7 @@ export function useCommonLogsColumns(
               actualModel={modelInfo.actualModel}
               responseModel={modelInfo.responseModel}
               isMismatch={modelInfo.isMismatch}
+              reasoningEffort={other?.reasoning_effort}
             />
           </div>
         )

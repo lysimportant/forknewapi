@@ -53,3 +53,31 @@
 独立复核发现并修复了 Chat 流首帧掩盖终态模型的漏报；新增终止分片、最终 usage 分片、末尾空模型回归。最终 Go 构建和静态检查已基于修复版本重跑通过。
 
 交付目标：`fork/main` 和中文 annotated Tag `v1.0.0-rc.37.custom.3`；最终提交与推送核验完成后由交付回复给出提交 ID。
+
+## 2026-09-23：列表显示已记录的推理强度
+
+本次为 P2、小范围前端展示修复。基线为 `main` / `fork/main`、`2e4f1681513d8103deb3bd525ecabfded73a4c51`，工作区干净；继续使用上述 Go、Node 和仓库本地 Bun 版本，不安装或升级依赖。
+
+服务端原本已将非空推理强度写入公开字段 `other.reasoning_effort`，详情对话框也已有展示；缺口是列表模型列及共享卡片未读取该字段。现在模型名称下方直接显示“推理强度: max”等记录值，管理员和普通用户均可见；复用既有 `ModelBadge`、`StatusBadge`、颜色映射及七语言的 `Reasoning Effort` 翻译，不另建徽标或交互封装。
+
+仅接受非空字符串并去除首尾空白，保留 `none`、未知档位等原始值；缺失、空白或类型错误时不显示，不从模型名称猜测默认值。模型映射、响应不一致警告、完整模型名复制及卡片详情入口保持原有行为。
+
+| 检查 | 命令或证据 | 结果 |
+| --- | --- | --- |
+| 回归先复现 | `bun run test src/features/usage-logs/components/__tests__/model-mapping.test.tsx --maxWorkers=1 --testTimeout=20000` | 实现前 9 项新增展示用例失败、32 项通过；最终全部 41 项通过 |
+| 使用日志回归 | `bun run test src/features/usage-logs --maxWorkers=2 --testTimeout=20000` | 18 文件、241 项通过 |
+| 类型与构建 | `bun run build:check`，最终另跑 `bun run typecheck` | 通过 |
+| 代码检查 | `bun x --no-install oxlint -c .oxlintrc.json` 指定四个修改的 TS/TSX 文件；对同四文件保留原版权头后执行 `oxfmt --check` | 无 error/warning；格式通过，未保留全仓格式化改动 |
+| 国际化 | `bun run i18n:sync` | 七语言已有翻译可直接复用，无 locale 差异 |
+| 请求元数据 | `go test ./relay/common -run 'TestGenRelayInfoCapturesRequestReasoningEffort\|TestInitChannelMetaRestoresRequestReasoningEffortForRetry\|TestApplyParamOverrideWithRelayInfoSynchronizesReasoningEffort\|TestReasoningEffortOverrideIsAuditedWithoutDebugMode' -count=1 -v` | 通过，覆盖现有协议采集、重试与参数覆盖 |
+| 日志生成 | `go test ./service -run 'TestGenerateTextOtherInfoRecordsModelAuditContract\|TestAppendRelayModelLogInfoHandlesMissingChannelMeta' -count=1 -v` | 通过 |
+| 日志可见性 | `go test ./model -run 'TestLogOther\|TestFormatUserLogsStripsQuotaSaturation\|TestTaskPluginLogVisibilityIsRoleSeparated\|TestLegacyLogOtherVisibilityIsRoleSeparated' -count=1 -v` | 通过 |
+| 生产构建浏览器验收 | `node .local-tests/reasoning-effort-browser/fixture.cjs`，预览端口 43919 | 1440 个人浅色、1280 管理员深色、1440 中文、420 卡片四场景通过；无控制台/页面/请求错误和页面横向溢出 |
+
+独立复核发现无模型差异时的长名称会越过新增限宽容器；浏览器先复现内容右边界 1434px 超出容器 853px，再复用 `wrapText` 修复。最终四场景补查名称边界，构建、日志回归与浏览器验收均基于修复版本重跑。
+
+浏览器仅拦截模拟日志接口，验证 `max`、显式 `none`、缺失字段以及既有模型详情和复制，不连接真实后端、账号、数据库或付费模型。证据保存在 `.local-tests/reasoning-effort-browser/evidence/acceptance-report.json`；中文、深色和卡片截图已经人工查看。
+
+限制：历史日志不会补造字段；未记录强度的请求仍不展示。后端现有全局/渠道请求体透传路径会清空推理强度，本次不改变该行为。显示的是网关日志记录的请求设置，不是对上游实际执行强度的独立验证。现有 service 日志测试没有直接断言该字段写入，采集与可见性由现有定向测试及代码复核确认；没有把它描述为完整后端集成覆盖。`-race` 因当前环境未启用 CGO 未运行。
+
+未改后端、数据库、依赖或公共契约，不需要迁移；可回退本次提交并重建前端。没有替换正在运行的服务或部署生产。交付为当前 `fork/main` 的任务提交；按低风险展示修复处理，不创建发布 Tag。

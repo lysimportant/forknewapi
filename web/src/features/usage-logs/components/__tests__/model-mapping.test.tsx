@@ -17,12 +17,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  getCoreRowModel,
+  useReactTable,
+  flexRender,
+} from '@tanstack/react-table'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 
 import type { UsageLog } from '../../data/schema'
 import { formatModelName } from '../../lib/format'
+import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { ModelBadge } from '../model-badge'
 
@@ -333,6 +339,7 @@ describe('model mapping badge', () => {
         actualModel={actualModel}
         responseModel={responseModel}
         isMismatch
+        reasoningEffort='max'
         onInspect={onInspect}
       />
     )
@@ -343,7 +350,10 @@ describe('model mapping badge', () => {
     expect(within(inspectButton).getByText(requestModel)).toBeVisible()
     expect(within(inspectButton).getByText(actualModel)).toBeVisible()
     expect(within(inspectButton).getByText(responseModel)).toBeVisible()
-    await user.click(inspectButton)
+    expect(
+      within(inspectButton).getByText('Reasoning Effort: max')
+    ).toBeVisible()
+    await user.click(within(inspectButton).getByText('Reasoning Effort: max'))
     expect(onInspect).toHaveBeenCalledOnce()
   })
 })
@@ -432,3 +442,92 @@ test.each([
     queryClient.clear()
   }
 )
+
+/** 渲染真实日志列以验证元数据接入；只显示模型列，避免依赖其他列的查询。 */
+function ModelColumnFixture(props: { log: UsageLog; isAdmin: boolean }) {
+  const columns = useCommonLogsColumns(props.isAdmin, false)
+  const table = useReactTable({
+    data: [props.log],
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  })
+  const cell = table
+    .getRowModel()
+    .rows[0].getAllCells()
+    .find((item) => item.column.id === 'model_name')
+  if (!cell) throw new Error('Model column is missing')
+  return <>{flexRender(cell.column.columnDef.cell, cell.getContext())}</>
+}
+
+describe('recorded reasoning effort in model column', () => {
+  test.each([true, false])(
+    'shows recorded effort in admin=%s view without opening details',
+    async (isAdmin) => {
+      const user = userEvent.setup()
+      const copy = vi
+        .spyOn(navigator.clipboard, 'writeText')
+        .mockResolvedValue()
+      render(
+        <ModelColumnFixture
+          isAdmin={isAdmin}
+          log={makeLog({ reasoning_effort: 'max' })}
+        />
+      )
+      expect(screen.getByText('Reasoning Effort: max')).toBeVisible()
+      await user.click(screen.getByText(requestModel))
+      expect(copy).toHaveBeenCalledWith(requestModel)
+    }
+  )
+
+  test.each(['none', 'low', 'high', 'xhigh', 'custom-level', '1024'])(
+    'preserves recorded value %s',
+    (effort) => {
+      render(
+        <ModelColumnFixture
+          isAdmin={false}
+          log={makeLog({ reasoning_effort: effort })}
+        />
+      )
+      expect(screen.getByText(`Reasoning Effort: ${effort}`)).toBeVisible()
+    }
+  )
+
+  test.each([undefined, '', '   ', null, 0, false, {}])(
+    'omits an absent or invalid effort %j instead of guessing from the model',
+    (effort) => {
+      render(
+        <ModelColumnFixture
+          isAdmin={false}
+          log={{
+            ...makeLog({ reasoning_effort: effort }),
+            model_name: 'model-high',
+          }}
+        />
+      )
+      expect(screen.getByText('model-high')).toBeVisible()
+      expect(screen.queryByText(/Reasoning Effort/)).not.toBeInTheDocument()
+    }
+  )
+
+  test('keeps effort visible alongside mapped and mismatched models', async () => {
+    const user = userEvent.setup()
+    render(
+      <ModelColumnFixture
+        isAdmin
+        log={makeLog({
+          reasoning_effort: ' high ',
+          upstream_model_name: actualModel,
+          upstream_response_model: responseModel,
+          upstream_model_mismatch: true,
+        })}
+      />
+    )
+    expect(screen.getByText('Reasoning Effort: high')).toBeVisible()
+    await user.click(
+      screen.getByRole('button', { name: `Actual Model: ${actualModel}` })
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Model Details' })
+    expect(within(dialog).getByText(actualModel)).toBeVisible()
+    expect(within(dialog).getByText(responseModel)).toBeVisible()
+  })
+})

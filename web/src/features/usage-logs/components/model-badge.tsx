@@ -30,6 +30,8 @@ import {
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
+import { getReasoningEffortVariant } from '../lib/format'
+
 /** 日志模型展示参数；实际模型来自已记录的上游请求，不代表底层模型身份验证。 */
 interface ModelBadgeProps {
   /** 客户端请求的完整模型名称。 */
@@ -38,6 +40,8 @@ interface ModelBadgeProps {
   actualModel?: string
   /** 上游响应原始声明的模型，未观测到时省略。 */
   responseModel?: string
+  /** 日志记录的推理强度；缺失时不推测上游默认值。 */
+  reasoningEffort?: string
   /** 服务端核对调用模型与响应模型后的不一致标记。 */
   isMismatch?: boolean
   className?: string
@@ -182,9 +186,22 @@ function ModelBadgeContent(props: ModelBadgeProps) {
   )
 }
 
-/** 直接展示请求模型与不同的上游模型，并提供完整名称的查看和复制入口。 */
+/** 展示请求模型、已记录的推理强度及模型差异，保留完整名称的查看和复制入口。 */
 export function ModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
+  const reasoningEffort =
+    typeof props.reasoningEffort === 'string'
+      ? props.reasoningEffort.trim()
+      : ''
+  const reasoningEffortContent = reasoningEffort ? (
+    <StatusBadge
+      label={`${t('Reasoning Effort')}: ${reasoningEffort}`}
+      variant={getReasoningEffortVariant(reasoningEffort)}
+      size='sm'
+      copyable={false}
+      className='h-auto min-h-5 max-w-full whitespace-normal [&>span]:overflow-visible [&>span]:[overflow-wrap:anywhere] [&>span]:whitespace-normal'
+    />
+  ) : null
   const actualModel =
     typeof props.actualModel === 'string' &&
     props.actualModel.trim() !== '' &&
@@ -225,6 +242,7 @@ export function ModelBadge(props: ModelBadgeProps) {
         className='h-auto min-h-8 max-w-full min-w-0 flex-col items-start justify-start gap-1 px-0 py-0 text-left font-normal whitespace-normal'
       >
         <ModelBadgeContent {...props} />
+        {reasoningEffortContent}
         {actualModelContent}
         {responseModelContent}
       </Button>
@@ -232,12 +250,19 @@ export function ModelBadge(props: ModelBadgeProps) {
   }
 
   if (!actualModel && !isMismatch) {
-    return <ModelBadgeContent {...props} />
+    if (!reasoningEffort) return <ModelBadgeContent {...props} />
+    return (
+      <div className='flex max-w-80 min-w-0 flex-col items-start gap-1'>
+        <ModelBadgeContent {...props} wrapText />
+        {reasoningEffortContent}
+      </div>
+    )
   }
 
   return (
     <div className='flex max-w-80 min-w-0 flex-col items-start gap-1'>
       <ModelBadgeContent {...props} wrapText />
+      {reasoningEffortContent}
       <Popover>
         {actualModel && (
           <PopoverTrigger
