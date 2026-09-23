@@ -3,17 +3,23 @@ const WAN_MODELS = ["wan3.0-video", "wan3.0-video-prime"];
 /** 旧渠道配置继续保留的 Seedance 兼容模型 ID。 */
 const LEGACY_TOKEN_MODELS = ["doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-fast-260128", "artsdance-2-0-pro-260801"];
 /** Moon 当前公开的 Seedance 模型 ID。 */
-const OFFICIAL_TOKEN_MODELS = ["seedance-2-0-mini-official", "seedance-2-0-fast-official", "seedance-2-0-official"];
+const OFFICIAL_TOKEN_MODELS = ["seedance-2-0-mini-official", "seedance-2-0-fast-official", "seedance-2-0-official", "seedance-2-5-official"];
 /** Moon 按 usage.total_tokens 结算的 Seedance 模型。 */
 const TOKEN_MODELS = LEGACY_TOKEN_MODELS.concat(OFFICIAL_TOKEN_MODELS);
 /** Mini 和 Fast 仅支持 480p、720p。 */
 const LIMITED_TOKEN_MODELS = ["doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-fast-260128", "seedance-2-0-mini-official", "seedance-2-0-fast-official"];
+/** 官转按请求输出秒数计费，与官方 Token 系列分开定价。 */
+const PT_MODELS = ["seedance2.0-9-3-3-PT", "seedance2.5-30-10-10-PT", "seedance2.0-fast-PT"];
+/** 底价渠道的按次与按秒模型；供应商成本不强制用于下游定价。 */
+const BUDGET_PER_REQUEST_MODELS = ["sd2mini", "sd2-930-face", "sd2.5-30-10-face", "sd2-930-no-face", "sd2.5-30-10-10-per-request"];
+const BUDGET_PER_SECOND_MODELS = ["sd2-930-fast", "sd2.5-30-10-10-480", "sd2.5-30-10-10"];
+const BUDGET_MODELS = BUDGET_PER_REQUEST_MODELS.concat(BUDGET_PER_SECOND_MODELS);
 /** Moon MiniMax H3 的公开模型 ID。 */
 const H3_MODEL = "minimax-h3";
 /** Moon 按次计费的 Grok 模型，不能套用其他渠道的模型 ID。 */
 const GROK_MODEL = "grok-v1.5-video";
 /** 当前接入的完整模型 ID；渠道别名由宿主映射到这些上游 ID。 */
-const MODELS = WAN_MODELS.concat(TOKEN_MODELS, [H3_MODEL, GROK_MODEL]);
+const MODELS = WAN_MODELS.concat(TOKEN_MODELS, PT_MODELS, BUDGET_MODELS, [H3_MODEL, GROK_MODEL]);
 
 /** Grok 精确尺寸同时约束分辨率和比例，不能仅按短边推断。 */
 const GROK_SIZES = {
@@ -29,7 +35,7 @@ const WAN_RESOLUTIONS = ["480P", "720P", "1080P"];
 const TOKEN_RESOLUTIONS = ["480p", "720p", "1080p", "4k"];
 /** H3 计费事实使用目录中的分辨率档位，不使用供应商积分。 */
 const H3_RESOLUTIONS = ["480p", "768p", "1080p", "2k", "4k"];
-/** 新三模型允许的输出比例；Wan 不支持 21:9。 */
+/** Moon 视频新系列允许的输出比例；Wan 不支持 21:9，底价模型不支持 adaptive。 */
 const RATIOS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"];
 /** H3 普通和超分工作流允许的固定比例。 */
 const H3_RATIOS = ["16:9", "9:16", "1:1", "2:3", "3:2", "3:4", "4:3", "21:9"];
@@ -92,7 +98,7 @@ const WAN_FIELDS = [
   "reference_audios",
   "input",
 ];
-/** 新三模型公开字段；其他参数必须拒绝，不能静默丢弃。 */
+/** Seedance Token 模型公开字段；其他参数必须拒绝，不能静默丢弃。 */
 const TOKEN_FIELDS = [
   "model",
   "prompt",
@@ -131,6 +137,58 @@ const H3_FIELDS = [
 ];
 /** Grok 仅接收文生视频或 URL 图片参考，其他素材和未知参数不得透传。 */
 const GROK_FIELDS = ["model", "prompt", "seconds", "duration", "size", "resolution", "aspect_ratio", "ratio", "reference_images", "input_reference"];
+/** 官转素材入口互斥；字段名遵守 Moon 官转合同。 */
+const PT_FIELDS = [
+  "model",
+  "prompt",
+  "content",
+  "materials",
+  "reference_images",
+  "reference_videos",
+  "reference_audios",
+  "input_reference",
+  "duration",
+  "seconds",
+  "resolution",
+  "size",
+  "ratio",
+  "aspect_ratio",
+  "generate_audio",
+  "generateAudio",
+];
+/** 底价渠道公开的 JSON 参数，不接收上传、内联媒体或隐式转换。 */
+const BUDGET_FIELDS = [
+  "model",
+  "prompt",
+  "seconds",
+  "duration",
+  "resolution",
+  "size",
+  "ratio",
+  "aspect_ratio",
+  "images",
+  "image_urls",
+  "image_refs",
+  "reference_images",
+  "input_reference",
+  "videos",
+  "video_urls",
+  "video_refs",
+  "audios",
+  "audio_urls",
+  "audio_refs",
+];
+/** 底价渠道各模型的分辨率、时长及素材上限。 */
+const BUDGET_LIMITS = {
+  sd2mini: { resolutions: { "480p": [5, 15], "720p": [5, 12] }, images: 9, videos: 3, audios: 3, total: 15 },
+  "sd2-930-face": { resolutions: { "720p": [4, 30] }, images: 9, videos: 0, audios: 3, total: 12 },
+  "sd2.5-30-10-face": { resolutions: { "720p": [4, 30] }, images: 30, videos: 0, audios: 10, total: 40 },
+  "sd2-930-fast": { resolutions: { "720p": [5, 15] }, images: 9, videos: 3, audios: 3, total: 15 },
+  "sd2.5-30-10-10-480": { resolutions: { "480p": [4, 30] }, images: 30, videos: 10, audios: 10, total: 50 },
+  "sd2.5-30-10-10": { resolutions: { "720p": [4, 30] }, images: 30, videos: 10, audios: 10, total: 50 },
+  "sd2-930-no-face": { resolutions: { "720p": [4, 15] }, images: 9, videos: 3, audios: 3, total: 15 },
+  "sd2.5-30-10-10-per-request": { resolutions: { "720p": [5, 30] }, images: 30, videos: 3, audios: 3, total: 36 },
+};
 
 /** Grok 提供次数和请求秒数供管理员独立定价；Moon 的按次成本不决定下游售价。 */
 const GROK_USAGE_SCHEMA = {
@@ -146,7 +204,7 @@ const GROK_USAGE_SCHEMA = {
   },
 };
 
-/** Moon 新三模型的 token 计费事实；tokens 是用量数量，不是价格。 */
+/** Moon Seedance Token 模型的计费事实；tokens 是用量数量，不是价格。 */
 const TOKEN_USAGE_SCHEMA = {
   tokens: {
     type: "number",
@@ -191,6 +249,25 @@ const WAN_USAGE_SCHEMA = {
   },
 };
 
+/** 官转只使用请求输出秒数，不把参考素材时长计入价格。 */
+const PT_USAGE_SCHEMA = {
+  seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
+  resolution: {
+    enum: ["480p", "720p"],
+    enumLabels: { "480p": { en: "480p", zh: "480p" }, "720p": { en: "720p", zh: "720p" } },
+    description: { en: "Output video resolution", zh: "输出视频分辨率" },
+  },
+};
+/** 底价按次模型只暴露一次生成事实，不把输出时长变成计费倍数。 */
+const BUDGET_PER_REQUEST_USAGE_SCHEMA = {
+  video_count: { type: "number", unit: "count", description: { en: "Video generation unit price", zh: "视频生成单价" } },
+  resolution: PT_USAGE_SCHEMA.resolution,
+};
+/** 底价按秒模型暴露请求输出时长，不把供应商参考素材时长计入计费。 */
+const BUDGET_PER_SECOND_USAGE_SCHEMA = {
+  seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
+  resolution: PT_USAGE_SCHEMA.resolution,
+};
 /** H3 仅暴露管理员可定价的有界请求事实，不把 Moon 积分换算为美元。 */
 const H3_USAGE_SCHEMA = {
   seconds: {
@@ -219,10 +296,10 @@ export const meta = {
   icon: "text:Moon",
   baseUrl: "https://moon.sixai.cc",
   description: {
-    en: "Moon video generation for Wan, Seedance, ArtsDance, MiniMax H3, and Grok models",
-    zh: "Moon Wan、Seedance、ArtsDance、MiniMax H3 与 Grok 视频生成",
+    en: "Moon video generation for Wan, Seedance, ArtsDance, PT, budget, MiniMax H3, and Grok models",
+    zh: "Moon Wan、Seedance、ArtsDance、官转、底价、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.3.1",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -231,6 +308,9 @@ export const meta = {
   usageSchema: TOKEN_USAGE_SCHEMA,
   usageProfiles: [
     { models: WAN_MODELS, schema: WAN_USAGE_SCHEMA },
+    { models: PT_MODELS, schema: PT_USAGE_SCHEMA },
+    { models: BUDGET_PER_REQUEST_MODELS, schema: BUDGET_PER_REQUEST_USAGE_SCHEMA },
+    { models: BUDGET_PER_SECOND_MODELS, schema: BUDGET_PER_SECOND_USAGE_SCHEMA },
     { models: [H3_MODEL], schema: H3_USAGE_SCHEMA },
     { models: [GROK_MODEL], schema: GROK_USAGE_SCHEMA },
   ],
@@ -260,6 +340,16 @@ function isWan(model) {
 /** 判断是否必须等待真实 token 用量后才能完成任务。 */
 function isTokenModel(model) {
   return TOKEN_MODELS.includes(model);
+}
+
+/** 官转不使用 Token 结算，按照提交时的输出秒数和分辨率定价。 */
+function isPT(model) {
+  return PT_MODELS.includes(model);
+}
+
+/** 底价渠道保留各自的时长、素材上限和上游计费类别。 */
+function isBudget(model) {
+  return BUDGET_MODELS.includes(model);
 }
 
 /** 判断是否走 Moon 原生 MiniMax H3 合同。 */
@@ -332,8 +422,13 @@ function normalizeDuration(req, model) {
     if (!hasSeconds || hasDuration || duration < 4 || duration > 15) throw new Error("seconds must be an integer between 4 and 15 for Moon MiniMax H3");
   } else if (isGrok(model)) {
     if (duration < 4 || duration > 15) throw new Error("seconds must be an integer between 4 and 15 for Moon Grok");
-  } else if (duration !== -1 && (duration < 4 || duration > 15)) {
-    throw new Error("duration must be -1 or an integer between 4 and 15 for Moon video models");
+  } else if (isPT(model)) {
+    const max = model === "seedance2.5-30-10-10-PT" ? 30 : 15;
+    if (duration < 5 || duration > max) throw new Error("Moon PT duration must be an integer between 5 and " + max);
+  } else if (isBudget(model)) {
+    if (duration < 4 || duration > 30) throw new Error("Moon budget duration must be an integer between 4 and 30");
+  } else if (duration !== -1 && (duration < 4 || duration > (model === "seedance-2-5-official" ? 30 : 15))) {
+    throw new Error("duration is outside the documented Moon Seedance range");
   }
   return duration;
 }
@@ -347,8 +442,12 @@ function normalizeResolution(value, model) {
     return normalized;
   }
   if (isGrok(model) && !["720p", "1080p"].includes(raw)) throw new Error("Moon Grok supports only 720p or 1080p");
-  if (!TOKEN_RESOLUTIONS.includes(raw)) throw new Error("resolution is not supported by the Moon model");
+  if (isPT(model) && !["480p", "720p"].includes(raw)) throw new Error("Moon PT supports only 480p or 720p");
+  if (isBudget(model) && !Object.prototype.hasOwnProperty.call(BUDGET_LIMITS[model].resolutions, raw))
+    throw new Error("resolution is not supported by the Moon budget model");
+  if (!isPT(model) && !isBudget(model) && !TOKEN_RESOLUTIONS.includes(raw)) throw new Error("resolution is not supported by the Moon model");
   if (LIMITED_TOKEN_MODELS.includes(model) && !["480p", "720p"].includes(raw)) throw new Error("this Moon model supports only 480p or 720p");
+  if (model === "seedance-2-5-official" && !["720p", "1080p"].includes(raw)) throw new Error("Moon Seedance 2.5 supports only 720p or 1080p");
   return raw;
 }
 
@@ -362,6 +461,7 @@ function normalizeRatio(req, model) {
   if (!RATIOS.includes(ratio)) throw new Error("ratio must be one of the documented Moon video ratios");
   if (isWan(model) && ratio === "21:9") throw new Error("21:9 ratio is not supported by Moon Wan models");
   if (isGrok(model) && !["16:9", "9:16", "1:1", "4:3", "3:4"].includes(ratio)) throw new Error("ratio is not supported by Moon Grok");
+  if (isBudget(model) && !["16:9", "9:16", "1:1", "4:3", "3:4"].includes(ratio)) throw new Error("ratio is not supported by Moon budget models");
   return ratio;
 }
 
@@ -376,27 +476,37 @@ function normalizeH3CanvasRatio(req) {
 }
 
 /** 校验引用数组的 URL 与固定角色，未知子字段（含客户端自报时长）不得透传。 */
-function validateReferenceList(value, field, role, maxCount) {
+function validateReferenceList(value, field, role, maxCount, allowFrames = false) {
   if (value === undefined) return 0;
   if (!Array.isArray(value) || value.length > maxCount) throw new Error(field + " must contain at most " + maxCount + " references");
   for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item) || !isHTTPURL(item.url) || item.role !== role)
-      throw new Error(field + " items must contain an HTTP(S) url and role " + role);
+    if (
+      !item ||
+      typeof item !== "object" ||
+      Array.isArray(item) ||
+      !isHTTPURL(item.url) ||
+      (item.role !== role && !(allowFrames && ["first_frame", "last_frame"].includes(item.role)))
+    )
+      throw new Error(field + " items must contain an HTTP(S) url and a supported role");
     for (const key of Object.keys(item)) if (key !== "url" && key !== "role") throw new Error("unsupported " + field + " reference field: " + key);
   }
   return value.length;
 }
 
-/** 校验两种素材表达并合并计数；参考视频不下载探测，按每段上限 15 秒预留。 */
-function validateTokenReferences(req, duration, ratio) {
-  let imageCount = validateReferenceList(tokenImages(req), "images", "reference_image", 9);
-  let videoCount = validateReferenceList(req.videos, "videos", "reference_video", 3);
-  let audioCount = validateReferenceList(req.audios, "audios", "reference_audio", 3);
+/** 校验两种素材表达并合并计数；参考视频不下载探测，按模型上限预留。 */
+function validateTokenReferences(req, duration, ratio, model) {
+  const is25 = model === "seedance-2-5-official";
+  const images = tokenImages(req, model);
+  let imageCount = validateReferenceList(images, "images", "reference_image", is25 ? 30 : 9, is25);
+  let videoCount = validateReferenceList(req.videos, "videos", "reference_video", is25 ? 10 : 3);
+  let audioCount = validateReferenceList(req.audios, "audios", "reference_audio", is25 ? 10 : 3);
+  const frames = is25 ? (images || []).filter((item) => item.role === "first_frame" || item.role === "last_frame").map((item) => item.role) : [];
   let text = req.prompt || "";
   for (const field of ["first_frame", "last_frame"]) {
     if (req[field] === undefined) continue;
     if (!isHTTPURL(req[field])) throw new Error(field + " must be an HTTP(S) URL");
     imageCount++;
+    if (is25) frames.push(field);
   }
   if (req.content !== undefined) {
     if (!Array.isArray(req.content) || req.content.length === 0) throw new Error("content must be a non-empty array");
@@ -418,6 +528,7 @@ function validateTokenReferences(req, duration, ratio) {
       if (item.type === "image_url") {
         if (item.role !== undefined && !["first_frame", "last_frame", "reference_image"].includes(item.role)) throw new Error("unsupported content image role");
         imageCount++;
+        if (is25 && ["first_frame", "last_frame"].includes(item.role)) frames.push(item.role);
       } else if (item.type === "video_url") {
         if (item.role !== "reference_video") throw new Error("content video role must be reference_video");
         videoCount++;
@@ -427,9 +538,18 @@ function validateTokenReferences(req, duration, ratio) {
       }
     }
   }
-  if (imageCount > 9 || videoCount > 3 || audioCount > 3 || imageCount + videoCount + audioCount > 15)
-    throw new Error("Moon supports at most 9 images, 3 videos, 3 audios, and 15 total references");
-  if (audioCount > 0 && imageCount === 0 && videoCount === 0) throw new Error("audio-only references are not supported");
+  if (imageCount > (is25 ? 30 : 9) || videoCount > (is25 ? 10 : 3) || audioCount > (is25 ? 10 : 3) || imageCount + videoCount + audioCount > (is25 ? 50 : 15))
+    throw new Error("Moon Seedance reference limit exceeded");
+  if (!is25 && audioCount > 0 && imageCount === 0 && videoCount === 0) throw new Error("audio-only references are not supported");
+  if (is25 && frames.length) {
+    if (
+      frames.filter((role) => role === "first_frame").length > 1 ||
+      frames.filter((role) => role === "last_frame").length > 1 ||
+      (frames.includes("last_frame") && !frames.includes("first_frame"))
+    )
+      throw new Error("Moon Seedance 2.5 requires at most one first and last frame in order");
+    if (ratio !== "adaptive") throw new Error("Moon Seedance 2.5 frame mode requires adaptive ratio");
+  }
   if (text.length > 20000) throw new Error("prompt and content text must not exceed 20000 characters");
   if (/--(?:duration|resolution)\b/i.test(text)) throw new Error("inline duration and resolution overrides are not supported");
   if (req.omni_reference_task_type !== undefined && !["auto", "edit", "extend"].includes(req.omni_reference_task_type))
@@ -443,11 +563,19 @@ function validateTokenReferences(req, duration, ratio) {
 }
 
 /** 将 image_urls 的 URL 或图片对象归一为已确认的 images 合同；两个字段不得同时出现。 */
-function tokenImages(req) {
-  if (req.image_urls === undefined) return req.images;
-  if (req.images !== undefined) throw new Error("images and image_urls are mutually exclusive");
-  if (!Array.isArray(req.image_urls)) throw new Error("image_urls must be an array");
-  return req.image_urls.map((item) => (typeof item === "string" ? { url: item, role: "reference_image" } : item));
+function tokenImages(req, model) {
+  if (req.image_urls !== undefined && req.images !== undefined) throw new Error("images and image_urls are mutually exclusive");
+  const images = req.image_urls === undefined ? req.images : req.image_urls;
+  if (images === undefined) return undefined;
+  if (!Array.isArray(images)) throw new Error("images and image_urls must be arrays");
+  if (model !== "seedance-2-5-official" && req.image_urls === undefined) return images;
+  return images.map((item, index) => {
+    const frame = model === "seedance-2-5-official" && images.length === 2 && images.every((image) => typeof image === "string");
+    if (typeof item === "string") return { url: item, role: frame ? (index === 0 ? "first_frame" : "last_frame") : "reference_image" };
+    if (model === "seedance-2-5-official" && item && typeof item === "object" && !Array.isArray(item) && item.role === undefined)
+      return Object.assign({}, item, { role: "reference_image" });
+    return item;
+  });
 }
 
 /** 检查请求对象和顶层字段，内部自动时长标记只能由驱动读取。 */
@@ -554,12 +682,210 @@ function validateTokenRequest(req, model, allowAutoDuration) {
   const duration = normalizeDuration(req, model);
   const resolution = normalizeResolution(req.resolution === undefined ? "720p" : req.resolution, model);
   const ratio = normalizeRatio(req, model);
-  const references = validateTokenReferences(req, duration, ratio);
+  const references = validateTokenReferences(req, duration, ratio, model);
   for (const field of TOKEN_BOOLEAN_FIELDS) if (req[field] !== undefined) ensureBoolean(req[field], field);
   if (req.output_format !== undefined && !["mp4", "mov"].includes(req.output_format)) throw new Error("output_format must be mp4 or mov");
   if (req.seed !== undefined && (!Number.isInteger(req.seed) || req.seed < -1 || req.seed > 2147483647))
     throw new Error("seed must be between -1 and 2147483647");
   return { duration, resolution, ratio, videoInput: references.videoCount > 0 ? "video" : "none", ...references };
+}
+
+/** 新系列的素材仅接受公网 HTTP(S) 直链；DNS 可访问性仍由供应商验证。 */
+function isPublicMediaURL(value) {
+  if (!isHTTPURL(value)) return false;
+  const host = /^https?:\/\/(\[[^\]]+\]|[^:/?#]+)/i.exec(value)[1].toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "[::1]") return false;
+  if (/^(?:0|10|127|169\.254|192\.168)\./.test(host)) return false;
+  const private172 = /^172\.(\d+)\./.exec(host);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false;
+  return true;
+}
+
+/** 校验官转与底价渠道的尺寸别名，同时保留显式分辨率和比例冲突。 */
+function resolutionFromSize(req, model, ratio) {
+  const sizes = {
+    "854x480": ["480p", "16:9"],
+    "832x480": ["480p", "16:9"],
+    "864x480": ["480p", "16:9"],
+    "480x854": ["480p", "9:16"],
+    "1280x720": ["720p", "16:9"],
+    "720x1280": ["720p", "9:16"],
+    "480p": ["480p", ""],
+    "720p": ["720p", ""],
+  };
+  const size = req.size === undefined ? null : sizes[trimmed(req.size).toLowerCase()];
+  if (req.size !== undefined && !size) throw new Error("unsupported Moon video size");
+  const resolution = normalizeResolution(req.resolution === undefined ? (size ? size[0] : "720p") : req.resolution, model);
+  if (size && (size[0] !== resolution || (size[1] && size[1] !== ratio))) throw new Error("size conflicts with resolution or ratio");
+  return resolution;
+}
+
+/** 官转视频和音频逐段时长用于素材校验，不参与输出秒数计价。 */
+function ptReferenceDuration(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 2 || value > 30)
+    throw new Error("Moon PT reference durationSeconds must be a number between 2 and 30");
+}
+
+/** 官转四种素材入口互斥，并按实际分辨率/模型限制计数。 */
+function validatePTRequest(req, model) {
+  validateTopLevelFields(req, PT_FIELDS, false);
+  const duration = normalizeDuration(req, model);
+  const ratio = normalizeRatio(req, model);
+  const resolution = resolutionFromSize(req, model, ratio);
+  if (req.generate_audio !== undefined) ensureBoolean(req.generate_audio, "generate_audio");
+  if (req.generateAudio !== undefined) ensureBoolean(req.generateAudio, "generateAudio");
+  if (req.generate_audio !== undefined && req.generateAudio !== undefined && req.generate_audio !== req.generateAudio)
+    throw new Error("generate_audio and generateAudio conflict");
+  const hasArrays = ["reference_images", "reference_videos", "reference_audios"].some((key) => req[key] !== undefined);
+  const entries = [req.content !== undefined, req.materials !== undefined, hasArrays, req.input_reference !== undefined].filter(Boolean);
+  if (entries.length > 1) throw new Error("Moon PT reference input forms are mutually exclusive");
+  if (req.prompt !== undefined && (typeof req.prompt !== "string" || !req.prompt.trim())) throw new Error("prompt must be a non-empty string");
+  let text = req.prompt || "";
+  const counts = { images: 0, videos: 0, audios: 0 };
+  const frames = [];
+  const addMedia = (type, role, url, durationSeconds) => {
+    if (!isPublicMediaURL(url)) throw new Error("Moon PT reference must be a public HTTP(S) URL");
+    if (type === "image") {
+      if (!["first_frame", "last_frame", "reference_image"].includes(role)) throw new Error("unsupported Moon PT image role");
+      counts.images++;
+      if (role !== "reference_image") frames.push(role);
+    } else if (type === "video" || type === "audio") {
+      if (role !== "reference_" + type) throw new Error("unsupported Moon PT reference role");
+      ptReferenceDuration(durationSeconds);
+      counts[type === "video" ? "videos" : "audios"]++;
+    } else throw new Error("unsupported Moon PT reference type");
+  };
+  if (req.content !== undefined) {
+    if (!Array.isArray(req.content) || !req.content.length) throw new Error("Moon PT content must be a non-empty array");
+    let contentText = "";
+    for (const item of req.content) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid Moon PT content item");
+      if (item.type === "text") {
+        if (typeof item.text !== "string" || !item.text.trim() || Object.keys(item).some((key) => !["type", "text"].includes(key)))
+          throw new Error("invalid Moon PT content text");
+        contentText += item.text;
+        continue;
+      }
+      const type = { image_url: "image", video_url: "video", audio_url: "audio" }[item.type];
+      if (!type) throw new Error("unsupported Moon PT content type");
+      const media = item[item.type];
+      if (
+        !media ||
+        typeof media !== "object" ||
+        Array.isArray(media) ||
+        Object.keys(media).some((key) => key !== "url") ||
+        Object.keys(item).some((key) => !["type", item.type, "role", "durationSeconds"].includes(key))
+      )
+        throw new Error("invalid Moon PT content reference");
+      if (type === "image" && item.durationSeconds !== undefined) throw new Error("image durationSeconds is not supported");
+      addMedia(type, item.role || (type === "image" ? "reference_image" : "reference_" + type), media.url, item.durationSeconds);
+    }
+    if (!contentText.trim() || (req.prompt !== undefined && req.prompt !== contentText)) throw new Error("Moon PT prompt and content text conflict");
+    text = contentText;
+  }
+  if (req.materials !== undefined) {
+    if (!Array.isArray(req.materials)) throw new Error("Moon PT materials must be an array");
+    for (const item of req.materials) {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        Object.keys(item).some((key) => !["type", "role", "url", "durationSeconds"].includes(key))
+      )
+        throw new Error("invalid Moon PT material");
+      if (item.type === "image" && item.durationSeconds !== undefined) throw new Error("image durationSeconds is not supported");
+      addMedia(item.type, item.role || (item.type === "image" ? "reference_image" : "reference_" + item.type), item.url, item.durationSeconds);
+    }
+  }
+  if (hasArrays) {
+    for (const [field, type] of [
+      ["reference_images", "image"],
+      ["reference_videos", "video"],
+      ["reference_audios", "audio"],
+    ]) {
+      if (req[field] === undefined) continue;
+      if (!Array.isArray(req[field])) throw new Error(field + " must be an array");
+      for (const item of req[field]) {
+        const media = typeof item === "string" ? { url: item } : item;
+        if (
+          !media ||
+          typeof media !== "object" ||
+          Array.isArray(media) ||
+          Object.keys(media).some((key) => !["url", ...(type === "image" ? ["role"] : ["durationSeconds"])].includes(key))
+        )
+          throw new Error("invalid Moon PT " + field + " reference");
+        addMedia(type, type === "image" ? media.role || "reference_image" : "reference_" + type, media.url, media.durationSeconds);
+      }
+    }
+  }
+  if (req.input_reference !== undefined) addMedia("image", "first_frame", req.input_reference);
+  if (!text.trim()) throw new Error("Moon PT prompt or content text is required");
+  const is25 = model === "seedance2.5-30-10-10-PT";
+  const limits = is25 ? [30, 10, 10, 50] : model === "seedance2.0-fast-PT" ? [9, 0, 3, 12] : [9, 3, 3, 15];
+  if (text.length > (model === "seedance2.0-fast-PT" ? 4000 : is25 ? 10000 : 6000)) throw new Error("Moon PT prompt exceeds model limit");
+  if (counts.images > limits[0] || counts.videos > limits[1] || counts.audios > limits[2] || counts.images + counts.videos + counts.audios > limits[3])
+    throw new Error("Moon PT reference limit exceeded");
+  if (
+    frames.filter((role) => role === "first_frame").length > 1 ||
+    frames.filter((role) => role === "last_frame").length > 1 ||
+    (frames.includes("last_frame") && !frames.includes("first_frame")) ||
+    (frames.length && counts.images + counts.videos + counts.audios !== frames.length)
+  )
+    throw new Error("Moon PT first/last frames cannot be mixed with other references");
+  return { duration, resolution, ratio, hasReference: counts.images + counts.videos + counts.audios > 0 };
+}
+
+/** 底价渠道允许素材字段原序透传，但每一项仍须为公网 URL 且符合模型上限。 */
+function validateBudgetRequest(req, model) {
+  validateTopLevelFields(req, BUDGET_FIELDS, false);
+  if (typeof req.prompt !== "string" || !req.prompt.trim() || req.prompt.length > 5000) throw new Error("Moon budget prompt must contain 1 to 5000 characters");
+  if (/@image\d+/i.test(req.prompt)) throw new Error("Moon budget image mentions must use @图片N");
+  const duration = normalizeDuration(req, model);
+  const ratio = normalizeRatio(req, model);
+  const resolution = resolutionFromSize(req, model, ratio);
+  const limits = BUDGET_LIMITS[model];
+  const range = limits.resolutions[resolution];
+  if (duration < range[0] || duration > range[1]) throw new Error("Moon budget duration is outside the model and resolution range");
+  const counts = { images: 0, videos: 0, audios: 0 };
+  for (const [fields, type] of [
+    [["images", "image_urls", "image_refs", "reference_images"], "images"],
+    [["videos", "video_urls", "video_refs"], "videos"],
+    [["audios", "audio_urls", "audio_refs"], "audios"],
+  ]) {
+    for (const field of fields) {
+      if (req[field] === undefined) continue;
+      if (!Array.isArray(req[field])) throw new Error(field + " must be an array");
+      for (const item of req[field]) {
+        const media = typeof item === "string" ? { url: item } : item;
+        if (
+          !media ||
+          typeof media !== "object" ||
+          Array.isArray(media) ||
+          !isPublicMediaURL(media.url) ||
+          Object.keys(media).some((key) => !["url", ...(type === "images" ? ["role"] : ["durationSeconds"])].includes(key))
+        )
+          throw new Error("Moon budget references require public HTTP(S) URLs");
+        if (type === "images" && media.role !== undefined && !["first_frame", "last_frame", "reference_image"].includes(media.role))
+          throw new Error("unsupported Moon budget image role");
+        if (media.durationSeconds !== undefined) ptReferenceDuration(media.durationSeconds);
+        counts[type]++;
+      }
+    }
+  }
+  if (req.input_reference !== undefined) {
+    if (!isPublicMediaURL(req.input_reference)) throw new Error("Moon budget input_reference requires a public HTTP(S) URL");
+    if (["images", "image_urls", "image_refs", "reference_images"].some((field) => req[field] !== undefined))
+      throw new Error("Moon budget input_reference conflicts with other image inputs");
+    counts.images++;
+  }
+  if (
+    counts.images > limits.images ||
+    counts.videos > limits.videos ||
+    counts.audios > limits.audios ||
+    counts.images + counts.videos + counts.audios > limits.total
+  )
+    throw new Error("Moon budget reference limit exceeded");
+  return { duration, resolution, ratio, model, hasReference: counts.images + counts.videos + counts.audios > 0 };
 }
 
 /** 校验 H3 URL 数组，素材只能使用可直接访问的 HTTP(S) 地址。 */
@@ -662,6 +988,8 @@ function validateGrokRequest(req, model) {
 function validateKnownFields(req, model, allowAutoDuration = false) {
   if (isWan(model)) return validateWanRequest(req, model);
   if (isTokenModel(model)) return validateTokenRequest(req, model, allowAutoDuration);
+  if (isPT(model)) return validatePTRequest(req, model);
+  if (isBudget(model)) return validateBudgetRequest(req, model);
   if (isH3(model)) return validateH3Request(req, model);
   if (isGrok(model)) return validateGrokRequest(req, model);
   throw new Error("unsupported Moon model");
@@ -792,6 +1120,74 @@ function normalizeCanvasTextVideoRequest(source, model, clientModel) {
     return request;
   }
 
+  if (isPT(model)) {
+    for (const key of Object.keys(metadata))
+      if (!["content", "resolution", "ratio", "reference_video_durations", "reference_audio_durations"].includes(key))
+        throw new Error("unsupported Moon PT metadata field: " + key);
+    if (!Array.isArray(metadata.content) || !metadata.content.length) throw new Error("Moon PT metadata.content must be a non-empty array");
+    if (
+      request.content !== undefined ||
+      request.materials !== undefined ||
+      request.reference_images !== undefined ||
+      request.reference_videos !== undefined ||
+      request.reference_audios !== undefined ||
+      request.input_reference !== undefined
+    )
+      throw new Error("Moon PT metadata.content conflicts with reference inputs");
+    const durations = { video_url: metadata.reference_video_durations, audio_url: metadata.reference_audio_durations };
+    const indexes = { video_url: 0, audio_url: 0 };
+    for (const kind of ["video_url", "audio_url"])
+      if (durations[kind] !== undefined && !Array.isArray(durations[kind])) throw new Error("Moon PT reference durations must be arrays");
+    request.content = metadata.content.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid Moon PT metadata content");
+      const copy = Object.assign({}, item);
+      if (item.type === "video_url" || item.type === "audio_url") {
+        const index = indexes[item.type]++;
+        if (copy.durationSeconds === undefined && durations[item.type] && index < durations[item.type].length)
+          copy.durationSeconds = durations[item.type][index];
+      }
+      return copy;
+    });
+    for (const kind of ["video_url", "audio_url"])
+      if (durations[kind] && durations[kind].length !== indexes[kind]) throw new Error("Moon PT reference durations must match media in order");
+    if (metadata.resolution !== undefined) request.resolution = metadata.resolution;
+    if (metadata.ratio !== undefined) request.ratio = metadata.ratio;
+    delete request.metadata;
+    return request;
+  }
+
+  if (isBudget(model)) {
+    for (const key of Object.keys(metadata))
+      if (!["content", "resolution", "ratio"].includes(key)) throw new Error("unsupported Moon budget metadata field: " + key);
+    const content = canvasContent(metadata.content, "budget");
+    if (request.prompt !== undefined && request.prompt !== content.text) throw new Error("prompt conflicts with metadata.content text");
+    for (const field of [
+      "images",
+      "image_urls",
+      "image_refs",
+      "reference_images",
+      "input_reference",
+      "videos",
+      "video_urls",
+      "video_refs",
+      "audios",
+      "audio_urls",
+      "audio_refs",
+    ])
+      if (request[field] !== undefined) throw new Error(field + " conflicts with Moon budget metadata.content");
+    request.prompt = content.text;
+    const images = content.images.map((url) => ({ url, role: "reference_image" }));
+    if (content.firstFrame) images.unshift({ url: content.firstFrame, role: "first_frame" });
+    if (content.lastFrame) images.push({ url: content.lastFrame, role: "last_frame" });
+    if (images.length) request.images = images;
+    if (content.videos.length) request.videos = content.videos.slice();
+    if (content.audios.length) request.audios = content.audios.slice();
+    if (metadata.resolution !== undefined) request.resolution = metadata.resolution;
+    if (metadata.ratio !== undefined) request.ratio = metadata.ratio;
+    delete request.metadata;
+    return request;
+  }
+
   if (isGrok(model)) {
     for (const key of Object.keys(metadata))
       if (!["content", "resolution", "ratio"].includes(key)) throw new Error("unsupported Moon Grok metadata field: " + key);
@@ -895,7 +1291,7 @@ function normalizeDecodedRequest(request, facts) {
     delete request.seconds;
   }
   if (facts.h3) request.seconds = facts.duration;
-  if (facts.grok) {
+  if (facts.grok || isBudget(facts.model)) {
     request.seconds = facts.duration;
     delete request.duration;
   }
@@ -906,6 +1302,24 @@ function normalizeDecodedRequest(request, facts) {
 function normalizeRequest(req, model, facts) {
   const values = Object.assign({}, req || {});
   values.model = model;
+  if (isPT(model) || isBudget(model)) {
+    delete values.size;
+    delete values.aspect_ratio;
+    values.resolution = facts.resolution;
+    values.ratio = facts.ratio;
+    if (isPT(model)) {
+      values.duration = facts.duration;
+      delete values.seconds;
+      if (values.generateAudio !== undefined) {
+        values.generate_audio = values.generateAudio;
+        delete values.generateAudio;
+      }
+    } else {
+      values.seconds = facts.duration;
+      delete values.duration;
+    }
+    return values;
+  }
   if (isGrok(model)) {
     values.seconds = facts.duration;
     values.size = facts.resolution;
@@ -936,8 +1350,8 @@ function normalizeRequest(req, model, facts) {
   }
   delete values.aspect_ratio;
   values.ratio = normalizeRatio(req, model);
-  if (values.image_urls !== undefined) {
-    values.images = tokenImages(req).map((item) => Object.assign({}, item));
+  if (values.image_urls !== undefined || (model === "seedance-2-5-official" && values.images !== undefined)) {
+    values.images = tokenImages(req, model).map((item) => Object.assign({}, item));
     delete values.image_urls;
   }
   if (values.content !== undefined) values.content = values.content.map((item) => Object.assign({}, item));
@@ -993,7 +1407,17 @@ function requestFromResponses(ctx) {
   const model = trimmed(ctx.model || source.model);
   const upstreamModel = trimmed(ctx.upstreamModel || model);
   if (!MODELS.includes(upstreamModel)) throw new Error("unsupported Moon model");
-  const fields = isWan(upstreamModel) ? WAN_FIELDS : isTokenModel(upstreamModel) ? TOKEN_FIELDS : isGrok(upstreamModel) ? GROK_FIELDS : H3_FIELDS;
+  const fields = isWan(upstreamModel)
+    ? WAN_FIELDS
+    : isTokenModel(upstreamModel)
+      ? TOKEN_FIELDS
+      : isPT(upstreamModel)
+        ? PT_FIELDS
+        : isBudget(upstreamModel)
+          ? BUDGET_FIELDS
+          : isGrok(upstreamModel)
+            ? GROK_FIELDS
+            : H3_FIELDS;
   for (const key of Object.keys(source)) {
     if (!fields.includes(key) && !["input", "stream", "background"].includes(key)) throw new Error("unsupported Moon Responses field: " + key);
   }
@@ -1006,7 +1430,7 @@ function requestFromResponses(ctx) {
   if (input.prompt) request.prompt = input.prompt;
   for (const key of fields) if (key !== "model" && key !== "input" && source[key] !== undefined) request[key] = source[key];
   if (input.images.length) {
-    const imageField = isWan(upstreamModel) || isGrok(upstreamModel) ? "reference_images" : "images";
+    const imageField = isWan(upstreamModel) || isPT(upstreamModel) || isGrok(upstreamModel) ? "reference_images" : "images";
     if (request[imageField] !== undefined && !Array.isArray(request[imageField])) throw new Error(imageField + " must be an array");
     const images = isWan(upstreamModel)
       ? input.images.map((url) => ({ url: url }))
@@ -1106,10 +1530,11 @@ function resolutionPixels(resolution) {
   return [1280, 720];
 }
 
-/** 按 24 × 宽 × 高 / 1024 估算 tokens；自动输出和每段参考视频均按 15 秒预留。 */
-function estimateTokens(duration, resolution, videoInputCount) {
-  const seconds = duration === -1 ? 15 : duration;
-  const totalSeconds = seconds + videoInputCount * 15;
+/** 按 24 × 宽 × 高 / 1024 估算 tokens；自动输出和每段参考视频按模型最大时长预留。 */
+function estimateTokens(duration, resolution, videoInputCount, model) {
+  const maxSeconds = model === "seedance-2-5-official" ? 30 : 15;
+  const seconds = duration === -1 ? maxSeconds : duration;
+  const totalSeconds = seconds + videoInputCount * maxSeconds;
   const pixels = resolutionPixels(resolution);
   return (totalSeconds * pixels[0] * pixels[1] * 24) / 1024;
 }
@@ -1122,9 +1547,15 @@ export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
   const facts = validateKnownFields(request, model, true);
   if (isGrok(model)) return { video_count: 1, seconds: facts.duration };
+  if (isPT(model)) return { seconds: facts.duration, resolution: facts.resolution };
+  if (isBudget(model)) {
+    return BUDGET_PER_REQUEST_MODELS.includes(model)
+      ? { video_count: 1, resolution: facts.resolution }
+      : { seconds: facts.duration, resolution: facts.resolution };
+  }
   if (isWan(model)) return { seconds: facts.duration + facts.referenceVideoSeconds, resolution: facts.resolution };
   if (isH3(model)) return { seconds: facts.duration, resolution: facts.resolution };
-  return { tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount), resolution: facts.resolution, video_input: facts.videoInput };
+  return { tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount, model), resolution: facts.resolution, video_input: facts.videoInput };
 }
 
 /** 提取 H3 完成响应中的有界秒数和规范分辨率；积分字段不参与美元定价。 */
@@ -1198,7 +1629,8 @@ export function parseTaskResult(ctx, body) {
       return { status: "IN_PROGRESS", reason: "waiting for valid Moon usage.total_tokens" };
     result.progress = "100%";
     const url = artifactURL(source);
-    if (isGrok(modelName(ctx, source)) && !url) return { status: "IN_PROGRESS", reason: "waiting for a valid Moon Grok video URL" };
+    const model = modelName(ctx, source);
+    if ((isGrok(model) || isPT(model) || isBudget(model)) && !url) return { status: "IN_PROGRESS", reason: "waiting for a valid Moon video URL" };
     if (url) result.url = url;
   } else if (status === "FAILURE") {
     result.reason =
@@ -1219,11 +1651,11 @@ export function listArtifacts(task) {
   return [{ key: "video", type: "video", mimeType: mimeType }];
 }
 
-/** 优先使用完成响应中的原始 URL，并以 credentialless 请求避免向第三方泄露 Moon 密钥。 */
+/** 原始成片 URL 无密钥直连；限时 Moon 公播链接改用所有者鉴权的 /content。 */
 export function buildContentRequest(ctx) {
   if (!ctx || ctx.artifactKey !== "video") throw new Error("artifact_not_found");
   const direct = artifactURL(ctx.data);
-  if (direct) return { url: direct, method: ctx.clientRequest.method, credentialless: true };
+  if (direct && !/\/v1\/videos\/public\//.test(direct)) return { url: direct, method: ctx.clientRequest.method, credentialless: true };
   const taskId = trimmed(ctx.upstreamTaskId);
   if (!taskId) throw new Error("Moon task id is required");
   return {

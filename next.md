@@ -714,3 +714,18 @@ Chromium `151.0.7922.34` + Playwright，隔离站点 `127.0.0.1:3017` 与最终�
 主代理负责宿主、集中回归、HTTP 验收和交付；moon_finish 负责插件，moon_host_review 只读复核，wan_test_script 负责脚本及本地场景。用户中途要求的全局 AGENTS 已改为子代理继承主代理模型和推理强度。
 
 无前端、依赖、数据库结构或数据库访问实现变更，未部署生产，未发起真实付费生成。Moon Wan 参考输入与最终用量未获有效协议证据，本版仅开放文生视频，按请求秒数计量；新三模型等待有效 `usage.total_tokens`。模拟 MP4 头不证明真实账号权限、供应商生成质量或可播放性；凭据保护下的跨域 `/content` 重定向限制仍保留。交付目标为 `fork/main`（`https://github.com/lysimportant/forknewapi.git`）与中文 annotated Tag `v1.0.0-rc.37.custom.4`，提交和远端一致性由最终 Git 核验确认。
+
+## 18. 2026-09-23 Moon 上游目录新增 12 个模型适配
+
+本轮 P1 延续 Moon 视频插件工作，基线为 `main@60eddb81d`，插件版本 `1.4.0`。对照 2026-09-23 读取的公开视频 API 文档，新增模型不再沿用旧 Seedance Token 的统一限制，而是按 Token、Seedance PT、底价按次和底价按秒四类独立校验与计费事实。
+
+- [x] 接入精确 ID：`seedance-2-5-official`；`seedance2.0-9-3-3-PT`、`seedance2.5-30-10-10-PT`、`seedance2.0-fast-PT`；`sd2mini`、`sd2-930-face`、`sd2.5-30-10-face`、`sd2-930-fast`、`sd2.5-30-10-10-480`、`sd2.5-30-10-10`、`sd2-930-no-face`、`sd2.5-30-10-10-per-request`。
+- [x] 接通 OpenAI Video 与 Responses 两个入口的模型路由、请求字段、素材别名、时长/分辨率/比例校验、尺寸别名、幂等键和禁止重试合同；保留现有 Wan、旧 Seedance、H3、Grok 行为。
+- [x] `seedance-2-5-official` 支持 720p/1080p、4–30 秒或 `-1`、2.5 的 30/10/10/50 素材上限和纯音频参考；PT 模型支持 480p/720p 与各自时长/素材边界，Fast PT 禁止视频参考。
+- [x] 底价 8 模型按文档分别实现清晰度、时长和素材上限；按次模型提供 `video_count`，按秒模型提供 `seconds`，不把上游积分当作 New API 价格。
+- [x] 新增 `plugins/moon_additional_models_test.go`，覆盖 12 个精确 ID、路由、请求/用量合同、关键拒绝和旧模型回归。
+- [x] 定向 Go 测试、插件 lint/format、`go vet ./plugins`、`go build ./plugins` 通过。
+
+本轮仅修改 New API 插件与本地合同测试，未修改数据库、依赖、前端或画布仓库；没有真实 Moon Key、付费生成、生产部署或远端实例更新。无 API Key 的实时 `/v1/models` 仅能确认鉴权保护，不能证明当前账号已开通 12 个模型或实际分组价格。真实生成、素材公网可读性、任务恢复和最终成片仍需授权后的独立验收；未知提交结果继续使用原幂等键，不自动重发。
+
+回滚方式：先等待新版插件创建的在途任务完成，再恢复旧插件版本；不删除任务、日志、模型价格或用户数据。已下线的 `seedance2.5-30-10-10` 不在本次适配列表中。交付提交与 fork/main、annotated Tag 的最终结果以本轮 Git 核验为准。

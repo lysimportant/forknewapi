@@ -238,3 +238,25 @@ tier("base", u("seconds") * 0.02)
 - [x] 本轮证据在隔离工作区 `.local-tests/moon-seconds/`。初次夹具在注册模型别名前保存了该别名价格，宿主正确拒绝；调整为先注册渠道和别名后通过，未改生产校验。
 
 主代理完成实现及验收；子代理分派消息未正确到达，相关测试由主代理接管。没有修改实际售价、部署生产或调用真实付费生成。交付使用中文提交及 annotated Tag `v1.0.0-rc.37.custom.10`，仅推送 `fork/main`，远端结果在最终交接中核验。
+
+## 2026-09-23 Moon 新增 12 个上游模型适配
+
+本轮 P1，基线为 `main@60eddb81d`，目标是消除 Moon 上游实时目录中 12 个模型被标记为“插件尚未适配”的状态。公共文档于 2026-09-23 读取；无 API Key 的 `GET /v1/models` 返回 401，因此本轮没有把账号分组价格、模型权限或真实生成结果当作已验收事实。插件版本更新为 `1.4.0`。
+
+已接入的精确模型 ID：
+
+- Seedance Token：`seedance-2-5-official`。仅 720p/1080p，4–30 秒或 `-1`；2.5 参考素材上限为图片 30、视频 10、音频 10、合计 50，允许纯音频参考；`-1` 预留按 30 秒估算，完成仍等待有效 `usage.total_tokens`。
+- Seedance PT 按秒：`seedance2.0-9-3-3-PT`、`seedance2.5-30-10-10-PT`、`seedance2.0-fast-PT`。仅 480p/720p，最短 5 秒；2.0 与 Fast 最长 15 秒，2.5 最长 30 秒；参考视频/音频按文档要求携带 `durationSeconds`，Fast PT 拒绝视频参考。
+- 底价渠道：`sd2mini`、`sd2-930-face`、`sd2.5-30-10-face`、`sd2-930-fast`、`sd2.5-30-10-10-480`、`sd2.5-30-10-10`、`sd2-930-no-face`、`sd2.5-30-10-10-per-request`。逐模型落实清晰度、时长与图片/视频/音频上限；按次模型只输出 `video_count=1`，按秒模型只输出请求 `seconds`，不把 Moon 积分直接转换为 New API 价格。
+
+请求合同按模型系列独立校验，不把 PT 或底价模型套入旧 Token 合同：保留根地址与 `/v1` 地址归一化、`Idempotency-Key`、`noRetry`、公开 HTTP(S) 素材校验、未知字段拒绝、尺寸/比例冲突拒绝和 `/content` 鉴权下载。Moon 的限时公开播放地址不作为无密钥原始直链直接返回，优先回到所有者鉴权的内容接口。现有 Wan、旧 Seedance、H3、Grok 合同保持不变。
+
+本轮本地验证：
+
+- `go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin -count=1 -timeout=180s` 通过。
+- `go test ./plugins -run '^TestMoon(VideoContracts|LatestVideoContracts|AdditionalModelsContracts)$' -count=1` 通过；新增 `plugins/moon_additional_models_test.go` 覆盖 12 个精确 ID 的目录注册、两个入口路由、请求头/幂等键、PT/Token/底价边界和旧模型回归。
+- `go vet ./plugins`、`go build ./plugins`、Moon oxlint/oxfmt、`go run -mod=readonly . plugin lint plugins/tasks/moon/plugin.js` 通过。
+
+仍未完成的外部验收：没有使用真实 Moon Key 发起付费创建，没有验证当前账号的 `/v1/models` 权限/分组价格、真实上游素材可读性、真实任务轮询与最终成片。部署远端运行实例也不在本轮；安装新版插件后需先以免费报价或受控授权流程核对实际价格，未知提交结果必须沿用原幂等键，不能换键重发。
+
+兼容与回滚：无数据库、依赖、前端或宿主插件 API 迁移。回滚前等待新版插件创建的在途任务完成，再恢复旧插件版本；保留任务、日志、渠道模型和价格配置，不删除用户数据。已下线的 `seedance2.5-30-10-10` 没有加入本次模型声明。
