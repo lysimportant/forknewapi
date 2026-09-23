@@ -448,7 +448,7 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
 	const grokModel = "grok-v1.5-video"
-	t.Run("Grok精确模型提供次数和秒数定价", func(t *testing.T) {
+	t.Run("Grok精确模型提供按秒和分辨率定价", func(t *testing.T) {
 		assert.Contains(t, plugin.Meta.Models, grokModel)
 		require.NotNil(t, plugin.Meta.ModelDiscovery)
 		assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
@@ -461,10 +461,10 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 		}
 		schema, _ := plugin.Meta.UsageForModel(grokModel)
 		require.Len(t, schema, 4)
-		assert.Equal(t, "number", schema["video_count"].Type)
-		assert.Equal(t, "count", schema["video_count"].Unit)
+		assert.NotContains(t, schema, "video_count")
 		assert.Equal(t, "number", schema["seconds"].Type)
 		assert.Equal(t, "second", schema["seconds"].Unit)
+		assert.Equal(t, []string{"720p", "1080p"}, schema["resolution"].Enum)
 	})
 	t.Run("Grok规范请求保留幂等且禁止提交重试", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -578,15 +578,15 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 			})
 		}
 	})
-	t.Run("Grok按次结算并等待真实成片", func(t *testing.T) {
+	t.Run("Grok按秒和分辨率结算并等待真实成片", func(t *testing.T) {
 		for _, tc := range []struct {
 			name, hook string
 			args       []any
 			want       string
 		}{
-			{name: "默认请求一次六秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"video_count":1,"seconds":6,"image_input_count":0,"video_input_count":0}`},
-			{name: "高分辨率长视频一次十五秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 15, "size": "1080p"}}}, want: `{"video_count":1,"seconds":15,"image_input_count":0,"video_input_count":0}`},
-			{name: "成功无需Token用量", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"status": "completed", "url": "https://cdn.example/done.mp4"}}, want: `{"video_count":1}`},
+			{name: "默认请求六秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean"}}}, want: `{"seconds":6,"resolution":"720p","image_input_count":0,"video_input_count":0}`},
+			{name: "高分辨率长视频十五秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": grokModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 15, "size": "1080p"}}}, want: `{"seconds":15,"resolution":"1080p","image_input_count":0,"video_input_count":0}`},
+			{name: "成功无需Token用量", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"status": "completed", "url": "https://cdn.example/done.mp4"}}, want: `null`},
 			{name: "失败不发布结算事实", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "FAILURE"}, map[string]any{"status": "failed"}}, want: `null`},
 			{name: "顶层原链接完成", hook: "parseTaskResult", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "completed", "url": "https://cdn.example/done.mp4"}}, want: `{"status":"SUCCESS","progress":"100%","url":"https://cdn.example/done.mp4"}`},
 			{name: "元数据原链接完成", hook: "parseTaskResult", args: []any{map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "completed", "metadata": map[string]any{"url": "https://cdn.example/done.mp4"}}}, want: `{"status":"SUCCESS","progress":"100%","url":"https://cdn.example/done.mp4"}`},
@@ -616,25 +616,23 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 			assert.NotContains(t, result, "url")
 		}
 	})
-	t.Run("Grok按秒与按次售价独立于上游账单", func(t *testing.T) {
+	t.Run("Grok按秒与分辨率售价独立于上游账单", func(t *testing.T) {
 		completed, callErr := plugin.Engine.Call(t.Context(), "extractUsageOnComplete",
 			map[string]any{"upstreamModel": grokModel}, map[string]any{"status": "SUCCESS"},
 			map[string]any{"seconds": 999, "billing": map[string]any{"seconds": 0, "charged_credits": 12345}})
 		require.NoError(t, callErr)
-		encoded, encodeErr := common.Marshal(completed)
-		require.NoError(t, encodeErr)
+		assert.Nil(t, completed)
 		var completionFacts map[string]any
-		require.NoError(t, common.Unmarshal(encoded, &completionFacts))
-		assert.JSONEq(t, `{"video_count":1}`, string(encoded))
 
 		for _, tc := range []struct {
 			name, protocol string
 			fields         map[string]any
 			seconds        float64
+			resolution     string
 		}{
-			{name: "默认六秒", protocol: "openai_video", seconds: 6},
-			{name: "整数字符串四秒", protocol: "openai_video", fields: map[string]any{"seconds": "4"}, seconds: 4},
-			{name: "duration别名十五秒", protocol: "openai_responses", fields: map[string]any{"duration": "15"}, seconds: 15},
+			{name: "默认六秒720p", protocol: "openai_video", seconds: 6, resolution: "720p"},
+			{name: "整数字符串四秒720p", protocol: "openai_video", fields: map[string]any{"seconds": "4"}, seconds: 4, resolution: "720p"},
+			{name: "duration别名十五秒1080p", protocol: "openai_responses", fields: map[string]any{"duration": "15", "resolution": "1080p"}, seconds: 15, resolution: "1080p"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				body := map[string]any{"prompt": "ocean"}
@@ -664,14 +662,19 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 				var facts map[string]any
 				require.NoError(t, common.Unmarshal(encoded, &facts))
 				assert.Equal(t, tc.seconds, facts["seconds"])
-				assert.Equal(t, float64(1), facts["video_count"])
+				assert.Equal(t, tc.resolution, facts["resolution"])
+				assert.NotContains(t, facts, "video_count")
 
+				resolutionQuota := int(tc.seconds) * 10000
+				if tc.resolution == "1080p" {
+					resolutionQuota *= 2
+				}
 				for _, price := range []struct {
 					expression string
 					quota      int
 				}{
 					{expression: `u("seconds") * 0.02`, quota: int(tc.seconds) * 10000},
-					{expression: `u("video_count") * 0.2`, quota: 100000},
+					{expression: `u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.04) : tier("720p", u("seconds") * 0.02)`, quota: resolutionQuota},
 				} {
 					snapshot := &billingexpr.BillingSnapshot{
 						ExprString: price.expression, ExprHash: billingexpr.ExprHashString(price.expression),
@@ -684,6 +687,7 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 					assert.Equal(t, price.quota, before.ActualQuotaAfterGroup)
 					assert.Equal(t, price.quota, after.ActualQuotaAfterGroup)
 					assert.Equal(t, tc.seconds, settled["seconds"])
+					assert.Equal(t, tc.resolution, settled["resolution"])
 					assert.Equal(t, facts, snapshot.UsageFacts)
 				}
 			})

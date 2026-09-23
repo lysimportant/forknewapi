@@ -276,3 +276,21 @@ tier("base", u("seconds") * 0.02 + u("image_input_count") * 0.10 + u("video_inpu
 本轮仅改插件、既有本地合同测试与验证文档；无数据库、依赖、宿主 API 或前端迁移，也不更改管理员现有价格。回滚前先把引用新字段的表达式改回旧插件支持的版本，等待新版插件在途任务结算后再恢复插件；保留任务、日志和价格历史，不清理用户数据。未使用真实 Moon Key、未调用付费生成或部署生产；供应商权限、当前分组价和成片仍待授权验收。
 
 验证：`go test -mod=readonly ./... -count=1 -timeout=240s` 第二次完整运行通过，`go vet -mod=readonly ./...`、`go build -mod=readonly ./...`、插件 CLI lint、Moon oxlint/oxfmt、集中合同测试均通过。首次全仓测试返回失败，但输出未保留完整日志，无法确定具体失败用例；不将它描述为已定位问题。本地测试仅验证本站计费合同，不证明真实 Moon 生成和价格。
+
+## 2026-09-23 Moon Grok 改为按秒和分辨率计费
+
+按用户要求，`grok-v1.5-video` 从按次计费改为按**输出秒数 + 分辨率档位**计费。Moon 插件升级到 `1.6.0`：Grok 的模型用量 schema 移除 `video_count`，保留 `seconds`，新增 `resolution`（`720p`、`1080p`）；`image_input_count` 和 `video_input_count` 仍可按已校验的引用条目另行定价。提交后不采信上游积分、伪造次数或未确认的账单字段，成功任务沿用提交时冻结的秒数和分辨率事实。
+
+管理员需要把 Grok 价格表达式从旧的 `u("video_count")` 迁移为按秒并按分辨率分档的表达式，例如（仅为表达式示例，不代表实际售价）：
+
+```text
+u("resolution") == "1080p"
+  ? tier("1080p", u("seconds") * 0.04)
+  : tier("720p", u("seconds") * 0.02)
+```
+
+新表达式的美元结果再按现有任务计费换算；图片/视频输入单价如同时启用会继续叠加。旧在途任务的冻结 `video_count` 快照仍可按原表达式结算，但新 Grok 价格配置不能继续引用 `video_count`，应在安装插件前完成迁移并用报价/测试环境核对。
+
+本轮仅修改 Moon 插件、既有合同测试与验证文档；无数据库、依赖、前端或宿主插件 API 迁移，未修改实际售价，未使用真实 Moon Key 发起付费生成，也未部署生产。回滚前先把新 Grok 表达式改回旧插件可识别的配置，等待新版插件创建的在途任务完成，再恢复旧插件版本。
+
+验证：插件 CLI lint、Moon oxlint/oxfmt、Moon 集中合同测试、`go vet -mod=readonly ./...` 和 `go build -mod=readonly ./...` 通过；全仓 `go test -mod=readonly ./... -count=1 -timeout=240s` 首次运行返回失败且未保留完整输出，第二次完整运行通过。真实账号模型权限、当前分组价格、上游任务和最终成片仍待外部验收。

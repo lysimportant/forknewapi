@@ -16,7 +16,7 @@ const BUDGET_PER_SECOND_MODELS = ["sd2-930-fast", "sd2.5-30-10-10-480", "sd2.5-3
 const BUDGET_MODELS = BUDGET_PER_REQUEST_MODELS.concat(BUDGET_PER_SECOND_MODELS);
 /** Moon MiniMax H3 的公开模型 ID。 */
 const H3_MODEL = "minimax-h3";
-/** Moon 按次计费的 Grok 模型，不能套用其他渠道的模型 ID。 */
+/** Moon 按秒与分辨率计费的 Grok 模型，不能套用其他渠道的模型 ID。 */
 const GROK_MODEL = "grok-v1.5-video";
 /** 当前接入的完整模型 ID；渠道别名由宿主映射到这些上游 ID。 */
 const MODELS = WAN_MODELS.concat(TOKEN_MODELS, PT_MODELS, BUDGET_MODELS, [H3_MODEL, GROK_MODEL]);
@@ -28,6 +28,8 @@ const GROK_SIZES = {
   "1920x1080": { resolution: "1080p", ratio: "16:9" },
   "1080x1920": { resolution: "1080p", ratio: "9:16" },
 };
+/** Grok 的计费分辨率档位；请求校验和用量 schema 使用同一组值。 */
+const GROK_RESOLUTIONS = ["720p", "1080p"];
 
 /** 与百炼同名模型共用价格表达式时，Wan 分辨率事实保持大写。 */
 const WAN_RESOLUTIONS = ["480P", "720P", "1080P"];
@@ -206,18 +208,21 @@ const INPUT_USAGE_SCHEMA = {
   },
 };
 
-/** Grok 的生成次数、请求秒数及图片引用分别可定价；上游按次成本不决定下游售价。 */
+/** Grok 按输出秒数与分辨率定价；图片引用仍可单独定价。 */
 const GROK_USAGE_SCHEMA = {
   ...INPUT_USAGE_SCHEMA,
-  video_count: {
-    type: "number",
-    unit: "count",
-    description: { en: "Video generation unit price", zh: "视频生成单价" },
-  },
   seconds: {
     type: "number",
     unit: "second",
     description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  resolution: {
+    enum: GROK_RESOLUTIONS,
+    enumLabels: {
+      "720p": { en: "720p", zh: "720p" },
+      "1080p": { en: "1080p", zh: "1080p" },
+    },
+    description: { en: "Output video resolution", zh: "输出视频分辨率" },
   },
 };
 
@@ -322,7 +327,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, ArtsDance, PT, budget, MiniMax H3, and Grok models",
     zh: "Moon Wan、Seedance、ArtsDance、官转、底价、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.5.0",
+  version: "1.6.0",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -384,7 +389,7 @@ function isH3(model) {
   return model === H3_MODEL;
 }
 
-/** 判断是否使用 Moon 独立的 Grok 参数与按次计费合同。 */
+/** 判断是否使用 Moon 独立的 Grok 参数与按秒、分辨率计费合同。 */
 function isGrok(model) {
   return model === GROK_MODEL;
 }
@@ -468,7 +473,7 @@ function normalizeResolution(value, model) {
     if (!WAN_RESOLUTIONS.includes(normalized)) throw new Error("resolution must be 480p, 720p, or 1080p for Moon Wan models");
     return normalized;
   }
-  if (isGrok(model) && !["720p", "1080p"].includes(raw)) throw new Error("Moon Grok supports only 720p or 1080p");
+  if (isGrok(model) && !GROK_RESOLUTIONS.includes(raw)) throw new Error("Moon Grok supports only 720p or 1080p");
   if (isPT(model) && !["480p", "720p"].includes(raw)) throw new Error("Moon PT supports only 480p or 720p");
   if (isBudget(model) && !Object.prototype.hasOwnProperty.call(BUDGET_LIMITS[model].resolutions, raw))
     throw new Error("resolution is not supported by the Moon budget model");
@@ -1606,7 +1611,7 @@ export function extractUsage(ctx) {
   if (!MODELS.includes(model)) throw new Error("unsupported Moon model");
   if (ctx.usagePurpose === "billing_ratios") return null;
   const facts = validateKnownFields(request, model, true);
-  if (isGrok(model)) return { video_count: 1, seconds: facts.duration, ...inputUsageFacts(facts) };
+  if (isGrok(model)) return { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   if (isPT(model)) return { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   if (isBudget(model)) {
     return BUDGET_PER_REQUEST_MODELS.includes(model)
@@ -1638,12 +1643,11 @@ function actualH3Usage(body) {
   return Object.keys(facts).length ? facts : null;
 }
 
-/** Seedance 使用实际 tokens，H3 采纳有界事实；Wan/Grok 请求秒数保留于提交快照，不从积分或未确认字段推测。 */
+/** Seedance 使用实际 tokens，H3 采纳有界事实；Wan/Grok 请求秒数与分辨率保留于提交快照，不从积分或未确认字段推测。 */
 export function extractUsageOnComplete(task, result, body) {
   if (!result || result.status !== "SUCCESS" || !body || typeof body !== "object") return null;
   const source = taskPayload(body);
   const model = modelName(task, source);
-  if (isGrok(model)) return { video_count: 1 };
   if (isH3(model)) return actualH3Usage(source);
   if (!isTokenModel(model)) return null;
   const tokens = actualTokens(source);
