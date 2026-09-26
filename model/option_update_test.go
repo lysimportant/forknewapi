@@ -8,7 +8,11 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/console_setting"
+	"github.com/QuantumNous/new-api/setting/model_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -216,6 +220,85 @@ func TestOptionPrimaryKeyFailureStopsMigration(t *testing.T) {
 			var saved Option
 			require.NoError(t, db.First(&saved, Option{Key: "About"}).Error)
 			assert.Equal(t, "preserved-on-failure", saved.Value)
+		})
+	}
+}
+
+// TestGroupOpenAIProtocolBridgeOptionValidation 验证公开配置只接受实际分组到已支持协议字符串的映射。
+func TestGroupOpenAIProtocolBridgeOptionValidation(t *testing.T) {
+	for _, value := range []string{
+		"", "null", "[]", `"chat"`, `{"":"chat"}`, `{" openclaw":"chat"}`,
+		`{"openclaw ":"chat"}`, `{"auto":"chat"}`, `{"openclaw":null}`,
+		`{"openclaw":false}`, `{"openclaw":1}`, `{"openclaw":{}}`,
+		`{"openclaw":"completions"}`, `{"openclaw":"Chat"}`, `{"openclaw":"chat "}`,
+	} {
+		t.Run(value, func(t *testing.T) {
+			err := validateOptionValue(model_setting.GroupOpenAIProtocolBridgeOptionKey, value)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), model_setting.GroupOpenAIProtocolBridgeOptionKey)
+		})
+	}
+	for _, value := range []string{"{}", `{"openclaw":"chat","native":"responses","inherit":""}`} {
+		require.NoError(t, validateOptionValue(model_setting.GroupOpenAIProtocolBridgeOptionKey, value))
+	}
+}
+
+// TestUpdateGroupOpenAIProtocolBridgeOption 验证三种数据库上的分组配置保存、替换、重载及非法输入无副作用。
+func TestUpdateGroupOpenAIProtocolBridgeOption(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := openOptionUpdateTestDB(t, dialect)
+			dbType := common.DatabaseTypeSQLite
+			if dialect == "mysql" {
+				dbType = common.DatabaseTypeMySQL
+			} else if dialect == "postgres" {
+				dbType = common.DatabaseTypePostgreSQL
+			}
+			withOptionUpdateTestState(t, db, dbType)
+			settings := model_setting.GetGlobalSettings()
+			original := settings.GroupOpenAIProtocolBridge
+			settings.GroupOpenAIProtocolBridge = hosttypes.NewRWMap[string, dto.OpenAIProtocolBridge]()
+			t.Cleanup(func() { settings.GroupOpenAIProtocolBridge = original })
+
+			const key = model_setting.GroupOpenAIProtocolBridgeOptionKey
+			const unrelatedKey = "option-group-bridge-unrelated"
+			require.NoError(t, UpdateOption(unrelatedKey, "preserved"))
+			for _, value := range []string{
+				`{"openclaw":"chat","other":"responses"}`,
+				`{"openclaw":"responses","inherit":""}`,
+				`{"openclaw":"responses","inherit":""}`,
+				"{}",
+			} {
+				require.NoError(t, UpdateOption(key, value))
+				var saved Option
+				require.NoError(t, db.First(&saved, Option{Key: key}).Error)
+				assert.Equal(t, value, saved.Value)
+				assert.Equal(t, value, common.OptionMap[key])
+				var expected map[string]dto.OpenAIProtocolBridge
+				require.NoError(t, common.UnmarshalJsonStr(value, &expected))
+				assert.Equal(t, expected, settings.GroupOpenAIProtocolBridge.ReadAll())
+				exported, err := config.ConfigToMap(settings)
+				require.NoError(t, err)
+				assert.JSONEq(t, value, exported["group_openai_protocol_bridge"])
+				// 配置重载仍走同一分层配置分发器，不能保留被删除的分组。
+				settings.GroupOpenAIProtocolBridge.Clear()
+				require.NoError(t, updateOptionMap(saved.Key, saved.Value))
+				assert.Equal(t, expected, settings.GroupOpenAIProtocolBridge.ReadAll())
+			}
+
+			const valid = `{"openclaw":"chat"}`
+			require.NoError(t, UpdateOptionsBulk(map[string]string{key: valid}))
+			require.Error(t, UpdateOption(key, "null"))
+			require.Error(t, UpdateOptionsBulk(map[string]string{key: `{"auto":"responses"}`, unrelatedKey: "changed"}))
+			assert.Equal(t, valid, common.OptionMap[key])
+			assert.Equal(t, map[string]dto.OpenAIProtocolBridge{"openclaw": dto.OpenAIProtocolBridgeChat}, settings.GroupOpenAIProtocolBridge.ReadAll())
+			var saved Option
+			require.NoError(t, db.First(&saved, Option{Key: key}).Error)
+			assert.Equal(t, valid, saved.Value)
+			saved = Option{}
+			require.NoError(t, db.First(&saved, Option{Key: unrelatedKey}).Error)
+			assert.Equal(t, "preserved", saved.Value)
+			assert.Equal(t, "preserved", common.OptionMap[unrelatedKey])
 		})
 	}
 }

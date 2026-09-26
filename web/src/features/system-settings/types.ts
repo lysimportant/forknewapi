@@ -225,6 +225,8 @@ export type ModelSettings = {
   'global.pass_through_request_enabled': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
+  /** 分组上游协议映射的 JSON 字符串；空配置沿用渠道行为。 */
+  'global.group_openai_protocol_bridge': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
   'gemini.safety_settings': string
@@ -286,6 +288,8 @@ export type ModelSettings = {
 }
 
 export type BillingSettings = {
+  /** 分组上游协议映射的 JSON 字符串，不参与计费计算。 */
+  'global.group_openai_protocol_bridge': string
   QuotaForNewUser: number
   PreConsumedQuota: number
   QuotaForInvitee: number
