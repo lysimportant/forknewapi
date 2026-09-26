@@ -52,7 +52,6 @@ const defaultBillingSettings: BillingSettings = {
   'tool_price_setting.prices': '{}',
   TopupGroupRatio: '',
   GroupRatio: '',
-  'global.group_openai_protocol_bridge': '{}',
   UserUsableGroups: '',
   GroupGroupRatio: '',
   AutoGroups: '',

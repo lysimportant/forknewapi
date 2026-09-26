@@ -1456,12 +1456,7 @@ export function ChannelMutateDrawer({
         setConfigurationSection(getChannelConfigurationSection(field))
         setPendingErrorFocus(field)
       }
-      toast.error(
-        t(
-          errors.openai_protocol_bridge?.message ??
-            'Please fix the highlighted fields before saving'
-        )
-      )
+      toast.error(t('Please fix the highlighted fields before saving'))
     },
     [t]
   )

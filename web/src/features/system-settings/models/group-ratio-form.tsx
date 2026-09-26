@@ -33,7 +33,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -64,11 +63,9 @@ import { safeJsonParse } from '../utils/json-parser'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import { GroupRatioVisualEditor } from './group-ratio-visual-editor'
 import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
-import { parseGroupOpenAIProtocolBridge } from './utils'
 
 type GroupFormValues = {
   GroupRatio: string
-  GroupOpenAIProtocolBridge: string
   TopupGroupRatio: string
   UserUsableGroups: string
   GroupGroupRatio: string
@@ -92,7 +89,6 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   const { t } = useTranslation()
   const [editMode, setEditMode] = useState<'visual' | 'json'>('visual')
   const [guideOpen, setGuideOpen] = useState(false)
-  const [visualValid, setVisualValid] = useState(true)
 
   const handleFieldChange = useCallback(
     (field: keyof GroupFormValues, value: string) => {
@@ -109,11 +105,6 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   }, [])
 
   const watchedGroupRatio = form.watch('GroupRatio')
-  const groupOpenAIProtocolBridge = form.watch('GroupOpenAIProtocolBridge')
-  const protocolMap = useMemo(
-    () => parseGroupOpenAIProtocolBridge(groupOpenAIProtocolBridge),
-    [groupOpenAIProtocolBridge]
-  )
   const watchedUserUsableGroups = form.watch('UserUsableGroups')
   const watchedTopupGroupRatio = form.watch('TopupGroupRatio')
   const groupNames = useMemo(() => {
@@ -168,41 +159,15 @@ export const GroupRatioForm = memo(function GroupRatioForm({
             type='button'
             size='sm'
             onClick={form.handleSubmit(onSave)}
-            disabled={isSaving || (editMode === 'visual' && !visualValid)}
+            disabled={isSaving}
           >
             {isSaving ? t('Saving...') : t('Save group ratios')}
           </Button>
         </SettingsPageActionsPortal>
-        <Alert>
-          <AlertTitle>{t('Upstream text protocol')}</AlertTitle>
-          <AlertDescription>
-            <p>
-              {t(
-                'For OpenAI channels, /v1/chat/completions and /v1/responses use the selected upstream protocol. This applies to all related requests in the effective group, including the group selected by auto.'
-              )}
-            </p>
-            <p>
-              {t(
-                'An explicit group setting overrides channel settings. Disable global and channel request body passthrough for protocol conversion; otherwise requests return 400.'
-              )}
-            </p>
-          </AlertDescription>
-        </Alert>
         {editMode === 'visual' ? (
           <div className='space-y-6'>
-            {protocolMap === null && (
-              <Alert variant='destructive'>
-                <AlertDescription>
-                  {t(
-                    'Invalid upstream text protocol configuration. Switch to JSON to correct it before saving.'
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
             <GroupRatioVisualEditor
               groupRatio={form.watch('GroupRatio')}
-              groupOpenAIProtocolBridge={groupOpenAIProtocolBridge}
-              onValidityChange={setVisualValid}
               topupGroupRatio={form.watch('TopupGroupRatio')}
               userUsableGroups={form.watch('UserUsableGroups')}
               groupGroupRatio={form.watch('GroupGroupRatio')}
@@ -274,31 +239,6 @@ export const GroupRatioForm = memo(function GroupRatioForm({
           </div>
         ) : (
           <SettingsForm onSubmit={form.handleSubmit(onSave)}>
-            <FormField
-              control={form.control}
-              name='GroupOpenAIProtocolBridge'
-              render={({ field, fieldState }) => (
-                <FormItem data-invalid={fieldState.invalid}>
-                  <FormLabel>{t('Upstream text protocol')}</FormLabel>
-                  <FormControl>
-                    <JsonCodeEditor
-                      value={field.value}
-                      onChange={field.onChange}
-                      name={field.name}
-                      onBlur={field.onBlur}
-                      textareaRef={field.ref}
-                      aria-invalid={fieldState.invalid}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Map actual group names to "chat" or "responses". Missing entries and empty strings keep existing channel settings. Do not use auto as a group name.'
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
             <FormField
               control={form.control}
               name='GroupRatio'

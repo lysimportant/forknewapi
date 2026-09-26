@@ -8,9 +8,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/types"
 )
 
 type ChatCompletionsToResponsesPolicy struct {
@@ -45,13 +43,10 @@ type GlobalSettings struct {
 	// family whitelist but whose names already end in an effort word.
 	EffortTailModelIDs               []string                         `json:"effort_tail_model_ids"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
-	// GroupOpenAIProtocolBridge 按实际路由分组覆盖 OpenAI 文本上游协议；缺省或空值沿用渠道及全局策略。
-	GroupOpenAIProtocolBridge *types.RWMap[string, dto.OpenAIProtocolBridge] `json:"group_openai_protocol_bridge"`
 }
 
 // 默认配置
 var defaultOpenaiSettings = GlobalSettings{
-	GroupOpenAIProtocolBridge: types.NewRWMap[string, dto.OpenAIProtocolBridge](),
 	PassThroughRequestEnabled: false,
 	ThinkingModelBlacklist: []string{
 		"moonshotai/kimi-k2-thinking",

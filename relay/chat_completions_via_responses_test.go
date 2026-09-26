@@ -15,60 +15,11 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/setting/model_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestOpenAIProtocolBridgeChatOverridesGlobalResponsesPolicy(t *testing.T) {
-	settings := model_setting.GetGlobalSettings()
-	original := settings.ChatCompletionsToResponsesPolicy
-	t.Cleanup(func() { settings.ChatCompletionsToResponsesPolicy = original })
-	settings.ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
-		Enabled:       true,
-		AllChannels:   true,
-		ModelPatterns: []string{".*"},
-	}
-
-	info := &relaycommon.RelayInfo{
-		OriginModelName: "deepseek-v4.1-flash",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ApiType:     constant.APITypeOpenAI,
-			ChannelType: constant.ChannelTypeOpenAI,
-			ChannelId:   1,
-			ChannelSetting: dto.ChannelSettings{
-				OpenAIProtocolBridge: dto.OpenAIProtocolBridgeChat,
-			},
-		},
-	}
-
-	assert.False(t, shouldUseResponsesForChat(info))
-	info.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeNative
-	assert.True(t, shouldUseResponsesForChat(info))
-	info.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeResponses
-	assert.True(t, shouldUseResponsesForChat(info))
-}
-
-func TestOpenAIProtocolBridgeIsChannelScoped(t *testing.T) {
-	info := &relaycommon.RelayInfo{
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ApiType: constant.APITypeOpenAI,
-			ChannelSetting: dto.ChannelSettings{
-				OpenAIProtocolBridge: dto.OpenAIProtocolBridgeResponses,
-			},
-		},
-	}
-
-	assert.True(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses))
-	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
-	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeNative))
-
-	info.ApiType = constant.APITypeOpenRouter
-	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses))
-}
 
 func TestIsResponsesEventStreamContentType(t *testing.T) {
 	tests := []struct {
@@ -271,66 +222,4 @@ func TestApplySystemPromptIfNeededSkipsToolLoadingMessages(t *testing.T) {
 			assert.Equal(t, tt.wantOverride, overrideSet)
 		})
 	}
-}
-
-// TestGroupOpenAIProtocolBridgeUsesCurrentRoutingGroup 验证分组覆盖按本次实际路由组读取，且不会修改共享渠道或旧的全局策略。
-func TestGroupOpenAIProtocolBridgeUsesCurrentRoutingGroup(t *testing.T) {
-	settings := model_setting.GetGlobalSettings()
-	original, err := config.ConfigToMap(settings)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, config.UpdateConfigFromMap(settings, original)) })
-	require.NoError(t, config.UpdateConfigFromMap(settings, map[string]string{
-		"group_openai_protocol_bridge": `{"openclaw":"chat","native-responses":"responses","inherit":""}`,
-	}))
-	settings.ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
-		Enabled: true, AllChannels: true, ModelPatterns: []string{".*"},
-	}
-	channel := &relaycommon.ChannelMeta{
-		ApiType: constant.APITypeOpenAI, ChannelType: constant.ChannelTypeOpenAI, ChannelId: 1,
-		ChannelSetting: dto.ChannelSettings{OpenAIProtocolBridge: dto.OpenAIProtocolBridgeResponses},
-	}
-	info := &relaycommon.RelayInfo{
-		ChannelMeta: channel, RelayMode: relayconstant.RelayModeChatCompletions,
-		OriginModelName: "model-test", UserGroup: "native-responses", TokenGroup: "auto",
-	}
-	for _, group := range []string{"openclaw", "other", "openclaw", "inherit", "", "auto"} {
-		info.UsingGroup = group
-		assert.Equal(t, group != "openclaw", shouldUseResponsesForChat(info), "using group %q", group)
-		assert.Equal(t, dto.OpenAIProtocolBridgeResponses, channel.ChannelSetting.OpenAIProtocolBridge)
-	}
-	channel.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeChat
-	info.UsingGroup = "native-responses"
-	assert.True(t, shouldUseResponsesForChat(info), "明确分组策略应覆盖相反的渠道策略")
-	info.RelayMode = relayconstant.RelayModeResponses
-	assert.True(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses))
-	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
-
-	// 删除条目后必须恢复渠道行为，不能因配置解码合并 map 而留下旧覆盖。
-	require.NoError(t, config.UpdateConfigFromMap(settings, map[string]string{"group_openai_protocol_bridge": "{}"}))
-	assert.True(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
-}
-
-// TestGroupOpenAIProtocolBridgePreservesOtherRoutes 验证分组覆盖不改变其他供应商、非目标路由及未初始化的请求。
-func TestGroupOpenAIProtocolBridgePreservesOtherRoutes(t *testing.T) {
-	settings := model_setting.GetGlobalSettings()
-	original, err := config.ConfigToMap(settings)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, config.UpdateConfigFromMap(settings, original)) })
-	require.NoError(t, config.UpdateConfigFromMap(settings, map[string]string{
-		"group_openai_protocol_bridge": `{"openclaw":"chat"}`,
-	}))
-	info := &relaycommon.RelayInfo{
-		UsingGroup: "openclaw", RelayMode: relayconstant.RelayModeChatCompletions,
-		ChannelMeta: &relaycommon.ChannelMeta{ApiType: constant.APITypeOpenAI},
-	}
-	assert.True(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
-	info.ApiType = constant.APITypeOpenRouter
-	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
-	info.ApiType = constant.APITypeOpenAI
-	for _, mode := range []int{relayconstant.RelayModeResponsesCompact, relayconstant.RelayModeCompletions, relayconstant.RelayModeEmbeddings} {
-		info.RelayMode = mode
-		assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat), "relay mode %d", mode)
-	}
-	assert.False(t, useOpenAIProtocolBridge(nil, dto.OpenAIProtocolBridgeChat))
-	assert.False(t, useOpenAIProtocolBridge(&relaycommon.RelayInfo{}, dto.OpenAIProtocolBridgeChat))
 }

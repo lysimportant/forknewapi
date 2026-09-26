@@ -85,8 +85,6 @@ export interface ChannelSettings {
   thinking_to_content?: boolean
   proxy?: string
   pass_through_body_enabled?: boolean
-  /** OpenAI 双协议的上游格式；空值沿用原有处理逻辑。 */
-  openai_protocol_bridge?: '' | 'chat' | 'responses'
   system_prompt?: string
   system_prompt_override?: boolean
   http_protocol?: 'auto' | 'http1' | string

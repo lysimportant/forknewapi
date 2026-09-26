@@ -11,7 +11,6 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -222,11 +221,7 @@ func SyncOptions(frequency int) {
 	}
 }
 
-// validateOptionValue 校验已声明约束的系统选项，失败时阻止数据库写入及内存配置发布。
 func validateOptionValue(key string, value string) error {
-	if key == model_setting.GroupOpenAIProtocolBridgeOptionKey {
-		return model_setting.ValidateGroupOpenAIProtocolBridgeJSON(value)
-	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}

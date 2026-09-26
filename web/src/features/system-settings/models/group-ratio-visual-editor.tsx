@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Combobox } from '@/components/ui/combobox'
 import {
   AlertTriangle,
   ChevronDown,
@@ -57,9 +58,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+
 import {
   Sheet,
   SheetContent,
@@ -69,15 +70,9 @@ import {
 } from '@/components/ui/sheet'
 
 import { safeJsonParse } from '../utils/json-parser'
-import {
-  parseGroupOpenAIProtocolBridge,
-  type GroupOpenAIProtocolBridge,
-} from './utils'
 
 type GroupRatioVisualEditorProps = {
   groupRatio: string
-  groupOpenAIProtocolBridge: string
-  onValidityChange: (valid: boolean) => void
   topupGroupRatio: string
   userUsableGroups: string
   groupGroupRatio: string
@@ -89,8 +84,6 @@ type GroupRatioVisualEditorProps = {
 
 type GroupPricingRow = {
   _id: string
-  /** 已写入表单的组名；输入草稿在失焦确认后再同步协议映射。 */
-  sourceName: string
   name: string
   ratio: string
   topupRatio: string
@@ -157,41 +150,12 @@ function buildGroupPricingRows(
 
   return [...names].map((name) => ({
     _id: createGroupPricingId(),
-    sourceName: name,
     name,
     ratio: String(normalizeRatio(ratioMap[name])),
     topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
     selectable: Object.hasOwn(usableMap, name),
     description: String(usableMap[name] ?? ''),
   }))
-}
-
-/** 校验重命名草稿，防止空名、重名或覆盖未列入计费表的已有协议配置。 */
-function getInvalidGroupPricingRowIds(
-  rows: GroupPricingRow[],
-  protocols: GroupOpenAIProtocolBridge | null
-): Set<string> {
-  const invalid = new Set<string>()
-  const names = new Set<string>()
-  for (const row of rows) {
-    const name = row.name.trim()
-    const hasSourceProtocol =
-      protocols !== null && Object.hasOwn(protocols, row.sourceName)
-    const targetHasProtocol =
-      protocols !== null &&
-      name !== row.sourceName &&
-      Object.hasOwn(protocols, name)
-    if (
-      !name ||
-      names.has(name) ||
-      targetHasProtocol ||
-      (name === 'auto' && hasSourceProtocol)
-    ) {
-      invalid.add(row._id)
-    }
-    names.add(name)
-  }
-  return invalid
 }
 
 function serializeGroupPricingRows(rows: GroupPricingRow[]) {
@@ -268,22 +232,18 @@ function GroupNameSelect(props: GroupNameSelectProps) {
 
   return (
     <Combobox
-      options={options.map((name) => ({ value: name, label: name }))}
-      value={props.value}
-      onValueChange={(value) => {
-        if (value) props.onValueChange(value)
-      }}
-      className={props.className ?? 'w-48'}
-      placeholder={props.placeholder}
-      aria-label={props.placeholder}
-    />
+  options={options.map((name) => ({ value: name, label: name }))}
+  value={props.value}
+  onValueChange={(value) => { if (value) props.onValueChange(value) }}
+  className={props.className ?? 'w-48'}
+  placeholder={props.placeholder}
+  aria-label={props.placeholder}
+/>
   )
 }
 
 export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   groupRatio,
-  groupOpenAIProtocolBridge,
-  onValidityChange,
   topupGroupRatio,
   userUsableGroups,
   groupGroupRatio,
@@ -359,8 +319,6 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
     <div className='space-y-4'>
       <GroupPricingTable
         groupRatio={groupRatio}
-        groupOpenAIProtocolBridge={groupOpenAIProtocolBridge}
-        onValidityChange={onValidityChange}
         userUsableGroups={userUsableGroups}
         topupGroupRatio={topupGroupRatio}
         onChange={onChange}
@@ -453,8 +411,6 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
 
 type GroupPricingTableProps = {
   groupRatio: string
-  groupOpenAIProtocolBridge: string
-  onValidityChange: (valid: boolean) => void
   userUsableGroups: string
   topupGroupRatio: string
   onChange: (field: string, value: string) => void
@@ -463,8 +419,6 @@ type GroupPricingTableProps = {
 
 function GroupPricingTable({
   groupRatio,
-  groupOpenAIProtocolBridge,
-  onValidityChange,
   userUsableGroups,
   topupGroupRatio,
   onChange,
@@ -493,83 +447,32 @@ function GroupPricingTable({
     })
   }, [groupRatio, userUsableGroups, topupGroupRatio])
 
-  const protocols = useMemo(
-    () => parseGroupOpenAIProtocolBridge(groupOpenAIProtocolBridge),
-    [groupOpenAIProtocolBridge]
-  )
-  const invalidRowIds = useMemo(
-    () => getInvalidGroupPricingRowIds(rows, protocols),
-    [rows, protocols]
-  )
-  const valid = protocols !== null && invalidRowIds.size === 0
-  useEffect(() => onValidityChange(valid), [onValidityChange, valid])
-
   const emitRows = useCallback(
     (nextRows: GroupPricingRow[]) => {
-      if (
-        protocols === null ||
-        getInvalidGroupPricingRowIds(nextRows, protocols).size > 0
-      ) {
-        return
-      }
-      const nextProtocols = new Map(Object.entries(protocols))
-      for (const oldRow of rows) {
-        if (!nextRows.some((row) => row._id === oldRow._id)) {
-          nextProtocols.delete(oldRow.sourceName)
-        }
-      }
-      for (const row of nextRows) {
-        const name = row.name.trim()
-        if (
-          name !== row.sourceName &&
-          Object.hasOwn(protocols, row.sourceName)
-        ) {
-          nextProtocols.delete(row.sourceName)
-          nextProtocols.set(name, protocols[row.sourceName])
-        }
-      }
-      setRows(
-        nextRows.map((row) => ({
-          ...row,
-          name: row.name.trim(),
-          sourceName: row.name.trim(),
-        }))
-      )
+      setRows(nextRows)
       const serialized = serializeGroupPricingRows(nextRows)
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
-      const updatedProtocols = Object.fromEntries(nextProtocols)
-      if (JSON.stringify(protocols) !== JSON.stringify(updatedProtocols)) {
-        onChange(
-          'GroupOpenAIProtocolBridge',
-          JSON.stringify(updatedProtocols, null, 2)
-        )
-      }
     },
-    [onChange, protocols, rows]
+    [onChange]
   )
 
   const updateRow = useCallback(
     (
       id: string,
-      field: Exclude<keyof GroupPricingRow, '_id' | 'sourceName'>,
+      field: Exclude<keyof GroupPricingRow, '_id'>,
       value: string | number | boolean
     ) => {
-      const nextRows = rows.map((row) =>
-        row._id === id ? { ...row, [field]: value } : row
+      emitRows(
+        rows.map((row) => (row._id === id ? { ...row, [field]: value } : row))
       )
-      if (field === 'name') setRows(nextRows)
-      else emitRows(nextRows)
     },
     [emitRows, rows]
   )
 
   const addRow = useCallback(() => {
-    const existingNames = new Set([
-      ...rows.map((row) => row.name),
-      ...Object.keys(protocols ?? {}),
-    ])
+    const existingNames = new Set(rows.map((row) => row.name))
     let index = 1
     let name = `group_${index}`
     while (existingNames.has(name)) {
@@ -580,7 +483,6 @@ function GroupPricingTable({
       ...rows,
       {
         _id: createGroupPricingId(),
-        sourceName: name,
         name,
         ratio: '1',
         topupRatio: '',
@@ -588,7 +490,7 @@ function GroupPricingTable({
         description: '',
       },
     ])
-  }, [emitRows, rows, protocols])
+  }, [emitRows, rows])
 
   const removeRow = useCallback(
     (id: string) => {
@@ -621,12 +523,7 @@ function GroupPricingTable({
               )}
             </CardDescription>
           </div>
-          <Button
-            onClick={addRow}
-            size='sm'
-            className='sm:self-start'
-            disabled={!valid}
-          >
+          <Button onClick={addRow} size='sm' className='sm:self-start'>
             <Plus className='mr-2 h-4 w-4' />
             {t('Add group')}
           </Button>
@@ -647,69 +544,10 @@ function GroupPricingTable({
                 cell: (row) => (
                   <Input
                     value={row.name}
-                    aria-label={t('Group name')}
-                    disabled={protocols === null}
-                    onBlur={() => {
-                      if (row.name.trim() !== row.sourceName) emitRows(rows)
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        event.currentTarget.blur()
-                      }
-                    }}
                     onChange={(event) =>
                       updateRow(row._id, 'name', event.target.value)
                     }
-                    aria-invalid={invalidRowIds.has(row._id)}
-                  />
-                ),
-              },
-              {
-                id: 'upstream-protocol',
-                header: t('Upstream text protocol'),
-                className: 'min-w-64',
-                cell: (row) => (
-                  <Combobox
-                    options={[
-                      { value: '', label: t('Keep existing settings') },
-                      {
-                        value: 'chat',
-                        label: t('Use Chat Completions upstream'),
-                      },
-                      {
-                        value: 'responses',
-                        label: t('Use Responses upstream'),
-                      },
-                    ]}
-                    value={
-                      protocols && Object.hasOwn(protocols, row.sourceName)
-                        ? protocols[row.sourceName]
-                        : ''
-                    }
-                    aria-label={t('Upstream text protocol')}
-                    disabled={
-                      !valid ||
-                      row.sourceName === 'auto' ||
-                      row.sourceName !== row.sourceName.trim()
-                    }
-                    onValueChange={(value) => {
-                      if (
-                        !protocols ||
-                        (value !== '' &&
-                          value !== 'chat' &&
-                          value !== 'responses')
-                      ) {
-                        return
-                      }
-                      const next = new Map(Object.entries(protocols))
-                      if (value === '') next.delete(row.sourceName)
-                      else next.set(row.sourceName, value)
-                      onChange(
-                        'GroupOpenAIProtocolBridge',
-                        JSON.stringify(Object.fromEntries(next), null, 2)
-                      )
-                    }}
+                    aria-invalid={duplicateNames.includes(row.name.trim())}
                   />
                 ),
               },
@@ -723,8 +561,6 @@ function GroupPricingTable({
                     min={0}
                     step={0.1}
                     value={row.ratio}
-                    aria-label={t('Ratio')}
-                    disabled={!valid}
                     onChange={(event) =>
                       updateRow(row._id, 'ratio', event.target.value)
                     }
@@ -741,8 +577,6 @@ function GroupPricingTable({
                     min={0}
                     step={0.1}
                     value={row.topupRatio}
-                    aria-label={t('Top-up ratio')}
-                    disabled={!valid}
                     placeholder={t('Not set')}
                     onChange={(event) =>
                       updateRow(row._id, 'topupRatio', event.target.value)
@@ -758,7 +592,6 @@ function GroupPricingTable({
                   <div className='flex justify-center'>
                     <Checkbox
                       checked={row.selectable}
-                      disabled={!valid}
                       onCheckedChange={(checked) =>
                         updateRow(row._id, 'selectable', checked === true)
                       }
@@ -775,7 +608,6 @@ function GroupPricingTable({
                   row.selectable ? (
                     <Input
                       value={row.description}
-                      disabled={!valid}
                       placeholder={t('Group description')}
                       onChange={(event) =>
                         updateRow(row._id, 'description', event.target.value)
@@ -807,7 +639,6 @@ function GroupPricingTable({
                       variant='ghost'
                       size='sm'
                       onClick={() => removeRow(row._id)}
-                      disabled={!valid}
                       aria-label={t('Delete')}
                     >
                       <Trash2 className='h-4 w-4' />
@@ -818,13 +649,6 @@ function GroupPricingTable({
             ]}
           />
 
-          {invalidRowIds.size > 0 && duplicateNames.length === 0 && (
-            <p role='alert' className='text-destructive text-sm'>
-              {t(
-                'Choose a non-empty, unique group name. A protocol override cannot use auto or replace an existing entry.'
-              )}
-            </p>
-          )}
           {duplicateNames.length > 0 && (
             <p className='text-destructive text-sm'>
               {t('Duplicate group names: {{names}}', {

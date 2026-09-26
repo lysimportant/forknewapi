@@ -197,13 +197,6 @@ function addRequiredIssue(
   })
 }
 
-/** 保留旧渠道的明确协议选择，拒绝未知值，避免普通编辑时悄悄清除配置。 */
-const openAIProtocolBridgeSchema = z
-  .enum(['', 'chat', 'responses'], {
-    error: 'OpenAI protocol bridge must be empty, "chat", or "responses".',
-  })
-  .optional()
-
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -271,7 +264,6 @@ export const channelFormSchema = z
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
     pass_through_body_enabled: z.boolean().optional(),
-    openai_protocol_bridge: openAIProtocolBridgeSchema,
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
@@ -453,7 +445,6 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
   pass_through_body_enabled: false,
-  openai_protocol_bridge: '',
   system_prompt: '',
   system_prompt_override: false,
   // Type-specific settings
@@ -495,7 +486,6 @@ export function transformChannelToFormDefaults(
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
     pass_through_body_enabled: false,
-    openai_protocol_bridge: '' as ChannelFormValues['openai_protocol_bridge'],
     system_prompt: '',
     system_prompt_override: false,
   }
@@ -515,10 +505,6 @@ export function transformChannelToFormDefaults(
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
-        openai_protocol_bridge:
-          parsed.openai_protocol_bridge === undefined
-            ? ''
-            : parsed.openai_protocol_bridge,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
       }
@@ -628,15 +614,10 @@ export function transformChannelToFormDefaults(
 }
 
 /**
- * 根据渠道表单显式构建 setting JSON；不复制未知字段。
- * @throws 协议设置非法时抛出校验错误，禁止把异常值转换为默认行为。
+ * Build the setting JSON string from form extra settings
  */
 export function buildSettingJSON(formData: ChannelFormValues): string {
-  const bridge = openAIProtocolBridgeSchema.parse(
-    formData.openai_protocol_bridge
-  )
   const settingObj: Record<string, unknown> = {
-    openai_protocol_bridge: bridge || undefined,
     task_plugin_key:
       formData.type === CHANNEL_TYPE_TASK_PLUGIN
         ? formData.task_plugin_key?.trim() || ''

@@ -19,9 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
-  // 协议配置由表单校验动态展示。
-  'OpenAI protocol bridge must be empty, "chat", or "responses".',
-  'Use a JSON object with non-empty, trimmed group names other than auto and values "", "chat", or "responses".',
   'For this channel, map the model name in client requests to the model name sent upstream.',
   // Channel provider labels, descriptions and presentation badges.
   'Zhipu GLM',

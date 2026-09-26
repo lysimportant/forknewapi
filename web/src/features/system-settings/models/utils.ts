@@ -16,43 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-/** 按实际请求分组选择上游协议；空字符串保留既有渠道配置。 */
-export type GroupOpenAIProtocolBridge = Record<
-  string,
-  '' | 'chat' | 'responses'
->
-
-/** 校验分组协议对象；组名必须非空、无首尾空白，且不能使用保留名 auto。 */
-export function isGroupOpenAIProtocolBridge(
-  value: unknown
-): value is GroupOpenAIProtocolBridge {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    Object.entries(value).every(
-      ([group, protocol]) =>
-        group.length > 0 &&
-        group === group.trim() &&
-        group !== 'auto' &&
-        (protocol === '' || protocol === 'chat' || protocol === 'responses')
-    )
-  )
-}
-
-/** 解析协议映射；空白、异常 JSON 或非法条目均返回 null，禁止静默覆盖。 */
-export function parseGroupOpenAIProtocolBridge(
-  value: string
-): GroupOpenAIProtocolBridge | null {
-  if (!value.trim()) return null
-  try {
-    const parsed: unknown = JSON.parse(value)
-    return isGroupOpenAIProtocolBridge(parsed) ? parsed : null
-  } catch {
-    return null
-  }
-}
-
 export function formatJsonForTextarea(value: string) {
   if (!value || !value.trim()) {
     return ''
@@ -109,7 +72,7 @@ function extractErrorPosition(
     const lines = jsonString.substring(0, position).split('\n')
     return {
       line: lines.length,
-      column: (lines.at(-1)?.length ?? 0) + 1,
+      column: lines[lines.length - 1].length + 1,
       position,
     }
   }

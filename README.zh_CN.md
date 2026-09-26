@@ -230,20 +230,6 @@ docker run --name new-api -d --restart always \
 - 🚧 **OpenAI Compatible ⇄ OpenAI Responses** - 开发中
 - 🔄 **思考转内容功能**
 
-**按分组选择 OpenAI 上游文本协议：**
-
-在「系统设置 → 计费与支付 → 分组定价」的分组表格中设置「上游文本协议」，然后保存：
-
-- **沿用现有设置**：默认选项，不增加分组覆盖，继续使用已有渠道设置和全局兼容策略。
-- **使用 Chat Completions 上游**：该分组的 Chat Completions 请求仍走 Chat；Responses 请求转换为 Chat，返回时恢复 Responses 格式。
-- **使用 Responses 上游**：该分组的 Responses 请求仍走 Responses；Chat Completions 请求转换为 Responses，返回时恢复 Chat 格式。
-
-仅对 OpenAI 适配器的 `/v1/chat/completions` 和 `/v1/responses` 生效；显式分组配置优先于渠道的 `openai_protocol_bridge`。自动选组按每次实际选中的候选组判断，不给保留组 `auto` 设置覆盖。其他分组、供应商和接口不因新增分组设置而改变。
-
-系统配置键为 `global.group_openai_protocol_bridge`，值是 JSON 对象字符串，例如 `{"openclaw":"chat"}`。需要在两种协议间转换时，必须关闭全局和渠道的请求体透传；同协议转发不新增此限制。无法转换的 Responses 会话状态、内置工具等能力会明确报错，不会静默丢弃字段或自动重发。此功能不提供上游原本不支持的模型能力。
-
-仅给 OpenClaw 使用的分组选择 Chat，可避开该分组的上游 Responses 路径而保持客户端 Responses 协议；这属于兼容绕行，不能代替对上游原始失败帧的诊断。改回「沿用现有设置」即可撤销该组覆盖，无数据库结构迁移。
-
 **Reasoning Effort 支持：**
 
 <details>

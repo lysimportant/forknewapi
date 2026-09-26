@@ -48,7 +48,6 @@ import { ToolPriceSettings } from './tool-price-settings'
 import { UpstreamRatioSync } from './upstream-ratio-sync'
 import {
   formatJsonForTextarea,
-  isGroupOpenAIProtocolBridge,
   type JsonValidationError,
   normalizeJsonString,
   validateJsonString,
@@ -134,12 +133,6 @@ const createModelSchema = (t: Translate) =>
 const createGroupSchema = (t: Translate) =>
   z.object({
     GroupRatio: createJsonStringField(t),
-    GroupOpenAIProtocolBridge: createJsonStringField(t, {
-      allowEmpty: false,
-      predicate: isGroupOpenAIProtocolBridge,
-      predicateMessage:
-        'Use a JSON object with non-empty, trimmed group names other than auto and values "", "chat", or "responses".',
-    }),
     TopupGroupRatio: createJsonStringField(t),
     UserUsableGroups: createJsonStringField(t),
     GroupGroupRatio: createJsonStringField(t),
@@ -250,9 +243,6 @@ export function RatioSettingsCard({
 
   const groupNormalizedDefaults = useRef({
     GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
-    GroupOpenAIProtocolBridge: normalizeJsonString(
-      groupDefaults.GroupOpenAIProtocolBridge
-    ),
     TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
     UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
     GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
@@ -293,9 +283,6 @@ export function RatioSettingsCard({
     defaultValues: {
       ...groupDefaults,
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
-      GroupOpenAIProtocolBridge: formatJsonForTextarea(
-        groupDefaults.GroupOpenAIProtocolBridge
-      ),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
@@ -346,9 +333,6 @@ export function RatioSettingsCard({
   useEffect(() => {
     groupNormalizedDefaults.current = {
       GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
-      GroupOpenAIProtocolBridge: normalizeJsonString(
-        groupDefaults.GroupOpenAIProtocolBridge
-      ),
       TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
       UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
       GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
@@ -363,9 +347,6 @@ export function RatioSettingsCard({
     groupForm.reset({
       ...groupDefaults,
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
-      GroupOpenAIProtocolBridge: formatJsonForTextarea(
-        groupDefaults.GroupOpenAIProtocolBridge
-      ),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
@@ -430,9 +411,6 @@ export function RatioSettingsCard({
     async (values: GroupFormValues) => {
       const normalized = {
         GroupRatio: normalizeJsonString(values.GroupRatio),
-        GroupOpenAIProtocolBridge: normalizeJsonString(
-          values.GroupOpenAIProtocolBridge
-        ),
         TopupGroupRatio: normalizeJsonString(values.TopupGroupRatio),
         UserUsableGroups: normalizeJsonString(values.UserUsableGroups),
         GroupGroupRatio: normalizeJsonString(values.GroupGroupRatio),
@@ -444,9 +422,8 @@ export function RatioSettingsCard({
         ),
       }
 
-      // 仅映射存在命名空间的配置键，其余字段沿用原有 API 名称。
+      // Map form field names to API keys (most are 1:1, except GroupSpecialUsableGroup)
       const apiKeyMap: Record<string, string> = {
-        GroupOpenAIProtocolBridge: 'global.group_openai_protocol_bridge',
         GroupSpecialUsableGroup:
           'group_ratio_setting.group_special_usable_group',
       }

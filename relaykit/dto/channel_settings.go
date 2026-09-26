@@ -10,19 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
-// OpenAIProtocolBridge 定义 OpenAI 渠道是否把客户端的两种文本协议桥接到同一种上游协议。
-type OpenAIProtocolBridge string
-
-const (
-	// OpenAIProtocolBridgeNative 保持当前渠道的原生请求路径与响应协议。
-	OpenAIProtocolBridgeNative OpenAIProtocolBridge = ""
-	// OpenAIProtocolBridgeChat 将 Responses 请求转换为 Chat Completions 后访问上游。
-	OpenAIProtocolBridgeChat OpenAIProtocolBridge = "chat"
-	// OpenAIProtocolBridgeResponses 将 Chat Completions 请求转换为 Responses 后访问上游。
-	OpenAIProtocolBridgeResponses OpenAIProtocolBridge = "responses"
-)
-
-// ChannelSettings 保存渠道级请求处理、代理与传输设置。
 type ChannelSettings struct {
 	TaskPluginKey          string `json:"task_plugin_key,omitempty"`
 	ForceFormat            bool   `json:"force_format,omitempty"`
@@ -31,8 +18,6 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
-	// OpenAIProtocolBridge 仅对 APITypeOpenAI 渠道生效；空值保持原生行为。
-	OpenAIProtocolBridge OpenAIProtocolBridge `json:"openai_protocol_bridge,omitempty"`
 	// HTTPProtocol controls outbound HTTP version negotiation for this channel.
 	// Accepted values: "", "auto" (default), "http1".
 	HTTPProtocol string `json:"http_protocol,omitempty"`
@@ -47,24 +32,7 @@ const (
 	MaxHTTP2ConnectionShards = 8
 )
 
-// ValidateOpenAIProtocolBridge 验证渠道级 OpenAI 协议桥接设置。
-// 桥接需要重建请求，因此不能与渠道级请求体透传同时启用。
-func (s *ChannelSettings) ValidateOpenAIProtocolBridge() error {
-	if s == nil {
-		return nil
-	}
-	switch s.OpenAIProtocolBridge {
-	case OpenAIProtocolBridgeNative, OpenAIProtocolBridgeChat, OpenAIProtocolBridgeResponses:
-	default:
-		return fmt.Errorf("invalid openai_protocol_bridge: %s", s.OpenAIProtocolBridge)
-	}
-	if s.OpenAIProtocolBridge != OpenAIProtocolBridgeNative && s.PassThroughBodyEnabled {
-		return fmt.Errorf("openai_protocol_bridge requires pass_through_body_enabled to be false")
-	}
-	return nil
-}
-
-// ValidateHTTPTransport 验证渠道级 HTTP 传输设置。
+// ValidateHTTPTransport validates save-time HTTP transport channel settings.
 func (s *ChannelSettings) ValidateHTTPTransport() error {
 	if s == nil {
 		return nil
