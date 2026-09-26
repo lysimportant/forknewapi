@@ -620,6 +620,37 @@ func TestChannelSettingsHTTPTransportJSONRoundTrip(t *testing.T) {
 	assert.NotContains(t, string(encoded), "http_protocol")
 }
 
+func TestChannelSettingsOpenAIProtocolBridgeJSONRoundTrip(t *testing.T) {
+	var settings ChannelSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"openai_protocol_bridge":"chat"}`), &settings))
+	assert.Equal(t, OpenAIProtocolBridgeChat, settings.OpenAIProtocolBridge)
+
+	encoded, err := json.Marshal(settings)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"openai_protocol_bridge":"chat"`)
+}
+
+func TestChannelSettingsValidateOpenAIProtocolBridge(t *testing.T) {
+	for _, bridge := range []OpenAIProtocolBridge{
+		OpenAIProtocolBridgeNative,
+		OpenAIProtocolBridgeChat,
+		OpenAIProtocolBridgeResponses,
+	} {
+		require.NoError(t, (&ChannelSettings{OpenAIProtocolBridge: bridge}).ValidateOpenAIProtocolBridge())
+	}
+
+	err := (&ChannelSettings{OpenAIProtocolBridge: "invalid"}).ValidateOpenAIProtocolBridge()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openai_protocol_bridge")
+
+	err = (&ChannelSettings{
+		OpenAIProtocolBridge:   OpenAIProtocolBridgeChat,
+		PassThroughBodyEnabled: true,
+	}).ValidateOpenAIProtocolBridge()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass_through_body_enabled")
+}
+
 func TestChannelSettingsValidateHTTPTransport(t *testing.T) {
 	require.NoError(t, (&ChannelSettings{}).ValidateHTTPTransport())
 	require.NoError(t, (&ChannelSettings{HTTPProtocol: "AUTO"}).ValidateHTTPTransport())

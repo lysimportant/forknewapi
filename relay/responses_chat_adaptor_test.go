@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
+	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -62,6 +63,51 @@ func TestResponsesChatAdaptorRejectsUnsupportedInputs(t *testing.T) {
 			assert.Equal(t, types.RelayFormat(types.RelayFormatOpenAIResponses), info.RelayFormat)
 		})
 	}
+}
+
+// TestOpenAIProtocolBridgeUsesChatForResponses 验证按渠道启用的 Chat 桥接只改变目标 OpenAI 渠道，且 Responses 请求被转换到 Chat 上游。
+func TestOpenAIProtocolBridgeUsesChatForResponses(t *testing.T) {
+	ctx, recorder, info, request := responsesChannelContext(t, constant.ChannelTypeOpenAI, "model-test", `"hello"`, false)
+	info.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeChat
+
+	adaptor, apiErr := newResponsesAdaptor(info)
+	require.Nil(t, apiErr)
+	_, ok := adaptor.(*responsesChatAdaptor)
+	require.True(t, ok)
+
+	adaptor.Init(info)
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(ctx, info, *request)
+	require.NoError(t, err)
+	_, ok = converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+
+	requestURL, err := adaptor.GetRequestURL(info)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:1/v1/chat/completions", requestURL)
+	assert.Equal(t, relayconstant.RelayModeResponses, info.RelayMode)
+	assert.Equal(t, "/v1/responses", info.RequestURLPath)
+	assert.Same(t, request, info.Request)
+
+	chatResponse := `{"id":"chatcmpl_bridge","object":"chat.completion","model":"model-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`
+	usage, responseErr := adaptor.DoResponse(ctx, &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(chatResponse)),
+	}, info)
+	require.Nil(t, responseErr)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), `"object":"response"`)
+	assert.Contains(t, recorder.Body.String(), `"text":"ok"`)
+}
+
+// TestOpenAIProtocolBridgeKeepsNativeRoutingByDefault 验证未配置桥接时 OpenAI Responses 仍沿用原生适配器。
+func TestOpenAIProtocolBridgeKeepsNativeRoutingByDefault(t *testing.T) {
+	_, _, info, _ := responsesChannelContext(t, constant.ChannelTypeOpenAI, "model-test", `"hello"`, false)
+
+	adaptor, apiErr := newResponsesAdaptor(info)
+	require.Nil(t, apiErr)
+	_, ok := adaptor.(*openaichannel.Adaptor)
+	require.True(t, ok)
 }
 
 // TestResponsesChatAdaptorRejectsPassThrough 验证全局与渠道透传冲突在选择适配器阶段即返回 400。

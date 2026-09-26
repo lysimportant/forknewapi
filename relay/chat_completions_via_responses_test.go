@@ -15,11 +15,59 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAIProtocolBridgeChatOverridesGlobalResponsesPolicy(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	original := settings.ChatCompletionsToResponsesPolicy
+	t.Cleanup(func() { settings.ChatCompletionsToResponsesPolicy = original })
+	settings.ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
+		Enabled:       true,
+		AllChannels:   true,
+		ModelPatterns: []string{".*"},
+	}
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "deepseek-v4.1-flash",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiType:     constant.APITypeOpenAI,
+			ChannelType: constant.ChannelTypeOpenAI,
+			ChannelId:   1,
+			ChannelSetting: dto.ChannelSettings{
+				OpenAIProtocolBridge: dto.OpenAIProtocolBridgeChat,
+			},
+		},
+	}
+
+	assert.False(t, shouldUseResponsesForChat(info))
+	info.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeNative
+	assert.True(t, shouldUseResponsesForChat(info))
+	info.ChannelSetting.OpenAIProtocolBridge = dto.OpenAIProtocolBridgeResponses
+	assert.True(t, shouldUseResponsesForChat(info))
+}
+
+func TestOpenAIProtocolBridgeIsChannelScoped(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiType: constant.APITypeOpenAI,
+			ChannelSetting: dto.ChannelSettings{
+				OpenAIProtocolBridge: dto.OpenAIProtocolBridgeResponses,
+			},
+		},
+	}
+
+	assert.True(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses))
+	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat))
+	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeNative))
+
+	info.ApiType = constant.APITypeOpenRouter
+	assert.False(t, useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses))
+}
 
 func TestIsResponsesEventStreamContentType(t *testing.T) {
 	tests := []struct {

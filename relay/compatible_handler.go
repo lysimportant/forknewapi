@@ -74,10 +74,19 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	adaptor.Init(info)
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	useOpenAIResponsesBridge := useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeResponses)
+	if useOpenAIResponsesBridge && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("openai_protocol_bridge=responses requires request body pass-through to be disabled"),
+			types.ErrorCodeInvalidRequest,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
-		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
+		shouldUseResponsesForChat(info) {
 		applySystemPromptIfNeeded(c, info, request)
 		usage, newApiErr := textRequestViaResponses(c, info, adaptor, request)
 		if newApiErr != nil {

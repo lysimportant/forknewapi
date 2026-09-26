@@ -30,6 +30,13 @@ func newResponsesAdaptor(info *relaycommon.RelayInfo) (channel.Adaptor, *types.N
 	if adaptor == nil {
 		return nil, responsesChatRequestError(fmt.Errorf("api type %d has no text adaptor", info.ApiType))
 	}
+	// 仅对明确启用桥接的 OpenAI 渠道复用 Chat 上游；默认仍保持原生 Responses 路径。
+	if useOpenAIProtocolBridge(info, dto.OpenAIProtocolBridgeChat) {
+		if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+			return nil, responsesChatRequestError(fmt.Errorf("openai_protocol_bridge=chat requires request body pass-through to be disabled"))
+		}
+		return &responsesChatAdaptor{Adaptor: adaptor}, nil
+	}
 	switch info.ApiType {
 	case constant.APITypeJina, constant.APITypeMokaAI, constant.APITypeJimeng, constant.APITypeReplicate:
 		return nil, responsesChatRequestError(fmt.Errorf("channel %s does not support text Responses", adaptor.GetChannelName()))

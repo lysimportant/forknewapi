@@ -41,6 +41,38 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestChannelValidateSettingsRejectsInvalidOpenAIProtocolBridge(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting dto.ChannelSettings
+		wantErr string
+	}{
+		{
+			name:    "unknown bridge",
+			setting: dto.ChannelSettings{OpenAIProtocolBridge: "invalid"},
+			wantErr: "openai_protocol_bridge",
+		},
+		{
+			name: "bridge cannot use pass-through",
+			setting: dto.ChannelSettings{
+				OpenAIProtocolBridge:   dto.OpenAIProtocolBridgeChat,
+				PassThroughBodyEnabled: true,
+			},
+			wantErr: "pass_through_body_enabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{}
+			channel.SetSetting(tt.setting)
+			err := channel.ValidateSettings()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {
 	inferenceRoute := dto.AdvancedCustomRoute{
 		IncomingPath: "/v1/chat/completions",
