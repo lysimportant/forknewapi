@@ -3349,6 +3349,7 @@
     "Model mapping values must be strings": "Giá trị ánh xạ mô hình phải là chuỗi",
     "Model metadata": "Siêu dữ liệu mô hình",
     "Model metadata saved": "Đã lưu siêu dữ liệu mô hình",
+    "Model mismatch": "Mô hình không khớp",
     "Model name": "Tên mẫu",
     "Model Name": "Tên mẫu",
     "Model Name *": "Tên mẫu *",

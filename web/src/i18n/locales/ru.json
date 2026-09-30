@@ -3349,6 +3349,7 @@
     "Model mapping values must be strings": "Значения сопоставления моделей должны быть строками",
     "Model metadata": "Метаданные модели",
     "Model metadata saved": "Метаданные модели сохранены",
+    "Model mismatch": "Несоответствие модели",
     "Model name": "Имя модели",
     "Model Name": "Название модели",
     "Model Name *": "Имя модели *",

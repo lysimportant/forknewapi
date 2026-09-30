@@ -3349,6 +3349,7 @@
     "Model mapping values must be strings": "Les valeurs du mappage de modèles doivent être des chaînes",
     "Model metadata": "Métadonnées du modèle",
     "Model metadata saved": "Métadonnées enregistrées",
+    "Model mismatch": "Modèle différent",
     "Model name": "Nom du modèle",
     "Model Name": "Nom du modèle",
     "Model Name *": "Nom du modèle *",

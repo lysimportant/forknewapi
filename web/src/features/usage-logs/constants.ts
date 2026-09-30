@@ -68,6 +68,9 @@ export const LOG_TYPE_ENUM = {
  */
 export const LOG_TYPE_ALL_VALUE = '0' as const
 
+/** 仅用于查询已记录的上游模型不一致标记，不对应持久化日志类型。 */
+export const LOG_TYPE_MODEL_MISMATCH_VALUE = '-1' as const
+
 // ============================================================================
 // Time Range Presets
 // ============================================================================
@@ -101,12 +104,16 @@ export const LOG_TYPES = [
 ] as const
 
 /**
- * Log types for DataTableToolbar filters (single select mode)
- * Backend treats type=0 as "all logs" in list/stat endpoints, so the filter
- * must not expose the display-only "Unknown" label for that value.
+ * 日志类型单选筛选：0 查询全部，-1 查询已记录的上游模型不一致。
+ * 查询选项不改变持久化日志类型，也不暴露仅用于行展示的 Unknown。
  */
 export const LOG_TYPE_FILTERS = [
   { label: 'All Types', value: LOG_TYPE_ALL_VALUE, deprecated: false },
+  {
+    label: 'Model mismatch',
+    value: LOG_TYPE_MODEL_MISMATCH_VALUE,
+    deprecated: false,
+  },
   ...LOG_TYPES.filter((type) => type.value !== LOG_TYPE_ENUM.UNKNOWN).map(
     (type) => ({
       label: type.label,

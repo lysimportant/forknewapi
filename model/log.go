@@ -80,6 +80,9 @@ type Log struct {
 	Other             string `json:"other"`
 }
 
+// LogTypeModelMismatch 仅用于日志查询，筛选已记录的上游响应模型不一致标记；不写入日志类型。
+const LogTypeModelMismatch = -1
+
 // don't use iota, avoid change log type value
 const (
 	LogTypeUnknown = 0
@@ -461,12 +464,26 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
+// applyLogTypeFilter 按日志类型筛选；模型不一致复用服务端紧凑 JSON 中的布尔标记。
+// 不比较请求别名或映射模型，也不将缺少核验标记的历史日志视为异常。
+// 返回组合后的查询，文本过滤不合法时保留底层错误。
+func applyLogTypeFilter(tx *gorm.DB, logType int) (*gorm.DB, error) {
+	switch logType {
+	case LogTypeUnknown:
+		return tx, nil
+	case LogTypeModelMismatch:
+		return applyExplicitLogTextFilter(tx, "logs.other", `%"upstream_model_mismatch":true%`)
+	default:
+		return tx.Where("logs.type = ?", logType), nil
+	}
+}
+
+// GetAllLogs 按类型、分组等条件返回管理员日志页及匹配总数；startIdx 从 0 开始。
+// 模型不一致是查询条件，返回记录仍保留原类型；查询或渠道名称加载失败时返回错误。
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = LOG_DB
-	} else {
-		tx = LOG_DB.Where("logs.type = ?", logType)
+	tx, err := applyLogTypeFilter(LOG_DB, logType)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
@@ -557,12 +574,12 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
+// GetUserLogs 返回指定用户的日志页及匹配总数，并移除管理员和根用户专属元数据。
+// startIdx 从 0 开始；模型不一致可与其他条件交集查询，失败时不返回未筛选数据。
 func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = LOG_DB.Where("logs.user_id = ?", userId)
-	} else {
-		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
+	tx, err := applyLogTypeFilter(LOG_DB.Where("logs.user_id = ?", userId), logType)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
@@ -611,6 +628,8 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
+// SumUsedQuota 汇总消费日志的 quota，并统计最近 60 秒的 RPM 和 TPM。
+// 时间范围仅限定 quota；模型不一致条件同时限定三项统计，查询失败时返回错误。
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
@@ -650,6 +669,14 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 
 	tx = tx.Where("type = ?", LogTypeConsume)
 	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
+	if logType == LogTypeModelMismatch {
+		if tx, err = applyLogTypeFilter(tx, logType); err != nil {
+			return stat, err
+		}
+		if rpmTpmQuery, err = applyLogTypeFilter(rpmTpmQuery, logType); err != nil {
+			return stat, err
+		}
+	}
 
 	// 只统计最近60秒的rpm和tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())

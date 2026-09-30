@@ -3349,6 +3349,7 @@
     "Model mapping values must be strings": "モデルマッピングの値は文字列である必要があります",
     "Model metadata": "モデルのメタデータ",
     "Model metadata saved": "モデルのメタデータを保存しました",
+    "Model mismatch": "モデル不一致",
     "Model name": "モデル名",
     "Model Name": "モデル名",
     "Model Name *": "モデル名 *",

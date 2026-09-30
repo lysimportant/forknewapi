@@ -20,15 +20,28 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import z from 'zod'
 
 import { UsageLogs } from '@/features/usage-logs'
+import { LOG_TYPE_MODEL_MISMATCH_VALUE } from '@/features/usage-logs/constants'
 import {
   isUsageLogsSectionId,
   USAGE_LOGS_DEFAULT_SECTION,
 } from '@/features/usage-logs/section-registry'
 
-const logTypeValues = ['0', '1', '2', '3', '4', '5', '6', '7'] as const
+const logTypeValues = [
+  LOG_TYPE_MODEL_MISMATCH_VALUE,
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+] as const
 const logTypeSearchSchema = z
   .preprocess((value) => {
     if (value == null || value === '') return undefined
+    // 路由会将 ?type=-1 解析为数值，统一为枚举使用的字符串。
+    if (typeof value === 'number') return [String(value)]
     return Array.isArray(value) ? value : [value]
   }, z.array(z.enum(logTypeValues)).optional())
   .catch([])

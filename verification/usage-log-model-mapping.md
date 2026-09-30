@@ -81,3 +81,42 @@
 限制：历史日志不会补造字段；未记录强度的请求仍不展示。后端现有全局/渠道请求体透传路径会清空推理强度，本次不改变该行为。显示的是网关日志记录的请求设置，不是对上游实际执行强度的独立验证。现有 service 日志测试没有直接断言该字段写入，采集与可见性由现有定向测试及代码复核确认；没有把它描述为完整后端集成覆盖。`-race` 因当前环境未启用 CGO 未运行。
 
 未改后端、数据库、依赖或公共契约，不需要迁移；可回退本次提交并重建前端。没有替换正在运行的服务或部署生产。交付为当前 `fork/main` 的任务提交；按低风险展示修复处理，不创建发布 Tag。
+
+## 2026-09-30：按模型不一致筛选
+
+### 范围与查询约定
+
+- P1：通用日志搜索的类型下拉新增“模型不一致”，可以与分组、渠道、模型、用户名、令牌和时间等已有条件取交集；管理员与个人日志均支持。
+- `type=-1` 仅是查询条件，不增加或改写持久化日志类型 0–7。列表和总数在数据库分页前使用同一条件，保留个人日志的用户隔离和角色元数据可见性。
+- 条件依据服务端已有的 `other.upstream_model_mismatch=true` 布尔标记，不比较请求别名和映射模型；正常模型映射、false、字符串 `"true"`、缺少标记的历史日志均不计入。
+- 用量统计同步限定异常子集，但仍只统计消费日志。保持原有时间语义：所选时间范围限定 quota，RPM/TPM 独立统计最近 60 秒，不将历史时间段改成历史速率。
+- 复用现有类型选择器、筛选栏、查询参数和分组组件，无新组件、依赖或样式体系。七语言新增等价翻译并登记静态键；路由同时支持数组形式和直接 `?type=-1`，刷新保留选择，搜索和重置返回第一页。
+
+### 基线与验证
+
+基线为 `main` / `fork/main`、`e2301abd4`，开始时工作区干净。运行时：Go 1.26.0 windows/amd64（根模块声明 1.25.1）、Node 24.12.0、Bun 1.4.2；依赖已安装，本次未安装或升级。Bun 位于 `D:\newapi\.local-tests\responses-docker\tools\node_modules\bun\bin\bun.exe`。下表 `bun` 命令均在 `web/` 执行，其余默认在仓库根目录。
+
+| 检查 | 命令或证据 | 结果 |
+| --- | --- | --- |
+| 基线及回归有效性 | 既有定向 Go 日志测试；旧 `model/log.go` 的隔离 overlay；移除 LIKE 下划线转义的故障注入 | 基线通过；两个故障版本按预期失败；未覆盖或还原工作区生产文件 |
+| SQLite / MySQL / PostgreSQL | `go test ./model -run '^(TestLogModelMismatchQueries\|TestBuildLogLikeCondition.*)$' -count=1 -v`，通过隔离测试 DSN 运行 | SQLite 3.50.4、MySQL 8.0.46、PostgreSQL 16.15 各 64 个新回归用例通过 |
+| 独立日志库 ClickHouse | `go test ./model -run '^TestLogModelMismatchQueries/clickhouse$' -count=1 -v` | ClickHouse 25.8.33.6 的 64 个新回归用例通过；四库合计 256 项 |
+| 全局状态恢复 | `go test ./model -run '^TestLogModelMismatchQueries/sqlite$' -count=2 -shuffle=on` | 同进程两轮通过 |
+| Go 全量检查 | `go test -p 1 ./...`、`go vet ./...`、`go build -o .local-tests/model-mismatch-new-api.exe .` | 均通过；首次并行测试的独立失败见下文 |
+| 前端日志回归 | `bun run test src/features/usage-logs --maxWorkers=2 --testTimeout=20000` | 19 文件、251 测试通过；最终两个修改测试文件另以单 worker 运行，11 测试通过 |
+| 类型与生产构建 | `bun run typecheck`、`bun run build:check` | 均通过 |
+| 代码与格式 | `bun run oxlint -c .oxlintrc.json` 和 `bun run oxfmt --check` 检查本次 5 个 TS/TSX 文件；`gofmt -l model/log.go model/log_model_mismatch_test.go`；`git diff --check` | 无 lint error/warning，格式与空白检查通过，未保留无关格式化改动 |
+| 国际化 | 技能脚本更新七语言，执行 `bun run i18n:sync` | 每个 locale 仅新增 `Model mismatch` 一项，原条目不变 |
+| 生产构建浏览器验收 | `node .local-tests/model-mismatch-browser/fixture.cjs`，预览端口 43920 | 管理员中文浅色 1440px、个人英文深色 1280px 均通过：类型选择、分组交集、列表/统计参数、刷新、重置；无控制台/页面错误或未预期 API 请求 |
+
+首次 `go test ./...` 仅在无关的 `TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner` 出现 SQLite `database is locked`，未修改认证代码。该测试在未改动后端的隔离 overlay 和当前代码分别重复三次均通过；最终 `go test -p 1 ./...` 全量通过。保留首次失败记录，不将串行重跑描述为已修复该并发波动。
+
+数据库测试只使用新建的 `model_mismatch_*` 隔离数据库，覆盖布尔标记、普通映射排除、相似键/转义、分页计数、组合条件、个人数据隔离、角色投影、跨库渠道名称回填、统计口径和原始数据不变；不清空任何既有业务表。临时数据库和一次性 ClickHouse 容器已清理，原 MySQL/PostgreSQL 容器恢复停止。沿用现有 LIKE 语法，没有新增版本专有函数；未运行 MySQL 5.7.8/PostgreSQL 9.6 最低版本矩阵，也未启用 CGO/race。
+
+本地证据保存在 `.local-tests/model-mismatch-db/MATRIX.md`、同目录四库日志、`.local-tests/model-mismatch-go-tests*.log`、`.local-tests/model-mismatch-web-build.log` 和 `.local-tests/model-mismatch-browser/evidence/acceptance-report.json`，不提交本地测试产物。中文选项、中文筛选结果和英文深色截图已查看。浏览器使用模拟 HTTP 日志接口，不代表生产账号、真实后端或外部模型端到端验收。
+
+### 边界、回退与交付
+
+依赖现有服务端写入的紧凑 JSON 布尔标记，不回填或推断历史日志。LIKE 不解析 JSON 层级：手工导入的非约定数据若仅在嵌套对象包含同名 true 标记，也可能被匹配；当前业务写入点 `service/log_info_generate.go` 使用 `SetPublic` 写入顶层字段，本次不扩展为任意 JSON 文档查询。
+
+只新增只读筛选条件，不改数据库结构、日志数据、实际计费或认证，不需要数据迁移。前后端需要配套部署；回退任务提交并重建两端即可，无业务数据回滚。没有部署生产或替换已有服务。按跨层查询契约变更交付到 `fork/main`，附中文注释的自定义 Tag；不推送上游 `origin`。代码、回归、构建和浏览器验证均完成，临时验收服务在交付前停止。
