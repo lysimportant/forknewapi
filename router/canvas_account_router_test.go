@@ -32,6 +32,7 @@ func TestCanvasGrantRoutesDoNotConsumeLoginCriticalLimit(t *testing.T) {
 		common.RedisEnabled = previousRedisEnabled
 	})
 	t.Setenv("CANVAS_ACCOUNT_ENABLED", "true")
+	t.Setenv("CANVAS_ACCOUNT_ADDITIONAL_CLIENTS", "")
 	t.Setenv("CANVAS_ACCOUNT_ISSUER", "http://127.0.0.1:13000")
 	t.Setenv("CANVAS_ACCOUNT_CLIENT_ID", "canvas")
 	t.Setenv("CANVAS_ACCOUNT_INSTANCE_ID", "router-test")

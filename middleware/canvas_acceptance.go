@@ -57,16 +57,18 @@ func validateCanvasExecutionAcceptance(c *gin.Context, channel *model.Channel, m
 	if channel != nil {
 		channelID = channel.Id
 	}
-	config, configErr := common.GetCanvasAccountConfig()
+	configs, configErr := common.GetCanvasAccountConfigs()
+	expectedIssuer := ""
 	if !common.CanvasAccountEnabled() || configErr != nil {
-		config = common.CanvasAccountConfig{}
 		if headerErr == nil {
 			headerErr = errCanvasExecutionHeaderInvalid
 		}
+	} else {
+		expectedIssuer = configs[0].Issuer
 	}
-	managed, _, err := model.ValidateCanvasAcceptance(model.CanvasAcceptanceInput{
+	managed, authority, err := model.ValidateCanvasAcceptance(model.CanvasAcceptanceInput{
 		TokenID: tokenID,
-		Issuer:  payload.Issuer, ExpectedIssuer: config.Issuer, ExpectedUserID: payload.UserID,
+		Issuer:  payload.Issuer, ExpectedIssuer: expectedIssuer, ExpectedUserID: payload.UserID,
 		GrantID: payload.GrantID, InstanceID: payload.InstanceID,
 		ExpectedTokenID: payload.TokenID, ExpectedPolicyGroup: payload.ExpectedGroup,
 		ExpectedPermissionRevision: payload.PermissionRevision, ExpectedAutoGroups: payload.AutoGroups,
@@ -80,7 +82,10 @@ func validateCanvasExecutionAcceptance(c *gin.Context, channel *model.Channel, m
 		return false
 	}
 	if err == nil {
-		return true
+		if _, configured := common.FindCanvasAccountConfig(configs, authority.Grant.ClientID, authority.Grant.InstanceID); configured {
+			return true
+		}
+		err = model.ErrCanvasGrantInvalid
 	}
 	switch {
 	case errors.Is(err, model.ErrCanvasGrantInvalid):

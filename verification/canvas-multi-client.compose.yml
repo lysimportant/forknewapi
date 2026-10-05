@@ -1,0 +1,11 @@
+# 追加到现有 New API Compose；沿用原镜像构建、密钥、数据库、网络和卷。
+# 仅用于已核对主实例为 canvas + main 的 api.lolicon.beer 部署。
+services:
+  new-api:
+    environment:
+      CANVAS_ACCOUNT_ENABLED: 'true'
+      CANVAS_ACCOUNT_ISSUER: https://api.lolicon.beer
+      CANVAS_ACCOUNT_CLIENT_ID: canvas
+      CANVAS_ACCOUNT_INSTANCE_ID: main
+      CANVAS_ACCOUNT_REDIRECT_URI: https://love.lolicon.beer/v1/auth/newapi/callback
+      CANVAS_ACCOUNT_ADDITIONAL_CLIENTS: '[{"client_id":"canvas","instance_id":"canvas-local","redirect_uri":"http://localhost:8080/v1/auth/newapi/callback"}]'

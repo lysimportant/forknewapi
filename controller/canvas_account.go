@@ -92,7 +92,7 @@ type canvasAuthorizePageData struct {
 // 页面通过现有 Refresh Cookie 恢复短期登录令牌；长期授权和浏览器 Access Token 不进入 URL，
 // 一次性授权码只进入已校验的固定回调查询参数。
 func GetCanvasAuthorize(c *gin.Context) {
-	config, ok := canvasAccountConfiguration(c)
+	configs, ok := canvasAccountConfiguration(c)
 	if !ok {
 		return
 	}
@@ -115,8 +115,9 @@ func GetCanvasAuthorize(c *gin.Context) {
 	challenge, challengeOK := canvasSingleQueryValue(query, "code_challenge", 64)
 	method, methodOK := canvasSingleQueryValue(query, "code_challenge_method", 16)
 	decodedChallenge, challengeErr := base64.RawURLEncoding.Strict().DecodeString(challenge)
+	config, configured := common.FindCanvasAccountConfig(configs, clientID, instanceID)
 	if !clientOK || !instanceOK || !redirectOK || !stateOK || !challengeOK || !methodOK ||
-		clientID != config.ClientID || instanceID != config.InstanceID || redirectURI != config.RedirectURI ||
+		!configured || redirectURI != config.RedirectURI ||
 		method != "S256" || !canvasPKCEChallengePattern.MatchString(challenge) || challengeErr != nil || len(decodedChallenge) != sha256.Size {
 		canvasAccountJSONError(c, http.StatusBadRequest, "canvas_authorization_invalid", "Canvas 授权请求无效")
 		return
@@ -167,7 +168,7 @@ func GetCanvasAuthorize(c *gin.Context) {
 // PostCanvasAuthorize 为部署配置中受信的 Canvas 签发五分钟单次登录码。
 // PAT 不能替代浏览器会话；会话版本会冻结到授权码并在兑换时再次校验。
 func PostCanvasAuthorize(c *gin.Context) {
-	config, ok := canvasAccountConfiguration(c)
+	configs, ok := canvasAccountConfiguration(c)
 	if !ok {
 		return
 	}
@@ -182,16 +183,18 @@ func PostCanvasAuthorize(c *gin.Context) {
 		return
 	}
 	var redirectURI string
+	var config common.CanvasAccountConfig
 	_, err := model.ConsumeAuthFlowWithAction(request.RequestToken, model.AuthFlowMatch{
-		Purpose:  model.AuthFlowPurposeCanvasAuthorize,
-		Provider: config.ClientID,
-		Intent:   config.InstanceID,
+		Purpose: model.AuthFlowPurposeCanvasAuthorize,
 	}, func(tx *gorm.DB, flow *model.AuthFlow) error {
 		var payload canvasAuthorizationPayload
 		if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil {
 			return model.ErrAuthFlowInvalid
 		}
-		if payload.ClientID != config.ClientID || payload.InstanceID != config.InstanceID || payload.RedirectURI != config.RedirectURI || payload.State == "" || payload.CodeChallenge == "" {
+		// 实例身份只从已保存的授权事务读取，浏览器不能替换批准目标。
+		var configured bool
+		config, configured = common.FindCanvasAccountConfig(configs, flow.Provider, flow.Intent)
+		if !configured || payload.ClientID != config.ClientID || payload.InstanceID != config.InstanceID || payload.RedirectURI != config.RedirectURI || payload.State == "" || payload.CodeChallenge == "" {
 			return model.ErrAuthFlowInvalid
 		}
 		payload.Identity = model.AuthSessionIdentity{
@@ -234,7 +237,7 @@ func PostCanvasAuthorize(c *gin.Context) {
 // PostCanvasToken 原子消费授权码、校验 PKCE 和会话版本，并返回一次 grant Bearer。
 // 数据库只保存 grant Bearer 的用途隔离 HMAC；响应未知时客户端必须重新发起授权。
 func PostCanvasToken(c *gin.Context) {
-	config, ok := canvasAccountConfiguration(c)
+	configs, ok := canvasAccountConfiguration(c)
 	if !ok {
 		return
 	}
@@ -243,7 +246,8 @@ func PostCanvasToken(c *gin.Context) {
 		canvasAccountJSONError(c, http.StatusBadRequest, "canvas_token_request_invalid", "Canvas 授权码兑换请求无效")
 		return
 	}
-	if request.ClientID != config.ClientID || request.InstanceID != config.InstanceID || request.RedirectURI != config.RedirectURI || !canvasClientSecretMatches(config.ClientSecret, request.ClientSecret) {
+	config, configured := common.FindCanvasAccountConfig(configs, request.ClientID, request.InstanceID)
+	if !configured || request.RedirectURI != config.RedirectURI || !canvasClientSecretMatches(config.ClientSecret, request.ClientSecret) {
 		canvasAccountJSONError(c, http.StatusUnauthorized, "canvas_client_invalid", "Canvas 客户端认证失败")
 		return
 	}
@@ -303,10 +307,11 @@ func PostCanvasToken(c *gin.Context) {
 
 // GetCanvasAccount 返回 grant 绑定用户和当前全部可接入分组，不读取或返回派生 Key。
 func GetCanvasAccount(c *gin.Context) {
-	if _, ok := canvasAccountConfiguration(c); !ok {
+	configs, ok := canvasAccountConfiguration(c)
+	if !ok {
 		return
 	}
-	grant, user, ok := canvasGrantAuthority(c)
+	grant, user, ok := canvasGrantAuthority(c, configs)
 	if !ok {
 		return
 	}
@@ -330,10 +335,11 @@ func PostCanvasRotateGroup(c *gin.Context) {
 
 // canvasManagedGroup 共用账号、分组和响应边界，读取与轮换使用不同操作摘要。
 func canvasManagedGroup(c *gin.Context, rotate bool) {
-	if _, ok := canvasAccountConfiguration(c); !ok {
+	configs, ok := canvasAccountConfiguration(c)
+	if !ok {
 		return
 	}
-	grant, user, ok := canvasGrantAuthority(c)
+	grant, user, ok := canvasGrantAuthority(c, configs)
 	if !ok {
 		return
 	}
@@ -418,22 +424,22 @@ func PostCanvasRevoke(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"revoked": true}})
 }
 
-// canvasAccountConfiguration 读取启用状态和固定客户端配置，并写入统一错误响应。
-func canvasAccountConfiguration(c *gin.Context) (common.CanvasAccountConfig, bool) {
+// canvasAccountConfiguration 读取启用状态和全部受信客户端，配置错误时拒绝整个请求。
+func canvasAccountConfiguration(c *gin.Context) ([]common.CanvasAccountConfig, bool) {
 	if !common.CanvasAccountEnabled() {
 		canvasAccountJSONError(c, http.StatusNotFound, "canvas_account_disabled", "Canvas 账号接入未启用")
-		return common.CanvasAccountConfig{}, false
+		return nil, false
 	}
-	config, err := common.GetCanvasAccountConfig()
+	configs, err := common.GetCanvasAccountConfigs()
 	if err != nil {
 		canvasAccountJSONError(c, http.StatusServiceUnavailable, "canvas_account_misconfigured", "Canvas 账号接入配置无效")
-		return common.CanvasAccountConfig{}, false
+		return nil, false
 	}
-	return config, true
+	return configs, true
 }
 
-// canvasGrantAuthority 从 Bearer 读取当前有效 grant 及其权威用户。
-func canvasGrantAuthority(c *gin.Context) (*model.CanvasGrant, *model.User, bool) {
+// canvasGrantAuthority 校验 Bearer、权威用户及其客户端实例是否仍在部署允许列表中。
+func canvasGrantAuthority(c *gin.Context, configs []common.CanvasAccountConfig) (*model.CanvasGrant, *model.User, bool) {
 	raw, ok := canvasGrantBearer(c)
 	if !ok {
 		return nil, nil, false
@@ -441,6 +447,10 @@ func canvasGrantAuthority(c *gin.Context) (*model.CanvasGrant, *model.User, bool
 	grant, user, err := model.GetCanvasGrantByToken(raw)
 	if err != nil {
 		canvasAccountModelError(c, err)
+		return nil, nil, false
+	}
+	if _, configured := common.FindCanvasAccountConfig(configs, grant.ClientID, grant.InstanceID); !configured {
+		canvasAccountModelError(c, model.ErrCanvasGrantInvalid)
 		return nil, nil, false
 	}
 	return grant, user, true

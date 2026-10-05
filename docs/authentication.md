@@ -177,7 +177,7 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 
 ## Canvas 账号接入合同
 
-Canvas 账号接入让一个固定 Canvas 实例通过 New API 浏览器登录取得受限授权，并为当前用户的可用分组创建或恢复专用 Token。该接口不接收 New API 密码，也不能读取或管理用户的其他 Token。
+Canvas 账号接入让部署方登记的 Canvas 实例通过 New API 浏览器登录取得受限授权，并为当前用户的可用分组创建或恢复专用 Token。该接口不接收 New API 密码，也不能读取或管理用户的其他 Token。
 
 ### 部署配置
 
@@ -195,11 +195,27 @@ CANVAS_BRIDGE_ENABLED=true
 
 - `CANVAS_ACCOUNT_ISSUER` 是 New API 的规范化来源，只允许无用户信息、查询和片段的绝对 URL，路径必须为空。issuer 和回调均要求 HTTPS，只有 localhost 或回环 IP 允许 HTTP 本地验收。
 - `CANVAS_ACCOUNT_CLIENT_ID` 最长 64 字节，`CANVAS_ACCOUNT_INSTANCE_ID` 最长 128 字节。服务端只接受与部署值完全相同的客户端和实例。开启 `CANVAS_ACCOUNT_ENABLED` 即表示将该实例作为受信的一体化应用，用户登录后自动接入本人分组，不再显示单独授权确认；不能用于未受信的第三方客户端。
-- `CANVAS_ACCOUNT_REDIRECT_URI` 是唯一允许的精确回调地址，不支持通配符。
+- `CANVAS_ACCOUNT_REDIRECT_URI` 是主实例唯一允许的精确回调地址，不支持通配符。
 - `CANVAS_ACCOUNT_CLIENT_SECRET` 为空时使用公开 PKCE 客户端；配置后，兑换授权码必须提供精确 secret。该值不能写入日志或前端。
 - 生产环境应使用 HTTPS，并按现有会话文档配置 `SESSION_SECRET`、Secure Refresh Cookie 和可信 Origin。
 
 固定 scope 为 `identity:read`、`groups:read` 和 `tokens:manage`。授权码有效五分钟、只能消费一次且只接受 S256 PKCE；grant 有效三十天。重新授权沿用 grant ID、轮换 grant Bearer，并使旧 Bearer 立即失效。
+
+### 同时接入本地与服务器画布
+
+旧单实例变量继续生效，可用 `CANVAS_ACCOUNT_ADDITIONAL_CLIENTS` 追加同一 issuer 下的受信实例，无需数据库迁移。例如保留服务器的 `canvas + main` 和 HTTPS 回调，追加本地实例：
+
+```env
+CANVAS_ACCOUNT_ADDITIONAL_CLIENTS='[{"client_id":"canvas","instance_id":"canvas-local","redirect_uri":"http://localhost:8080/v1/auth/newapi/callback"}]'
+```
+
+每项必须包含 `client_id`、`instance_id`、`redirect_uri` 三个字符串，可选 `client_secret` 字符串；未指定 secret 的实例使用公开 PKCE。配置最多 32 个附加实例、总长最多 64 KiB，不接受未知字段、重复字段或重复 `client_id + instance_id`。非法附加配置使整组账号配置拒绝请求，不会静默忽略。secret 按原始字节比较，不继承主实例 secret，勿把含真实 secret 的配置交给浏览器或输出到日志。
+
+本地 Canvas 设置 `NEW_API_CLIENT_ID=canvas`、`NEW_API_INSTANCE_ID=canvas-local`、`NEW_API_REDIRECT_URI=http://localhost:8080/v1/auth/newapi/callback`；Compose 宿主变量对应 `MC_NEW_API_*`。服务器 Canvas 保留自己的 `main` 和 HTTPS 回调。授权页、浏览器批准、后端兑换均绑定同一精确实例和回调；协议、主机、端口与路径必须完全相等，`localhost` 与 `127.0.0.1` 不等价。
+
+同一用户在不同实例下使用不同 grant 与分组管理 Token；重新登录或撤销本地授权不改变服务器授权。移除附加实例后，其未完成登录、既有 grant 读取/同步及创建类执行请求均拒绝，但仍允许原 Bearer 撤销自身授权并安全重试。移除配置只是允许列表封锁，不删除数据库授权；若要永久失效，应在移除前或之后显式撤销，不以重新加入配置代替重新授权。
+
+针对 `https://love.lolicon.beer` 与本机 8080 的完整部署配置、应用命令及验收边界见 [双实例检查点](../verification/canvas-multi-client-checkpoint.md)。
 
 ### 浏览器一体化登录
 

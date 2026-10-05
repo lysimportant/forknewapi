@@ -259,6 +259,7 @@ func TestCanvasExecutionAcceptance(t *testing.T) {
 	})
 
 	t.Setenv("CANVAS_ACCOUNT_ENABLED", "true")
+	t.Setenv("CANVAS_ACCOUNT_ADDITIONAL_CLIENTS", "")
 	t.Setenv("CANVAS_ACCOUNT_ISSUER", "http://127.0.0.1:13000")
 	t.Setenv("CANVAS_ACCOUNT_CLIENT_ID", "canvas")
 	t.Setenv("CANVAS_ACCOUNT_INSTANCE_ID", "middleware-test")
@@ -367,6 +368,34 @@ func TestCanvasExecutionAcceptance(t *testing.T) {
 			}
 			assert.Equal(t, test.status, response.Code)
 			assert.Equal(t, test.downstream, downstream)
+		})
+	}
+
+	for _, test := range []struct {
+		name, primaryInstance, additional string
+		status                            int
+	}{
+		{name: "grant accepted as additional instance", primaryInstance: "server", additional: `[{"client_id":"canvas","instance_id":"middleware-test","redirect_uri":"http://localhost:8080/v1/auth/newapi/callback"}]`, status: http.StatusNoContent},
+		{name: "removed instance rejected", primaryInstance: "server", status: http.StatusUnauthorized},
+		{name: "same instance with different client rejected", primaryInstance: "server", additional: `[{"client_id":"other-client","instance_id":"middleware-test","redirect_uri":"http://localhost:8080/v1/auth/newapi/callback"}]`, status: http.StatusUnauthorized},
+		{name: "invalid additions fail closed", primaryInstance: "middleware-test", additional: `[{"client_id":"incomplete"}]`, status: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("CANVAS_ACCOUNT_INSTANCE_ID", test.primaryInstance)
+			t.Setenv("CANVAS_ACCOUNT_ADDITIONAL_CLIENTS", test.additional)
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Request.Header.Set(canvasExecutionHeader, encodeCanvasExecutionPayloadForTest(t, ordinaryPayload))
+			common.SetContextKey(c, constant.ContextKeyTokenId, ordinaryToken.Id)
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+			accepted := validateCanvasExecutionAcceptance(c, &channel, "canvas-test-model")
+			if accepted {
+				c.Status(http.StatusNoContent)
+				c.Writer.WriteHeaderNow()
+			}
+			assert.Equal(t, test.status, response.Code)
+			assert.Equal(t, test.status == http.StatusNoContent, accepted)
 		})
 	}
 }
