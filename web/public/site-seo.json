@@ -3,14 +3,16 @@
   "siteName": "ManSuiAI",
   "description": "ManSuiAI 是面向开发者与创作者的 AI 聚合平台，提供统一 API、AI 图片生成与视频生成入口，连接 Token 市场、创作画布与漫剧制作。",
   "image": "/mansui-social.png",
+  "imageAlt": "ManSuiAI AI 聚合平台与蓝发鲸鱼娘「大肥鱼」，DeepSeek AI 的社区二创娘化形象",
   "pages": {
     "/": {
       "title": "ManSuiAI - AI 聚合平台",
-      "description": "ManSuiAI 提供统一 AI API、AI 图片生成与视频生成入口，汇聚 H3、Seed 等模型能力，连接 Token 市场、创作画布与漫剧制作。",
+      "description": "ManSuiAI 提供统一 AI API、图片与视频生成，汇聚 H3、Seed 等模型能力，连接 Token 市场与创作画布。站点头像为蓝发鲸鱼娘「大肥鱼」，源自 DeepSeek AI 的社区二创娘化形象。",
       "heading": "ManSuiAI - AI 聚合平台",
       "paragraphs": [
         "ManSuiAI 为开发者与创作者提供统一 API、AI 图片生成、AI 视频生成和创作画布入口，支持从故事构思到漫剧制作的创作流程。",
-        "探索 H3、Seed 系列等模型能力，在 Token 市场比较模型与价格。实际可用模型和价格以当前模型目录为准。"
+        "探索 H3、Seed 系列等模型能力，在 Token 市场比较模型与价格。实际可用模型和价格以当前模型目录为准。",
+        "站点使用的蓝发鲸鱼娘头像叫「大肥鱼」，是 DeepSeek AI 的社区二创娘化形象。"
       ],
       "links": [
         {
@@ -29,11 +31,12 @@
     },
     "/about": {
       "title": "关于 ManSuiAI - AI 聚合平台",
-      "description": "了解 ManSuiAI 的统一 AI API、图片生成、视频生成与 H3、Seed 模型能力，探索创作画布和漫剧制作流程。",
+      "description": "了解 ManSuiAI 的统一 AI API、图片与视频生成、创作画布，以及站点头像「大肥鱼」：源自 DeepSeek AI 社区二创的蓝发鲸鱼娘。",
       "heading": "关于 ManSuiAI",
       "paragraphs": [
         "ManSuiAI 连接 API 接入与视觉创作，让文本、图片和视频工作流汇聚在同一平台。",
-        "H3 与 Seed 系列是平台模型能力的示例；实际可用模型与价格以当前模型目录为准。"
+        "H3 与 Seed 系列是平台模型能力的示例；实际可用模型与价格以当前模型目录为准。",
+        "站点使用的蓝发鲸鱼娘头像叫「大肥鱼」，是 DeepSeek AI 的社区二创娘化形象。"
       ],
       "links": [
         {

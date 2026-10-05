@@ -41,6 +41,7 @@ export type SiteSEOManifest = {
   siteName: string
   description: string
   image: string
+  imageAlt: string
   pages: Record<string, SiteSEOPage>
 }
 
@@ -51,6 +52,7 @@ export type ResolvedSiteSEO = {
   robots: 'index, follow' | 'noindex, nofollow'
   canonical: string | null
   image: string
+  imageAlt: string
   siteName: string
   schema: Record<string, unknown> | null
   index: boolean
@@ -114,6 +116,7 @@ export function resolveSiteSEO(
       robots: 'noindex, nofollow',
       canonical: null,
       image,
+      imageAlt: SITE_SEO_MANIFEST.imageAlt,
       siteName: SITE_SEO_MANIFEST.siteName,
       schema: null,
       index: false,
@@ -136,7 +139,11 @@ export function resolveSiteSEO(
     name: title,
     description,
     url: canonical,
-    image,
+    image: {
+      '@type': 'ImageObject',
+      url: image,
+      caption: SITE_SEO_MANIFEST.imageAlt,
+    },
     isPartOf: {
       '@type': 'WebSite',
       name: SITE_SEO_MANIFEST.siteName,
@@ -150,6 +157,7 @@ export function resolveSiteSEO(
     robots: 'index, follow',
     canonical,
     image,
+    imageAlt: SITE_SEO_MANIFEST.imageAlt,
     siteName: SITE_SEO_MANIFEST.siteName,
     schema,
     index: true,
@@ -241,6 +249,7 @@ function removePublicMetadata(documentRoot: Document): void {
     'og:description',
     'og:url',
     'og:image',
+    'og:image:alt',
   ]) {
     removeMeta(documentRoot, 'property', property)
   }
@@ -249,6 +258,7 @@ function removePublicMetadata(documentRoot: Document): void {
     'twitter:title',
     'twitter:description',
     'twitter:image',
+    'twitter:image:alt',
   ]) {
     removeMeta(documentRoot, 'name', name)
   }
@@ -315,10 +325,12 @@ export function applySiteSEO(
   setMeta(documentRoot, 'property', 'og:description', resolved.description)
   setMeta(documentRoot, 'property', 'og:url', resolved.canonical)
   setMeta(documentRoot, 'property', 'og:image', resolved.image)
+  setMeta(documentRoot, 'property', 'og:image:alt', resolved.imageAlt)
   setMeta(documentRoot, 'name', 'twitter:card', 'summary_large_image')
   setMeta(documentRoot, 'name', 'twitter:title', resolved.title)
   setMeta(documentRoot, 'name', 'twitter:description', resolved.description)
   setMeta(documentRoot, 'name', 'twitter:image', resolved.image)
+  setMeta(documentRoot, 'name', 'twitter:image:alt', resolved.imageAlt)
 
   const scripts = [
     ...documentRoot.head.querySelectorAll<HTMLScriptElement>(

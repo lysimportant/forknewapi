@@ -34,7 +34,8 @@ export const ORIGINAL_ABOUT_CONTENT =
 export function AboutIntro() {
   const { t } = useTranslation()
   const { systemName, logo } = useSystemConfig()
-  const heroImage = logo === DEFAULT_LOGO ? '/mansui-whale.webp' : logo
+  const isDefaultLogo = logo === DEFAULT_LOGO
+  const heroImage = isDefaultLogo ? '/mansui-whale.webp' : logo
   const services = [
     {
       icon: Code2,
@@ -106,12 +107,26 @@ export function AboutIntro() {
               </a>
             </div>
           </div>
-          <img
-            src={heroImage}
-            alt=''
-            aria-hidden='true'
-            className='border-border/50 mx-auto aspect-square w-full max-w-72 rounded-[2rem] border object-cover shadow-sm'
-          />
+          <div className='mx-auto w-full max-w-72'>
+            <img
+              src={heroImage}
+              alt={
+                isDefaultLogo
+                  ? t(
+                      "Dafeiyu (大肥鱼), a community-created blue-haired whale girl personification of DeepSeek AI, used as this site's avatar"
+                    )
+                  : systemName
+              }
+              className='border-border/50 mx-auto aspect-square w-full rounded-[2rem] border object-cover shadow-sm'
+            />
+            {isDefaultLogo && (
+              <p className='text-muted-foreground mt-3 text-center text-xs leading-5'>
+                {t(
+                  "Dafeiyu (大肥鱼) is a community-created blue-haired whale girl personification of DeepSeek AI and this site's avatar."
+                )}
+              </p>
+            )}
+          </div>
         </div>
 
         <div className='mt-9 grid gap-6 border-y py-7 md:grid-cols-3 md:gap-8'>

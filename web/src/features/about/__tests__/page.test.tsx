@@ -30,6 +30,8 @@ import { AxiosError, type AxiosAdapter } from 'axios'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { DEFAULT_LOGO, DEFAULT_SYSTEM_NAME } from '@/lib/constants'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { About } from '../index'
 
@@ -122,6 +124,10 @@ function expectProjectAttribution(): void {
 
 beforeEach(() => {
   window.localStorage.clear()
+  useSystemConfigStore.getState().setConfig({
+    systemName: DEFAULT_SYSTEM_NAME,
+    logo: DEFAULT_LOGO,
+  })
 })
 
 afterEach(() => {
@@ -242,6 +248,50 @@ it('未配置正文时展示平台能力、画布入口和站点支持联系方�
   queryClient.clear()
 })
 
+it('默认鲸鱼娘头像显示大肥鱼说明并使用准确替代文本', async () => {
+  stubAboutResponse({ success: true, message: '', data: '' })
+  const { view, queryClient } = renderAbout()
+
+  expect(
+    await screen.findByText(
+      "Dafeiyu (大肥鱼) is a community-created blue-haired whale girl personification of DeepSeek AI and this site's avatar."
+    )
+  ).toBeVisible()
+  expect(
+    view.container.querySelector('img[src="/mansui-whale.webp"]')
+  ).toHaveAttribute(
+    'alt',
+    "Dafeiyu (大肥鱼), a community-created blue-haired whale girl personification of DeepSeek AI, used as this site's avatar"
+  )
+
+  view.unmount()
+  queryClient.clear()
+})
+
+it('自定义站点图标使用站点名称替代文本且不显示大肥鱼说明', async () => {
+  useSystemConfigStore.getState().setConfig({
+    systemName: 'Custom Gateway',
+    logo: '/custom-logo.svg',
+  })
+  stubAboutResponse({ success: true, message: '', data: '' })
+  const { view, queryClient } = renderAbout()
+
+  expect(
+    await screen.findByRole('heading', { name: 'Unified API access' })
+  ).toBeVisible()
+  expect(
+    view.container.querySelector('img[src="/custom-logo.svg"]')
+  ).toHaveAttribute('alt', 'Custom Gateway')
+  expect(
+    screen.queryByText(
+      "Dafeiyu (大肥鱼) is a community-created blue-haired whale girl personification of DeepSeek AI and this site's avatar."
+    )
+  ).not.toBeInTheDocument()
+
+  view.unmount()
+  queryClient.clear()
+})
+
 it('原有运营正文使用优化版式展示，管理员账号和 QQ 群号可复制', async () => {
   const originalContent =
     '充值可以找管理：hkcustom0928 不会接入Codex ChatGPT的也可以找管理远程帮忙; 有问题请联系管理员； Q扣群：811481586'
@@ -339,6 +389,11 @@ it('隔离 HTML 模式不套用模板且保留归属信息', async () => {
   expectProjectAttribution()
   expect(screen.queryByText('Site introduction')).not.toBeInTheDocument()
   expect(screen.queryByText('Unified API access')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText(
+      "Dafeiyu (大肥鱼) is a community-created blue-haired whale girl personification of DeepSeek AI and this site's avatar."
+    )
+  ).not.toBeInTheDocument()
   expect(view.container.querySelector('iframe')).toBeNull()
   expect(screen.queryByText('Custom HTML body')).not.toBeInTheDocument()
 

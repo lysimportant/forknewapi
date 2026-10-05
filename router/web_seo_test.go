@@ -139,6 +139,7 @@ func TestPublicWebRouteInjectsEscapedMetadataAndSemanticContent(t *testing.T) {
 		"siteName":"ManSuiAI",
 		"description":"site description",
 		"image":"/mansui-social.png",
+		"imageAlt":"蓝发鲸鱼娘 <大肥鱼> & DeepSeek",
 		"pages":{"/":{
 			"title":"ManSuiAI - AI 聚合平台",
 			"description":"聚合 <模型> & API",
@@ -154,6 +155,10 @@ func TestPublicWebRouteInjectsEscapedMetadataAndSemanticContent(t *testing.T) {
 	assert.Contains(t, body, "<title>ManSuiAI - AI 聚合平台</title>")
 	assert.Contains(t, body, `<link rel="canonical" href="https://api.lolicon.beer/" />`)
 	assert.Contains(t, body, `<meta property="og:image" content="https://api.lolicon.beer/mansui-social.png" />`)
+	assert.Contains(t, body, `<meta property="og:image:alt" content="蓝发鲸鱼娘 &lt;大肥鱼&gt; &amp; DeepSeek" />`)
+	assert.Contains(t, body, `<meta name="twitter:image:alt" content="蓝发鲸鱼娘 &lt;大肥鱼&gt; &amp; DeepSeek" />`)
+	assert.Contains(t, body, `"@type":"ImageObject"`)
+	assert.Contains(t, body, `"caption":"蓝发鲸鱼娘 \u003c大肥鱼\u003e \u0026 DeepSeek"`)
 	assert.Contains(t, body, `<section id="public-seo-content"`)
 	assert.Contains(t, body, "可信 &lt;标题&gt;")
 	assert.Contains(t, body, "正文 &lt;script&gt;alert(1)&lt;/script&gt;")
@@ -163,6 +168,34 @@ func TestPublicWebRouteInjectsEscapedMetadataAndSemanticContent(t *testing.T) {
 	assert.Empty(t, response.Header().Get("X-Robots-Tag"))
 	assert.Equal(t, 1, strings.Count(body, `<title>`))
 	assert.Contains(t, body, `<script id="site-jsonld" type="application/ld+json">`)
+}
+
+// TestLegacySEOImageWithoutCaption 为旧版默认图片补说明，并避免误标自定义图片。
+func TestLegacySEOImageWithoutCaption(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		manifest string
+		wantAlt  bool
+	}{
+		{name: "default image", manifest: `{"image":"/mansui-social.png"}`, wantAlt: true},
+		{name: "custom image", manifest: `{"image":"/custom-share.png"}`, wantAlt: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := performSEORequest(newSEOWebRouter(t, testCase.manifest), "/", "api.lolicon.beer")
+			require.Equal(t, http.StatusOK, response.Code)
+			body := response.Body.String()
+			if testCase.wantAlt {
+				assert.Contains(t, body, `property="og:image:alt"`)
+				assert.Contains(t, body, `name="twitter:image:alt"`)
+				assert.Contains(t, body, "大肥鱼")
+				return
+			}
+			assert.Contains(t, body, `"image":"https://api.lolicon.beer/custom-share.png"`)
+			assert.NotContains(t, body, `og:image:alt`)
+			assert.NotContains(t, body, `twitter:image:alt`)
+			assert.NotContains(t, body, "大肥鱼")
+		})
+	}
 }
 
 func TestHomeModeSEOHeadMarkerMatchesResolvedHome(t *testing.T) {

@@ -1,5 +1,17 @@
 # ManSuiAI 站点品牌与 SEO 检查点
 
+## 大肥鱼头像说明与图片 SEO（2026-10-06）
+
+- P1：用户确认“大肥鱼”指现有蓝发鲸鱼娘，是 DeepSeek AI 的社区二创娘化形象；不是 ManSuiAI 中文站名，也不是首页 Canvas 鲸鱼。
+- 基线：`main` / `af18db1aa`，跟踪 `fork/main`；开始时工作区干净。Go 1.26.0、Node 24.12.0、本地 Bun 1.4.2、既有 node_modules；SEO/首页启动基线 31/31 通过。
+- 目标：复用现有 favicon、头像与分享图；补充默认首页/关于页描述、图片 alt 元数据与 JSON-LD 图片说明、关于页可见介绍及七语言文案。保留 ManSuiAI 品牌、管理员自定义内容和上游归属。
+- 影响与回滚：仅公开页面内容及 SEO 输出；无数据库、认证、计费、依赖或数据迁移。回滚本次提交并重新构建前后端即可；不部署生产。
+- 实现：默认首页/关于页摘要加入“大肥鱼”与 DeepSeek 娘化形象说明；共享清单新增 imageAlt，同步静态入口、Go 初始 HTML 和 SPA 的 OG/Twitter 图片说明与 JSON-LD ImageObject caption。关于页复用既有图片布局，增加可见说明与 alt，七语言各新增两个键。无新增组件或依赖。
+- 兼容：管理员自定义内容继续使用中性页面摘要，自定义图标不显示默认头像说明。旧清单使用默认分享图时补齐说明，其他图片未提供说明时保持空白。进入私有页会清除公开分享元数据，ManSuiAI 站名与上游归属保持原值。
+- 红绿验证：SEO 默认页、服务端分享图片说明和关于页说明均先失败后通过；SEO/首页启动 33/33、关于页 15/15；`go test ./router -count=1`、`go vet ./router`、目标 TS/TSX oxlint、限定 Oxfmt、`bun run typecheck`、最终 `bun run build:check`、重新嵌入 web/dist 的 `GOWORK=off go build`、`git diff --check` 通过。新增两键经脚本写入全部七语言并完成 i18n:sync，未引入缺失键。
+- 浏览器：隔离 SQLite 服务 http://127.0.0.1:3047/，最终构建的 9 项检查通过，包括静态入口/清单一致、三公开页无脚本 HTML、结构化图片、私有页清理、四项图片资源、关于页图片及说明、SPA 跳转和控制台。桌面 1440×1000 截图已人工检查，证据保存在 `.local-tests/fish-seo/`；临时工具、数据库与二进制不提交。
+- 交付：跨前后端 SEO 输出与结构化图片格式，按大变更创建中文任务提交及 annotated Tag `v1.0.0-rc.37.custom.35`，目标 `fork/main`（https://github.com/lysimportant/forknewapi.git）。线上生效需拉取 main 并重新构建前端及包含 web/dist 的 Go 产物；搜索与分享平台仍需重新抓取，本次不代表线上索引或排名验收。
+
 日期：2026-10-05。P1 站点改版，按大变更交付。
 
 - 基线：main，67c803073，跟踪 fork/main；工作区开始时干净。

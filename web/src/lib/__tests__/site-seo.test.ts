@@ -123,6 +123,45 @@ it('私有页和非公开价格页会 noindex 并清除上一公开页元数据'
   )
 })
 
+it.each(['/', '/about'])(
+  '公开页 %s 描述大肥鱼头像并提供可读的分享图片说明',
+  (pathname) => {
+    applySiteSEO(document, pathname, 'zhCN', DEFAULT_SYSTEM_NAME)
+
+    expect(
+      document
+        .querySelector('meta[name="description"]')
+        ?.getAttribute('content')
+    ).toContain('大肥鱼')
+    for (const selector of [
+      'meta[property="og:image:alt"]',
+      'meta[name="twitter:image:alt"]',
+    ]) {
+      expect(document.querySelector(selector)).toHaveAttribute(
+        'content',
+        expect.stringContaining('DeepSeek')
+      )
+      expect(document.querySelector(selector)).toHaveAttribute(
+        'content',
+        expect.stringContaining('大肥鱼')
+      )
+    }
+    expect(
+      JSON.parse(document.querySelector('#site-jsonld')?.textContent ?? '{}')
+    ).toMatchObject({
+      image: {
+        '@type': 'ImageObject',
+        url: 'https://api.lolicon.beer/mansui-social.png',
+        caption: expect.stringContaining('大肥鱼'),
+      },
+    })
+
+    applySiteSEO(document, '/dashboard', 'zhCN', DEFAULT_SYSTEM_NAME)
+    expect(document.querySelector('meta[property="og:image:alt"]')).toBeNull()
+    expect(document.querySelector('meta[name="twitter:image:alt"]')).toBeNull()
+  }
+)
+
 it('状态未返回时可识别并保留后端生成的公开价格页元数据', () => {
   applySiteSEO(document, '/pricing', 'en', DEFAULT_SYSTEM_NAME, true)
   expect(hasServerPublicPageSEO(document, '/pricing')).toBe(true)

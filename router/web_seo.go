@@ -29,6 +29,7 @@ type siteSEOManifest struct {
 	SiteName    string                 `json:"siteName"`
 	Description string                 `json:"description"`
 	Image       string                 `json:"image"`
+	ImageAlt    string                 `json:"imageAlt"`
 	Pages       map[string]siteSEOPage `json:"pages"`
 }
 
@@ -54,6 +55,7 @@ type resolvedSEOPage struct {
 	Description string
 	Canonical   string
 	Image       string
+	ImageAlt    string
 	Heading     string
 	Paragraphs  []string
 	Links       []siteSEOLink
@@ -77,10 +79,12 @@ var seoHeadTemplate = template.Must(template.New("site-seo-head").Parse(
 		"<meta property=\"og:description\" content=\"{{.Description}}\" />\n" +
 		"<meta property=\"og:url\" content=\"{{.Canonical}}\" />\n" +
 		"<meta property=\"og:image\" content=\"{{.Image}}\" />\n" +
+		"{{if .ImageAlt}}<meta property=\"og:image:alt\" content=\"{{.ImageAlt}}\" />\n{{end}}" +
 		"<meta name=\"twitter:card\" content=\"summary_large_image\" />\n" +
 		"<meta name=\"twitter:title\" content=\"{{.Title}}\" />\n" +
 		"<meta name=\"twitter:description\" content=\"{{.Description}}\" />\n" +
 		"<meta name=\"twitter:image\" content=\"{{.Image}}\" />\n" +
+		"{{if .ImageAlt}}<meta name=\"twitter:image:alt\" content=\"{{.ImageAlt}}\" />\n{{end}}" +
 		"<script id=\"site-jsonld\" type=\"application/ld+json\">{{.JSONLD}}</script>" +
 		"{{else}}<meta name=\"robots\" content=\"noindex, nofollow\" />{{end}}",
 ))
@@ -117,7 +121,13 @@ func loadSiteSEOManifest(assets WebAssets) siteSEOManifest {
 		manifest.Description = configured.Description
 	}
 	if strings.TrimSpace(configured.Image) != "" {
+		// 旧清单指定其他图片但未提供说明时，不套用默认头像的描述。
+		if strings.TrimSpace(configured.ImageAlt) != "" || absoluteSiteURL(configured.Image) != absoluteSiteURL(manifest.Image) {
+			manifest.ImageAlt = configured.ImageAlt
+		}
 		manifest.Image = configured.Image
+	} else if strings.TrimSpace(configured.ImageAlt) != "" {
+		manifest.ImageAlt = configured.ImageAlt
 	}
 	for routePath, page := range configured.Pages {
 		manifest.Pages[normalizeWebPath(routePath)] = page
@@ -134,6 +144,7 @@ func defaultSiteSEOManifest() siteSEOManifest {
 		SiteName:    "ManSuiAI",
 		Description: "ManSuiAI 提供统一的 AI 模型聚合与 API 服务。",
 		Image:       "/mansui-social.png",
+		ImageAlt:    "ManSuiAI AI 聚合平台与蓝发鲸鱼娘「大肥鱼」，DeepSeek AI 的社区二创娘化形象",
 		Pages: map[string]siteSEOPage{
 			"/":        {Title: defaultSiteTitle, Description: "通过 ManSuiAI 统一访问多种 AI 模型与 API 服务。", Heading: defaultSiteTitle},
 			"/about":   {Title: "关于 ManSuiAI - AI 聚合平台", Description: "了解 ManSuiAI AI 聚合平台及其统一 API 服务。", Heading: "关于 ManSuiAI"},
@@ -262,6 +273,7 @@ func resolveSEOPage(manifest siteSEOManifest, requestPath string, knownRoute boo
 		Title:       defaultSiteTitle,
 		Description: manifest.Description,
 		Image:       absoluteSiteURL(manifest.Image),
+		ImageAlt:    manifest.ImageAlt,
 		Index:       publicPage,
 	}
 	if !publicPage {
@@ -296,13 +308,21 @@ func resolveSEOPage(manifest siteSEOManifest, requestPath string, knownRoute boo
 		}
 	}
 	resolved.Canonical = canonicalSiteOrigin + canonicalRoutePath(routePath)
+	var schemaImage any = resolved.Image
+	if strings.TrimSpace(resolved.ImageAlt) != "" {
+		schemaImage = map[string]any{
+			"@type":   "ImageObject",
+			"url":     resolved.Image,
+			"caption": resolved.ImageAlt,
+		}
+	}
 	jsonLD, err := common.Marshal(map[string]any{
 		"@context":    "https://schema.org",
 		"@type":       schemaTypeForPath(routePath),
 		"name":        resolved.Title,
 		"description": resolved.Description,
 		"url":         resolved.Canonical,
-		"image":       resolved.Image,
+		"image":       schemaImage,
 		"isPartOf": map[string]any{
 			"@type": "WebSite",
 			"name":  manifest.SiteName,
