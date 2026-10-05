@@ -69,3 +69,16 @@
 - 浏览器验收：隔离 SQLite 服务 http://127.0.0.1:3046/，本地代理覆盖外部 JS/CSS 不到达、首页接口挂起/恢复、无脚本和自定义页面。默认首页在初始摘要、等待和正式页面三个阶段的 html/body 背景均为 rgb(3, 7, 11)；自定义内容和离开首页保持普通主题；深色偏好刷新保持，最终产物页面无控制台 error。截图已逐项检查，日志及临时代理保存在 `.local-tests/home-flash/`。
 - 过程恢复：测试子代理遇到临时 429 后由主代理接手；使用现有 jsdom Document 和 node:vm 验证真实入口脚本，未安装依赖。远端 Schannel 握手失败后使用单次 `http.sslBackend=openssl` 成功核对远端，不修改全局 Git 配置。
 - 交付：任务中文提交及 annotated Tag `v1.0.0-rc.37.custom.34`，目标 `fork/main`（https://github.com/lysimportant/forknewapi.git）。本轮不部署生产；服务器需拉取 main 并重新构建前端及包含 web/dist 的 Go 产物后生效。现有首屏资源体积优化继续保持独立待办。
+
+## 图标与毛玻璃加载蒙版（2026-10-05）
+
+- P2 首页刷新过渡；基线 `main` / `6c13edcab`，跟踪 fork/main，开始时工作区干净。Node 24.12.0、Go 1.26.0、本地 Bun 1.4.2 与既有依赖。
+- 用户要求：刷新时不再直接展示 SEO 文字，在上方添加站点图标、Loading 和高斯模糊蒙版。
+- 范围：默认首页初始 HTML 和等待阶段；复用现有 `/mansui-icon.png`、首页启动标记及完成/卸载清理。保留无脚本 SEO 正文、自定义首页和其他页面主题。不改数据库、API、认证或依赖，不部署生产。
+- 组件评估：LoadingState 依赖 React，无法在入口 JS 下载前呈现；因此用最小内联 HTML/CSS 呈现图标和转圈蒙版，React 接管后的标记生命周期仍由现有 Home 维护，不新增主题/加载状态框架。复用现有无障碍品牌名，不新增翻译键。
+- 验收：HTML 中图标与蒙版先失败后通过的回归；真实启动脚本及 pending/完成/离开测试；延迟资源/接口、无脚本、自定义页面、减少动态偏好与普通刷新浏览器检查。若入口长时间不可用，15 秒后退出蒙版以恢复可读内容；无最低展示时长。
+- 回滚：恢复本次 HTML/测试提交并重建即可，无数据迁移。
+- 最终检查（2026-10-06）：真实入口 HTML 的图标蒙版基线断言先失败后通过；`bun run vitest run src/features/home/__tests__/bootstrap.test.tsx` 18/18、目标测试文件 Oxfmt/oxlint、`bun run typecheck`、`bun run build:check`、重新嵌入 web/dist 的 `GOWORK=off go build`、`git diff --check` 通过。本轮不修改 Go 源码，未重复全量后端测试。
+- 浏览器验收：隔离预览 http://127.0.0.1:3046/ 与本地代理覆盖外部 JS/CSS 缺失、首页接口挂起/恢复、无脚本、自定义内容、超时退出和普通刷新。图标正常加载、20px 模糊生效、无可见加载文案；正式首页接管后蒙版和 SEO 占位撤除，控制台无 error。最终构建复查确认蒙版覆盖顶部进度条，截图保存在 `.local-tests/home-overlay/loading-overlay.jpg`。
+- 交付目标：小范围 UI 修复，任务中文提交交付至 `fork/main`（https://github.com/lysimportant/forknewapi.git），无需新 Tag。不部署生产；服务器需拉取 main 并重新构建前端及包含 web/dist 的 Go 产物后生效。现有首页资源体积优化仍为独立待办。
+- 当前检查点（2026-10-06）：实现和验证完成，已创建本地任务提交。提交前最后成功的 `git ls-remote fork refs/heads/main` 确认远端为 `6c13edcab7fb4b8b1da23a7bec0c5c628dcd6572`；随后 push 与远端重查持续遇到 TLS 握手失败。已尝试系统 Git 设置、现有代理下 OpenSSL/Schannel 与 HTTP/1.1，直连也超时；未禁用 TLS 校验、未改全局配置。推送尚未完成。连接恢复后先核对本地状态及远端 main，再执行普通 `git push fork main` 并验证 SHA。本任务临时预览和代理已停止。

@@ -80,6 +80,10 @@
             'default'
         ) {
           root.dataset.homeBoot = 'default'
+          // 入口资源加载失败时恢复可读正文，避免蒙版永久阻挡页面。
+          window.setTimeout(function () {
+            delete root.dataset.homeBoot
+          }, 15000)
         }
       })()
     </script>
@@ -129,6 +133,63 @@
         text-decoration: underline;
         text-underline-offset: 0.25em;
       }
+      #home-boot-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.75rem;
+        background: rgb(3 7 11 / 84%);
+        -webkit-backdrop-filter: blur(20px);
+        backdrop-filter: blur(20px);
+      }
+      html[data-home-boot='default'] #home-boot-overlay {
+        display: flex;
+      }
+      #home-boot-overlay::before {
+        content: '';
+        position: absolute;
+        width: min(26rem, 80vw);
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: radial-gradient(
+          circle,
+          rgb(91 170 203 / 12%),
+          transparent 68%
+        );
+        pointer-events: none;
+      }
+      #home-boot-overlay img {
+        position: relative;
+        width: 88px;
+        height: 88px;
+        border-radius: 50%;
+        object-fit: cover;
+        box-shadow:
+          0 0 0 1px rgb(187 230 246 / 24%),
+          0 0 36px rgb(75 158 190 / 16%);
+      }
+      .home-boot-spinner {
+        width: 22px;
+        height: 22px;
+        border: 2px solid rgb(185 225 242 / 18%);
+        border-top-color: #b9e1f2;
+        border-radius: 50%;
+        animation: home-boot-spin 0.9s linear infinite;
+      }
+      @keyframes home-boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .home-boot-spinner {
+          animation: none;
+        }
+      }
     </style>
     <!--umami-->
     <!--Google Analytics-->
@@ -137,5 +198,15 @@
   <body>
     <div id="root" translate="no" class="notranslate"></div>
     <!--site-seo-content-->
+    <div id="home-boot-overlay" role="progressbar" aria-label="ManSuiAI">
+      <img
+        src="/mansui-icon.png"
+        alt=""
+        width="88"
+        height="88"
+        fetchpriority="high"
+      />
+      <span class="home-boot-spinner" aria-hidden="true"></span>
+    </div>
   </body>
 </html>

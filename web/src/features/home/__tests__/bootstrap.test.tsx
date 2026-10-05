@@ -68,6 +68,13 @@ const bootstrapSource = themeBootstrap[1]
 const pendingReplies: Deferred<string>[] = []
 const queryClients: QueryClient[] = []
 
+/** 保存入口 DOM 和可控超时，供测试检查首屏状态及触发降级。 */
+type ThemeBootstrapRun = {
+  document: Document
+  timeoutDelays: number[]
+  flushTimeouts: () => void
+}
+
 /** 创建可控的网络 Promise，使 pending 状态可在断言后明确收敛。 */
 function createDeferred<T>(): Deferred<T> {
   let resolvePromise: (value: T) => void = () => undefined
@@ -204,14 +211,21 @@ function renderHome(path = '/') {
   return { view, queryClient, router }
 }
 
-/** 从实际入口 HTML 执行主题脚本，模拟浏览器在入口 JS 前的 document 状态。 */
+/** 按路径和主题偏好执行真实入口脚本，返回 DOM、毫秒延时记录及超时触发方法。 */
 function runThemeBootstrap(options: {
   path: string
   cookie?: string
   systemDark: boolean
   homeMode?: 'default' | 'custom'
-}): Document {
-  const documentRoot = document.implementation.createHTMLDocument()
+}): ThemeBootstrapRun {
+  const documentRoot = new DOMParser().parseFromString(indexHtml, 'text/html')
+  const timeoutCallbacks: Array<() => void> = []
+  const timeoutDelays: number[] = []
+  const setTimeout = (callback: () => void, delay = 0): number => {
+    timeoutCallbacks.push(callback)
+    timeoutDelays.push(delay)
+    return timeoutCallbacks.length
+  }
   Object.defineProperty(documentRoot, 'cookie', {
     value: options.cookie ? `vite-ui-theme=${options.cookie}` : '',
   })
@@ -226,9 +240,17 @@ function runThemeBootstrap(options: {
     window: {
       location: { pathname: options.path },
       matchMedia: () => ({ matches: options.systemDark }),
+      setTimeout,
     },
+    setTimeout,
   })
-  return documentRoot
+  return {
+    document: documentRoot,
+    timeoutDelays,
+    flushTimeouts: () => {
+      for (const callback of timeoutCallbacks.splice(0)) callback()
+    },
+  }
 }
 
 beforeEach(() => {
@@ -370,7 +392,7 @@ describe('theme-bootstrap 入口脚本', () => {
         cookie,
         systemDark,
         homeMode: 'custom',
-      })
+      }).document
       expect(documentRoot.documentElement.className).toBe(expectedClass)
       expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
     }
@@ -384,18 +406,67 @@ describe('theme-bootstrap 入口脚本', () => {
       path,
       systemDark: false,
       homeMode,
-    })
+    }).document
     expect(documentRoot.documentElement.className).toBe('light')
     expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
   })
 
   test('默认首页且系统深色时设置 data-home-boot=default', () => {
-    const documentRoot = runThemeBootstrap({
+    const { document: documentRoot } = runThemeBootstrap({
       path: '/',
       systemDark: true,
       homeMode: 'default',
     })
     expect(documentRoot.documentElement.className).toBe('dark')
     expect(documentRoot.documentElement.dataset.homeBoot).toBe('default')
+  })
+
+  test('真实入口包含无 SEO 文案的站点图标遮罩并保留 SEO 正文入口', () => {
+    const documentRoot = new DOMParser().parseFromString(indexHtml, 'text/html')
+    const overlay = documentRoot.querySelector('#home-boot-overlay')
+
+    expect(overlay).not.toBeNull()
+    expect(overlay?.querySelector('img')?.getAttribute('src')).toBe(
+      '/mansui-icon.png'
+    )
+    expect(overlay?.textContent?.trim()).toBe('')
+    expect(indexHtml).toContain('<!--site-seo-content-->')
+  })
+
+  test('无脚本加载时首页遮罩保持未激活', () => {
+    const documentRoot = new DOMParser().parseFromString(indexHtml, 'text/html')
+
+    expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
+    expect(documentRoot.querySelector('#home-boot-overlay')).not.toBeNull()
+  })
+
+  test('默认首页入口计时器到期后撤销遮罩标记', () => {
+    const {
+      document: documentRoot,
+      timeoutDelays,
+      flushTimeouts,
+    } = runThemeBootstrap({
+      path: '/',
+      systemDark: true,
+      homeMode: 'default',
+    })
+
+    expect(timeoutDelays).toContain(15_000)
+    expect(documentRoot.documentElement.dataset.homeBoot).toBe('default')
+    flushTimeouts()
+    expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
+  })
+
+  test.each([
+    ['custom home', '/', 'custom'],
+    ['non-home route', '/about', 'default'],
+  ] as const)('%s 不启动首页遮罩超时', (_name, path, homeMode) => {
+    const { timeoutDelays } = runThemeBootstrap({
+      path,
+      systemDark: false,
+      homeMode,
+    })
+
+    expect(timeoutDelays).toEqual([])
   })
 })
