@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useRef, type ReactElement } from 'react'
 
+import { drawDeepSeekWhale } from './deepseek-whale'
+
 /** 完整圆周弧度。 */
 const TAU = Math.PI * 2
 /** 粒子贴图使用的青蓝与冰白 RGB 色板。 */
@@ -637,6 +639,7 @@ function drawScene(
 
   drawStarDust(context, sprites, field, pointer, viewport, time)
   drawWaveField(context, sprites, field, viewport, time)
+  drawDeepSeekWhale(context, viewport.width, viewport.height, time)
   const view = createProjectionView(viewport, pointer, time)
   drawTorusField(context, sprites, field, pointer, view, time)
   drawOrbitTrails(context, sprites, view, time)

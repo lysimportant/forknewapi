@@ -1,20 +1,48 @@
 .mansui-home {
-  --mansui-ink: #092333;
-  --mansui-muted: #476675;
-  --mansui-line: rgb(47 124 156 / 18%);
-  --mansui-blue: #087697;
+  --mansui-ink: #e6f3f8;
+  --mansui-muted: #91a8b5;
+  --mansui-line: rgb(123 202 229 / 15%);
+  --mansui-blue: #79ddef;
   position: relative;
   overflow: clip;
   color: var(--mansui-ink);
-  background: #f1f6f8;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(
+      ellipse 48rem 32rem at 82% 22%,
+      rgb(39 151 193 / 8%),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 42rem 30rem at 10% 63%,
+      rgb(32 125 165 / 6%),
+      transparent 75%
+    ),
+    linear-gradient(180deg, #03070b 0%, #040a0f 54%, #020609 100%);
 }
 
-.dark .mansui-home {
-  --mansui-ink: #e2f2f7;
-  --mansui-muted: #9aafbb;
-  --mansui-line: rgb(107 185 212 / 16%);
-  --mansui-blue: #72d9ee;
-  background: #060c12;
+.mansui-home::before {
+  position: absolute;
+  inset: min(960px, 100svh) 0 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(121 200 226 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(121 200 226 / 5%) 1px, transparent 1px);
+  background-size: 5rem 5rem;
+  mask-image: linear-gradient(
+    180deg,
+    transparent,
+    #000 8%,
+    #000 88%,
+    transparent
+  );
+  content: '';
+}
+
+.mansui-home > section {
+  position: relative;
+  z-index: 1;
 }
 
 .mansui-shell {
@@ -33,6 +61,56 @@
   border-bottom: 1px solid rgb(144 207 231 / 12%);
   background: rgb(3 7 11 / 86%);
   backdrop-filter: blur(18px);
+}
+
+.mansui-landing,
+.mansui-landing > div {
+  --background: #03070b;
+  --foreground: #e6f3f8;
+  --card: #071119;
+  --card-foreground: #e6f3f8;
+  --popover: #071119;
+  --popover-foreground: #e6f3f8;
+  --primary: #bdeefa;
+  --primary-foreground: #03121b;
+  --secondary: #0a1720;
+  --secondary-foreground: #dcecf3;
+  --muted: #0a151d;
+  --muted-foreground: #8da4b0;
+  --accent: #10232e;
+  --accent-foreground: #effbff;
+  --border: #17313e;
+  --input: #17313e;
+  --ring: #72d9ee;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+.mansui-landing footer {
+  border-color: rgb(123 202 229 / 13%);
+  color: var(--foreground);
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 8%,
+      rgb(113 200 229 / 5%) 8% 8.08%,
+      transparent 8.08% 92%,
+      rgb(113 200 229 / 5%) 92% 92.08%,
+      transparent 92.08%
+    ),
+    linear-gradient(180deg, #03070b, #020508);
+}
+
+.mansui-landing footer a {
+  transition: color 160ms ease;
+}
+
+.mansui-landing footer a:hover {
+  color: #dff8ff;
+}
+
+.mansui-landing footer .custom-footer {
+  color: var(--muted-foreground);
 }
 
 .mansui-hero {
@@ -190,19 +268,25 @@
 }
 
 .mansui-primary-button {
-  color: #fff;
-  background: #067499;
-  box-shadow: 0 0.6rem 2rem rgb(3 113 172 / 13%);
+  border-color: #a9e9f8;
+  color: #03121b;
+  background: #bdeefa;
+  box-shadow: 0 0.8rem 2.5rem rgb(73 194 227 / 10%);
 }
 
 .mansui-secondary-button {
-  border-color: var(--mansui-line);
-  color: var(--mansui-ink);
-  background: rgb(255 255 255 / 40%);
+  border-color: rgb(145 211 234 / 24%);
+  color: #dceef6;
+  background: rgb(8 22 31 / 82%);
 }
 
-.dark .mansui-secondary-button {
-  background: rgb(10 26 38 / 65%);
+.mansui-primary-button:hover {
+  background: #e8faff;
+}
+
+.mansui-secondary-button:hover {
+  border-color: rgb(160 225 246 / 42%);
+  background: #102630;
 }
 
 .mansui-hero .mansui-primary-button {
@@ -291,9 +375,15 @@
   --mansui-line: rgb(110 184 211 / 18%);
   --mansui-blue: #78d8ee;
   position: relative;
-  padding: 1.5rem 0 3.5rem;
+  padding: 2rem 0 4.5rem;
   border-bottom: 1px solid var(--mansui-line);
-  background: #03070b;
+  background:
+    radial-gradient(
+      ellipse 36rem 15rem at 50% 0%,
+      rgb(82 184 220 / 7%),
+      transparent 75%
+    ),
+    linear-gradient(180deg, #03070b, #040a0f);
 }
 
 .mansui-model-header h2 {
@@ -351,11 +441,7 @@
   border-color: var(--mansui-line);
   border-radius: 999px;
   color: var(--mansui-ink);
-  background: #101e28;
-}
-
-.dark .mansui-marquee-toggle {
-  background: rgb(4 24 41 / 60%);
+  background: rgb(8 23 33 / 84%);
 }
 
 .mansui-marquee {
@@ -363,7 +449,7 @@
   margin: 1.5rem auto 0;
   overflow: hidden;
   border-block: 1px solid var(--mansui-line);
-  background: rgb(7 20 30 / 65%);
+  background: rgb(5 16 24 / 78%);
   mask-image: linear-gradient(
     90deg,
     transparent,
@@ -373,14 +459,10 @@
   );
 }
 
-.dark .mansui-marquee {
-  background: rgb(4 27 45 / 28%);
-}
-
 .mansui-marquee-track {
   display: flex;
   width: max-content;
-  animation: mansui-marquee 30s linear infinite;
+  animation: mansui-marquee 100s linear infinite;
 }
 
 .mansui-marquee:hover .mansui-marquee-track,
@@ -418,7 +500,8 @@
   border: 1px solid var(--mansui-line);
   border-radius: 0.5rem;
   color: var(--mansui-ink);
-  background: #081822;
+  background: linear-gradient(180deg, rgb(17 42 55 / 76%), rgb(7 21 30 / 88%));
+  box-shadow: inset 0 1px rgb(208 246 255 / 4%);
   white-space: nowrap;
 }
 
@@ -435,10 +518,14 @@
 }
 
 .mansui-model-tooltip {
+  --foreground: #10232e;
+  --background: #e6f3f8;
   display: grid;
-  max-width: 19rem;
+  max-width: min(19rem, calc(100vw - 2rem));
   gap: 0.25rem;
+  border: 1px solid rgb(123 202 229 / 24%);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .mansui-model-tooltip span {
@@ -451,20 +538,27 @@
 
 .mansui-canvas-section {
   position: relative;
+  border-bottom: 1px solid var(--mansui-line);
 }
 
 .mansui-canvas-section::before {
   position: absolute;
-  inset: 10% 0;
+  inset: 0;
   z-index: 0;
-  background: linear-gradient(
-    110deg,
-    transparent,
-    rgb(53 185 222 / 9%),
-    transparent
-  );
+  pointer-events: none;
+  background:
+    radial-gradient(
+      ellipse 42rem 28rem at 78% 48%,
+      rgb(45 166 207 / 10%),
+      transparent 72%
+    ),
+    linear-gradient(
+      110deg,
+      transparent 18%,
+      rgb(42 141 179 / 4%),
+      transparent 72%
+    );
   content: '';
-  transform: skewY(-4deg);
 }
 
 .mansui-canvas-grid {
@@ -488,15 +582,11 @@
   border: 1px solid var(--mansui-line);
   border-radius: 1rem;
   background:
-    radial-gradient(circle at center, rgb(75 207 230 / 14%), transparent 35%),
-    linear-gradient(135deg, rgb(255 255 255 / 45%), rgb(225 247 252 / 21%));
-  box-shadow: 0 2rem 5rem rgb(10 75 111 / 10%);
-}
-
-.dark .mansui-workflow-board {
-  background:
-    radial-gradient(circle at center, rgb(75 207 230 / 12%), transparent 35%),
-    linear-gradient(135deg, rgb(7 34 54 / 61%), rgb(4 23 39 / 35%));
+    radial-gradient(circle at center, rgb(75 207 230 / 11%), transparent 34%),
+    linear-gradient(135deg, rgb(7 25 37 / 94%), rgb(3 13 21 / 88%));
+  box-shadow:
+    inset 0 1px rgb(207 246 255 / 5%),
+    0 2rem 5rem rgb(0 0 0 / 18%);
 }
 
 .mansui-workflow-board::before {
@@ -535,14 +625,12 @@
   border: 1px solid rgb(92 216 239 / 32%);
   border-radius: 50%;
   color: var(--mansui-ink);
-  background: rgb(237 253 255 / 80%);
-  box-shadow: 0 0 3rem rgb(47 181 218 / 20%);
+  background: rgb(7 33 47 / 92%);
+  box-shadow:
+    inset 0 1px rgb(213 249 255 / 7%),
+    0 0 3rem rgb(47 181 218 / 14%);
   transform: translate(-50%, -50%);
   backdrop-filter: blur(1rem);
-}
-
-.dark .mansui-workflow-center {
-  background: rgb(6 41 61 / 83%);
 }
 
 .mansui-workflow-center svg {
@@ -566,13 +654,11 @@
   padding: 1rem;
   border: 1px solid var(--mansui-line);
   border-radius: 0.7rem;
-  background: rgb(250 254 255 / 87%);
-  box-shadow: 0 1rem 2.5rem rgb(11 82 117 / 10%);
+  background: rgb(6 24 35 / 90%);
+  box-shadow:
+    inset 0 1px rgb(211 248 255 / 4%),
+    0 1rem 2.5rem rgb(0 0 0 / 17%);
   backdrop-filter: blur(1rem);
-}
-
-.dark .mansui-workflow-card {
-  background: rgb(5 30 48 / 87%);
 }
 
 .mansui-workflow-card > span {
@@ -610,11 +696,16 @@
 
 .mansui-capabilities-section {
   border-block: 1px solid var(--mansui-line);
-  background: rgb(255 255 255 / 31%);
-}
-
-.dark .mansui-capabilities-section {
-  background: rgb(3 20 34 / 28%);
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 13%,
+      rgb(102 185 214 / 5%) 13% 13.08%,
+      transparent 13.08% 86.92%,
+      rgb(102 185 214 / 5%) 86.92% 87%,
+      transparent 87%
+    ),
+    linear-gradient(180deg, rgb(7 19 27 / 78%), rgb(4 12 18 / 82%));
 }
 
 .mansui-capability-list {
@@ -628,6 +719,7 @@
   position: relative;
   min-height: 21rem;
   padding: 2.5rem;
+  background: linear-gradient(180deg, rgb(17 43 55 / 10%), transparent 62%);
 }
 
 .mansui-capability-list article:not(:last-child) {
@@ -651,13 +743,10 @@
   place-items: center;
   margin-bottom: 4rem;
   border: 1px solid var(--mansui-line);
-  border-radius: 50%;
+  border-radius: 0.75rem;
   color: var(--mansui-blue);
-  background: rgb(255 255 255 / 42%);
-}
-
-.dark .mansui-capability-icon {
-  background: rgb(13 54 77 / 40%);
+  background: rgb(9 35 48 / 64%);
+  box-shadow: inset 0 1px rgb(205 246 255 / 5%);
 }
 
 .mansui-capability-icon svg {
@@ -692,6 +781,16 @@
   gap: clamp(4rem, 9vw, 9rem);
 }
 
+.mansui-start-section {
+  background:
+    radial-gradient(
+      ellipse 35rem 24rem at 12% 42%,
+      rgb(40 139 178 / 7%),
+      transparent 76%
+    ),
+    linear-gradient(180deg, transparent, rgb(2 8 12 / 38%));
+}
+
 .mansui-start-steps {
   margin-top: 3.5rem;
 }
@@ -705,7 +804,14 @@
 }
 
 .mansui-start-steps article > span {
+  display: grid;
+  width: 2.25rem;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid var(--mansui-line);
+  border-radius: 0.5rem;
   color: var(--mansui-blue);
+  background: rgb(7 28 40 / 68%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
 }
@@ -726,12 +832,14 @@
   padding: 2rem;
   border: 1px solid var(--mansui-line);
   border-radius: 1rem;
-  background: rgb(255 255 255 / 46%);
-  box-shadow: 0 2rem 5rem rgb(11 76 112 / 8%);
-}
-
-.dark .mansui-faq-panel {
-  background: rgb(5 29 46 / 53%);
+  background:
+    linear-gradient(rgb(106 191 219 / 4%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(106 191 219 / 4%) 1px, transparent 1px),
+    rgb(5 19 28 / 86%);
+  background-size: 3rem 3rem;
+  box-shadow:
+    inset 0 1px rgb(213 248 255 / 4%),
+    0 2rem 5rem rgb(0 0 0 / 16%);
 }
 
 .mansui-faq-heading {
@@ -766,6 +874,8 @@
 
 .mansui-final-cta {
   padding: 1rem 0 7rem;
+  border-bottom: 1px solid var(--mansui-line);
+  background: linear-gradient(180deg, transparent, rgb(2 7 11 / 76%));
 }
 
 .mansui-final-cta-inner {
@@ -782,11 +892,13 @@
   background:
     radial-gradient(
       circle at 82% 24%,
-      rgb(94 227 241 / 24%),
+      rgb(94 227 241 / 12%),
       transparent 24rem
     ),
-    linear-gradient(135deg, #041b30, #073e5b 62%, #075875);
-  box-shadow: 0 2rem 5rem rgb(2 43 70 / 22%);
+    linear-gradient(135deg, #06131c, #071d29 62%, #072d3d);
+  box-shadow:
+    inset 0 1px rgb(214 249 255 / 7%),
+    0 2rem 5rem rgb(0 0 0 / 22%);
 }
 
 .mansui-final-cta-inner > div:first-child > svg {

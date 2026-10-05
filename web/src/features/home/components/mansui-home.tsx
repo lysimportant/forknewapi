@@ -57,7 +57,7 @@ interface MansuiHomeProps {
   isAuthenticated: boolean
 }
 
-/** 模型展示资料；id 保留精确调用名称，展示本身不代表当前渠道可用。 */
+/** 模型展示资料；id 为本站目录标识，展示本身不保证实时可用。 */
 interface ModelFact {
   name: string
   id: string
@@ -65,36 +65,78 @@ interface ModelFact {
   kind: 'image' | 'text' | 'video'
 }
 
-/** 已有适配器中的模型示例，实际开放范围由模型目录决定。 */
+/** 2026-10-05 核实的当年模型精选；官方来源与本站别名记录于验收检查点。 */
 const MODEL_FACTS: ModelFact[] = [
   {
-    name: 'DeepSeek Chat',
-    id: 'deepseek-chat',
-    fact: 'Chat and text generation for general-purpose AI workflows.',
+    name: 'DeepSeek V4.1 Flash',
+    id: 'deepseek-v4.1-flash',
+    fact: 'Native visual understanding, reasoning, and agent workflows.',
     kind: 'text',
   },
   {
-    name: 'GPT-4.1',
-    id: 'gpt-4.1',
-    fact: 'Text and code generation for instruction-driven workflows.',
+    name: 'GPT-6.1 Sol',
+    id: 'gpt-6.1-sol',
+    fact: 'Advanced coding, computer use, and professional work.',
     kind: 'text',
   },
   {
-    name: 'MiniMax H3',
-    id: 'MiniMax-H3',
-    fact: 'Create videos from text, images, and multimodal references.',
-    kind: 'video',
+    name: 'GPT-6 Astra',
+    id: 'gpt-6-astra',
+    fact: 'Complex reasoning, research, coding, and document creation.',
+    kind: 'text',
   },
   {
-    name: 'Seedream 4.0',
-    id: 'doubao-seedream-4-0-250828',
-    fact: 'Create and edit images through the image generation API.',
+    name: 'Claude Opus 5.5',
+    id: 'claude-opus-5-5',
+    fact: 'Long-running agentic coding and knowledge work.',
+    kind: 'text',
+  },
+  {
+    name: 'Gemini 3.8 Flash',
+    id: 'gemini-3.8-flash',
+    fact: 'Software engineering, autonomous agents, and complex workflows.',
+    kind: 'text',
+  },
+  {
+    name: 'Qwen3.8 Max',
+    id: 'qwen3.8-max',
+    fact: 'Coding, research, and long-running agent workflows.',
+    kind: 'text',
+  },
+  {
+    name: 'Kimi K3',
+    id: 'kimi-k3',
+    fact: 'Deep reasoning, visual understanding, and long-context coding.',
+    kind: 'text',
+  },
+  {
+    name: 'GLM-5.3',
+    id: 'glm-5.3',
+    fact: 'Complex software engineering and long-horizon agents.',
+    kind: 'text',
+  },
+  {
+    name: 'GPT Image 2.5 Sunburst',
+    id: 'gpt-image-2.5-sunburst',
+    fact: 'High-quality image generation and editing.',
+    kind: 'image',
+  },
+  {
+    name: 'Seedream 5.0 Pro',
+    id: '无限制-Seedream-5-Pro',
+    fact: 'Image reasoning, multilingual graphics, and interactive editing.',
     kind: 'image',
   },
   {
     name: 'Seedance 2.5',
-    id: 'doubao-seedance-2-5-260628',
-    fact: 'Create videos from text, images, and video references.',
+    id: 'seedance-2-5-official',
+    fact: 'Narrative video with reference control and editing.',
+    kind: 'video',
+  },
+  {
+    name: 'MiniMax H3',
+    id: 'minimax-h3',
+    fact: 'Multimodal video generation with native stereo audio.',
     kind: 'video',
   },
 ]
@@ -230,7 +272,7 @@ function ModelBadge(props: { model: ModelFact; interactive: boolean }) {
   const content = (
     <span className='mansui-model-badge'>
       <HugeiconsIcon icon={modelIcon} strokeWidth={1.7} aria-hidden='true' />
-      <span>{props.model.name}</span>
+      <span>{props.model.name}</span>{' '}
       <span className='mansui-model-id'>{props.model.id}</span>
       <HugeiconsIcon
         icon={InformationCircleIcon}
@@ -256,6 +298,9 @@ function ModelBadge(props: { model: ModelFact; interactive: boolean }) {
           className='mansui-model-tooltip'
         >
           <strong>{props.model.name}</strong>
+          <span>
+            {t('Site model ID')}: {props.model.id}
+          </span>
           <span>{t(props.model.fact)}</span>
         </TooltipContent>
       </Tooltip>
@@ -278,6 +323,9 @@ function ModelBadge(props: { model: ModelFact; interactive: boolean }) {
         </TooltipTrigger>
         <TooltipContent role='tooltip' className='mansui-model-tooltip'>
           <strong>{props.model.name}</strong>
+          <span>
+            {t('Site model ID')}: {props.model.id}
+          </span>
           <span>{t(props.model.fact)}</span>
         </TooltipContent>
       </Tooltip>
@@ -303,11 +351,12 @@ export function ModelMarquee() {
         aria-labelledby='mansui-model-title'
       >
         <div className='mansui-shell mansui-model-header'>
-          <h2 id='mansui-model-title'>
-            {t('A creative stack that keeps moving')}
-          </h2>
+          <h2 id='mansui-model-title'>{t('2026 model selection')}</h2>
           <div className='mansui-model-meta'>
             <p className='mansui-model-note'>
+              {t('Catalog checked')}{' '}
+              <time dateTime='2026-10-05'>2026-10-05</time>
+              {' · '}
               {t('Model availability and pricing follow the current catalog.')}
             </p>
             <Button

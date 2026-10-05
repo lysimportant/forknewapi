@@ -211,7 +211,7 @@ test('keeps the marquee paused when pointer leaves while focus remains inside', 
   render(<ModelMarquee />)
   const marquee = screen.getByTestId('model-marquee')
   const firstModel = screen.getByRole('button', {
-    name: 'DeepSeek Chat deepseek-chat model information',
+    name: 'DeepSeek V4.1 Flash deepseek-v4.1-flash model information',
   })
 
   expect(marquee).toHaveAttribute('data-paused', 'false')
@@ -251,7 +251,7 @@ test('supports persistent manual pause and resume controls', async () => {
 test('shows model capability details when a badge receives keyboard focus', async () => {
   render(<ModelMarquee />)
   const modelButton = screen.getByRole('button', {
-    name: 'DeepSeek Chat deepseek-chat model information',
+    name: 'DeepSeek V4.1 Flash deepseek-v4.1-flash model information',
   })
 
   modelButton.focus()
@@ -262,7 +262,7 @@ test('shows model capability details when a badge receives keyboard focus', asyn
   })
   expect(
     within(screen.getByRole('tooltip')).getByText(
-      'Chat and text generation for general-purpose AI workflows.'
+      'Native visual understanding, reasoning, and agent workflows.'
     )
   ).toBeVisible()
 })
@@ -280,18 +280,18 @@ test('shows duplicate model details on hover without duplicating navigation or I
   const duplicateTriggers = duplicateGroup?.querySelectorAll<HTMLElement>(
     '.mansui-model-trigger'
   )
-  expect(duplicateTriggers).toHaveLength(5)
+  expect(duplicateTriggers).toHaveLength(12)
   expect(
     duplicateGroup?.querySelectorAll(
       'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
     )
   ).toHaveLength(0)
   expect(
-    document.querySelectorAll('#mansui-model-fact-deepseek-chat')
+    document.querySelectorAll('#mansui-model-fact-deepseek-v4\\.1-flash')
   ).toHaveLength(1)
 
   const deepSeekDuplicate = within(duplicateGroup as HTMLElement)
-    .getByText('DeepSeek Chat')
+    .getByText('DeepSeek V4.1 Flash')
     .closest<HTMLElement>('.mansui-model-trigger')
   expect(deepSeekDuplicate).not.toBeNull()
 
@@ -302,7 +302,7 @@ test('shows duplicate model details on hover without duplicating navigation or I
   })
   expect(
     within(screen.getByRole('tooltip', { hidden: true })).getByText(
-      'Chat and text generation for general-purpose AI workflows.'
+      'Native visual understanding, reasoning, and agent workflows.'
     )
   ).toBeVisible()
 })
@@ -312,29 +312,64 @@ test('exposes model IDs and facts once while hiding the visual duplicate loop', 
 
   const models = [
     {
-      name: 'DeepSeek Chat',
-      id: 'deepseek-chat',
-      fact: 'Chat and text generation for general-purpose AI workflows.',
+      name: 'DeepSeek V4.1 Flash',
+      id: 'deepseek-v4.1-flash',
+      fact: 'Native visual understanding, reasoning, and agent workflows.',
     },
     {
-      name: 'GPT-4.1',
-      id: 'gpt-4.1',
-      fact: 'Text and code generation for instruction-driven workflows.',
+      name: 'GPT-6.1 Sol',
+      id: 'gpt-6.1-sol',
+      fact: 'Advanced coding, computer use, and professional work.',
+    },
+    {
+      name: 'GPT-6 Astra',
+      id: 'gpt-6-astra',
+      fact: 'Complex reasoning, research, coding, and document creation.',
+    },
+    {
+      name: 'Claude Opus 5.5',
+      id: 'claude-opus-5-5',
+      fact: 'Long-running agentic coding and knowledge work.',
+    },
+    {
+      name: 'Gemini 3.8 Flash',
+      id: 'gemini-3.8-flash',
+      fact: 'Software engineering, autonomous agents, and complex workflows.',
+    },
+    {
+      name: 'Qwen3.8 Max',
+      id: 'qwen3.8-max',
+      fact: 'Coding, research, and long-running agent workflows.',
+    },
+    {
+      name: 'Kimi K3',
+      id: 'kimi-k3',
+      fact: 'Deep reasoning, visual understanding, and long-context coding.',
+    },
+    {
+      name: 'GLM-5.3',
+      id: 'glm-5.3',
+      fact: 'Complex software engineering and long-horizon agents.',
+    },
+    {
+      name: 'GPT Image 2.5 Sunburst',
+      id: 'gpt-image-2.5-sunburst',
+      fact: 'High-quality image generation and editing.',
     },
     {
       name: 'MiniMax H3',
-      id: 'MiniMax-H3',
-      fact: 'Create videos from text, images, and multimodal references.',
+      id: 'minimax-h3',
+      fact: 'Multimodal video generation with native stereo audio.',
     },
     {
-      name: 'Seedream 4.0',
-      id: 'doubao-seedream-4-0-250828',
-      fact: 'Create and edit images through the image generation API.',
+      name: 'Seedream 5.0 Pro',
+      id: '无限制-Seedream-5-Pro',
+      fact: 'Image reasoning, multilingual graphics, and interactive editing.',
     },
     {
       name: 'Seedance 2.5',
-      id: 'doubao-seedance-2-5-260628',
-      fact: 'Create videos from text, images, and video references.',
+      id: 'seedance-2-5-official',
+      fact: 'Narrative video with reference control and editing.',
     },
   ]
 
@@ -364,4 +399,13 @@ test('exposes model IDs and facts once while hiding the visual duplicate loop', 
   expect(
     within(duplicateGroup as HTMLElement).queryByRole('button')
   ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('heading', { name: '2026 model selection' })
+  ).toBeVisible()
+  expect(screen.getByText('2026-10-05')).toHaveAttribute(
+    'dateTime',
+    '2026-10-05'
+  )
+  expect(screen.queryByText('GPT-4.1')).not.toBeInTheDocument()
+  expect(screen.queryByText('Seedream 4.0')).not.toBeInTheDocument()
 })

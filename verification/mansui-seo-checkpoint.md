@@ -35,3 +35,23 @@
 - Lighthouse 最终桌面：性能 71、可访问性 100、最佳实践 100、SEO 100；LCP 3.3s、TBT 210ms。首次性能复测因密集测试触发本地 Web 访问限流，确认 HTTP 429 后重启本任务隔离预览并串行复测，未修改任何限流配置。首屏包体及加载时序仍有既有优化空间，另行处理。
 - 证据：`.local-tests/mansui-particles/` 保存构建/测试日志、28 项浏览器检查结果、帧采样、最终截图与 Lighthouse 报告；预览为 http://127.0.0.1:3045/，使用隔离 SQLite。
 - 交付：任务中文提交与 annotated Tag `v1.0.0-rc.37.custom.30`，目标 `fork/main`；不部署生产。运行时/媒体偏好/生命周期已由代码审查及上述验收确认，没有未完成的本轮实现事项。
+
+## 科技风统一、当年模型与游动鲸鱼（2026-10-05）
+
+- P1 首页视觉与展示内容修订；基线 `main` / `cd4cf9d6b`，开始时工作区干净，沿用已记录的本地运行环境、依赖及上一轮通过的测试基线。
+- 验收目标：首页下方画布/能力/FAQ/CTA/Footer 与首屏保持连续深色科技风；滚动模型按官方最新可确认资料更新；光环内部以 Canvas 绘制可识别、缓慢游动的 DS 鲸鱼，文字和按钮保持可读可操作。
+- 范围：默认首页的样式、展示资料、装饰性动画及必要回归。保留站点图标、公开页 SEO、自定义首页/页脚、开源归属和后台行为；不改 Provider、计费、数据库或认证，不调用付费生成，不部署生产。无数据迁移，回滚本轮代码并重建即可恢复。
+- 实现：画布、能力介绍、步骤、FAQ、CTA、Footer 与模型提示统一深黑/冰青配色，浅色系统主题下也不再出现白色断层；保留默认首页以外的主题行为。
+- 模型：替换旧 DeepSeek Chat/GPT-4.1/Seedream 4.0，展示 12 个当年型号，注明目录核实日期及“本站模型 ID”；悬停、键盘聚焦、手动暂停与重复循环说明保持可用。七语言新增 15 个文案键，通过规定脚本写入并完成 i18n:sync。
+- 动效：Canvas 绘制 DS 鲸鱼，20 秒沿环顶→右侧下潜→环心→左侧上浮回游；尾鳍摆动、尾迹、深度缩放及透明度变化与主场景时间同步。转身短暂呈侧影，环内降低亮度以保持正文清晰。继续支持手动暂停、减少动态、离屏/隐藏停绘及 Canvas 缺失降级。
+- 复用与许可：继续使用 Button、Tooltip、Accordion、PublicLayout；现有组件不提供鲸鱼视觉，采用 Canvas 2D 与缓存 Path2D，不增依赖。轮廓复用已安装 @lobehub/icons 的 DeepSeek 路径，保留 LobeHub MIT 许可和原仓库 AGPL 头。
+- 资料核实：2026-10-05 GET https://api.lolicon.beer/api/pricing 返回 63 个模型，展示的 12 个本站 ID 均存在；快照位于 .local-tests/mansui-whale/public-model-catalog.json。此结果不证明付费调用可用性，也不保证涵盖全球所有最新模型。官方名称与网关别名可能不同，尤其 DeepSeek、Seedream、Seedance 和 MiniMax。
+- 官方参考：DeepSeek https://api-docs.deepseek.com/news/news260910；Qwen https://help.aliyun.com/zh/model-studio/getting-started/models；Kimi https://platform.kimi.com/docs/guide/kimi-k3-quickstart；GLM https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3；Seedream https://seed.bytedance.com/en/seedream5_0_pro；Seedance https://seed.bytedance.com/en/seedance2_5；MiniMax https://platform.minimax.io/docs/release-notes/models。
+- 官方参考（前期代理核对，收尾直连受限）：GPT-6.1 Sol https://developers.openai.com/api/docs/models/gpt-6.1-sol；GPT-6 Astra https://developers.openai.com/api/docs/models/gpt-6-astra；图像目录 https://developers.openai.com/api/docs/models；Claude https://platform.claude.com/docs/en/models/opus-5-5/overview；Gemini https://ai.google.dev/gemini-api/docs/changelog。收尾直连分别遇到 OpenAI 403、Claude 地区跳转和 Google 连接失败；不添加无法复核的发布日期、排名或知识截止宣称。
+- 验证：主页/关于页/SEO/status-query 共 4 文件 46 测试通过，最终文字空白修正后主页 9/9 再次通过；目标 TS/TSX 的 oxlint、限定文件格式检查、build:check（含 typecheck）、Go 嵌入资源构建通过。未改后端源码，不重复上轮全量后端矩阵。
+- 浏览器：18 项 SEO/交互/自定义页面检查、10 项动画生命周期检查通过，无页面异常；1440/1024/390px 实测鲸鱼垂直运动范围约 144–495px，确认进入环心后上浮、暂停冻结图像、没有横向溢出。最终预览仍为 http://127.0.0.1:3045/，隔离 SQLite，不接触生产数据。
+- 过程恢复：全量 format:check 的目录快照还原曾覆盖并行修改，已补回并逐一核对；后续仅对本轮文件格式化。密集浏览器检查触发本地 429 时仅重启隔离预览，未修改限流配置。Tooltip 检查改用实际 Tab 聚焦和 data-open 状态，避开关闭过渡中的重复浮层。
+- 最终性能：本机 Chromium 桌面 1440×900、DPR 1，采样 110 帧；去除鲸鱼眼部 Canvas 阴影后，中位绘制时间由 26.3ms 降至 16.5ms，P95 由 29.5ms 降至 19.1ms，约 30fps。该数据仅代表本机样本；保留整体页面既有拆包优化待办，不扩展本轮范围。
+- Lighthouse 最终结果：性能 73、可访问性 100、最佳实践 100、SEO 100；LCP 3.3s、TBT 180ms。修正模型名称与 ID 的实际文本空白后，label-content-name-mismatch 不再报错。首屏约 3 MiB 与未使用 JavaScript 仍属既有性能限制。
+- 证据目录：.local-tests/mansui-whale/ 包含最终构建与测试日志、模型目录快照、官方资料复核结果、18 项浏览器结果、10 项动画结果、三个视口下潜/上浮轨迹及截图、帧采样和 Lighthouse；临时工具、数据库和二进制不提交。
+- 交付检查点：本轮实现与验收完成，任务提交及 annotated Tag v1.0.0-rc.37.custom.31 交付至 fork/main（https://github.com/lysimportant/forknewapi.git）；不推官方 origin、不部署生产。生产生效仍需重新构建并更新服务。
