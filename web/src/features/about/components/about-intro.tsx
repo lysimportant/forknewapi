@@ -16,62 +16,103 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { LifeBuoy, MonitorUp, Wallet, Users } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { Code2, Images, PanelsTopLeft, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
+import { buttonVariants } from '@/components/ui/button'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import { DEFAULT_LOGO } from '@/lib/constants'
+import { cn } from '@/lib/utils'
 
 /** 站点原有运营说明；匹配此正文时直接使用整理后的版式，避免重复展示。 */
 export const ORIGINAL_ABOUT_CONTENT =
   '充值可以找管理：hkcustom0928 不会接入Codex ChatGPT的也可以找管理远程帮忙; 有问题请联系管理员； Q扣群：811481586'
 
-/** 以站点提供的充值、远程接入协助及联系方式组织关于页首屏，不推断联系账号所属平台。 */
+/** 展示平台定位、能力边界及站点已经公开的支持联系方式。 */
 export function AboutIntro() {
   const { t } = useTranslation()
   const { systemName, logo } = useSystemConfig()
+  const heroImage = logo === DEFAULT_LOGO ? '/mansui-whale.webp' : logo
   const services = [
     {
-      icon: Wallet,
-      title: t('Top-up assistance'),
-      description: t('Contact the administrator for account top-ups.'),
-      color: 'text-emerald-700 dark:text-emerald-400',
-    },
-    {
-      icon: MonitorUp,
-      title: t('Remote setup assistance'),
+      icon: Code2,
+      title: t('Unified API access'),
       description: t(
-        'Need help connecting Codex or ChatGPT? Contact the administrator for remote setup assistance.'
+        'Connect text, image, and video workflows through one API surface.'
       ),
       color: 'text-sky-700 dark:text-sky-400',
     },
     {
-      icon: LifeBuoy,
-      title: t('Questions and support'),
+      icon: Images,
+      title: t('AI images and video'),
       description: t(
-        'For questions during use, contact the administrator or join the QQ group.'
+        'Explore image and video creation through adapted H3 and Seed family protocols.'
       ),
-      color: 'text-rose-700 dark:text-rose-400',
+      color: 'text-sky-700 dark:text-sky-400',
+    },
+    {
+      icon: PanelsTopLeft,
+      title: t('Creative canvas'),
+      description: t('Continue visual creation in the connected canvas.'),
+      color: 'text-cyan-700 dark:text-cyan-400',
     },
   ]
 
   return (
     <section className='px-6 pt-24 pb-12 md:pt-28 md:pb-16'>
       <div className='mx-auto max-w-5xl'>
-        <div className='flex items-center gap-4'>
-          <img src={logo} alt='' className='size-14 shrink-0 object-contain' />
-          <div className='min-w-0'>
-            <p className='text-muted-foreground mb-1 text-sm'>{t('About')}</p>
-            <h1 className='text-3xl leading-tight font-semibold break-words'>
-              {systemName}
-            </h1>
+        <div className='grid items-center gap-8 lg:grid-cols-[1fr_18rem]'>
+          <div>
+            <div className='flex items-center gap-4'>
+              <img
+                src={logo}
+                alt={systemName}
+                className='size-14 shrink-0 rounded-2xl object-cover'
+              />
+              <div className='min-w-0'>
+                <p className='text-muted-foreground mb-1 text-sm'>
+                  {t('About')}
+                </p>
+                <h1 className='text-3xl leading-tight font-semibold break-words'>
+                  {systemName}
+                </h1>
+              </div>
+            </div>
+            <p className='text-muted-foreground mt-6 max-w-2xl text-base leading-7'>
+              {t(
+                'Connect text, image, and video workflows through one API surface.'
+              )}{' '}
+              {t('Continue visual creation in the connected canvas.')}
+            </p>
+            <div className='mt-6 flex flex-wrap gap-3'>
+              <Link
+                to='/pricing'
+                className={cn(
+                  buttonVariants(),
+                  'bg-sky-700 text-white hover:bg-sky-800 dark:bg-sky-400 dark:text-slate-950 dark:hover:bg-sky-300'
+                )}
+              >
+                {t('Browse available models and pricing')}
+              </Link>
+              <a
+                href='https://love.lolicon.beer'
+                target='_blank'
+                rel='noopener noreferrer'
+                className={cn(buttonVariants({ variant: 'outline' }))}
+              >
+                {t('Open creative canvas')}
+              </a>
+            </div>
           </div>
+          <img
+            src={heroImage}
+            alt=''
+            aria-hidden='true'
+            className='border-border/50 mx-auto aspect-square w-full max-w-72 rounded-[2rem] border object-cover shadow-sm'
+          />
         </div>
-        <p className='text-muted-foreground mt-6 max-w-2xl text-base leading-7'>
-          {t(
-            'Top-ups, remote setup, and help when you need it. Reach out to the administrator below.'
-          )}
-        </p>
 
         <div className='mt-9 grid gap-6 border-y py-7 md:grid-cols-3 md:gap-8'>
           {services.map((service) => (
@@ -89,7 +130,23 @@ export function AboutIntro() {
           ))}
         </div>
 
-        <div className='mt-7 grid gap-6 md:grid-cols-2 md:gap-8'>
+        <p className='text-muted-foreground mt-6 text-sm leading-6'>
+          {t(
+            'Availability and pricing follow the current model catalog, channel configuration, and upstream permissions.'
+          )}
+        </p>
+
+        <div className='mt-10'>
+          <h2 className='text-lg font-semibold'>
+            {t('Questions and support')}
+          </h2>
+          <p className='text-muted-foreground mt-2 text-sm leading-6'>
+            {t(
+              'Top-ups, remote setup, and help when you need it. Reach out to the administrator below.'
+            )}
+          </p>
+        </div>
+        <div className='mt-6 grid gap-6 md:grid-cols-2 md:gap-8'>
           <div className='flex min-w-0 items-center justify-between gap-4'>
             <div className='min-w-0'>
               <p className='text-muted-foreground text-sm'>

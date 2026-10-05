@@ -114,7 +114,7 @@ export function PublicHeader(props: PublicHeaderProps) {
   let authContent = (
     <Button
       size='sm'
-      className='h-8 rounded-lg px-3.5 text-xs font-medium'
+      className='h-8 rounded-lg bg-sky-700 px-3.5 text-xs font-medium text-white hover:bg-sky-800 dark:bg-sky-400 dark:text-slate-950 dark:hover:bg-sky-300'
       render={<Link to='/sign-in' />}
     >
       {t('Sign in')}

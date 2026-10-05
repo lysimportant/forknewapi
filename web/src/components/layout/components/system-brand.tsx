@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/sidebar'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
+import { DEFAULT_SYSTEM_NAME } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 type SystemBrandProps = {
@@ -39,19 +40,14 @@ type SystemBrandProps = {
   variant?: 'sidebar' | 'inline'
 }
 
-/**
- * System brand component
- * Displays current system logo + name.
- * - inline: compact pill in the top app bar; clicking navigates to home (/)
- * - sidebar: stacked card in the sidebar header (display only)
- */
+/** 展示租户图标、名称及版本，支持顶栏紧凑布局和侧栏布局。 */
 export function SystemBrand(props: SystemBrandProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
-  const { logo } = useSystemConfig()
+  const { systemName, logo } = useSystemConfig()
 
   const variant = props.variant ?? 'sidebar'
-  const name = status?.system_name || props.defaultName || 'New API'
+  const name = systemName || props.defaultName || DEFAULT_SYSTEM_NAME
   const version =
     status?.version || props.defaultVersion || t('Unknown version')
 
@@ -68,7 +64,7 @@ export function SystemBrand(props: SystemBrandProps) {
         <div className='flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-md'>
           <img
             src={logo}
-            alt={t('Logo')}
+            alt={name}
             className='size-full rounded-md object-cover'
           />
         </div>
@@ -88,7 +84,7 @@ export function SystemBrand(props: SystemBrandProps) {
           <div className='flex aspect-square size-8 items-center justify-center overflow-hidden rounded-lg'>
             <img
               src={logo}
-              alt={t('Logo')}
+              alt={name}
               className='size-full rounded-lg object-cover'
             />
           </div>

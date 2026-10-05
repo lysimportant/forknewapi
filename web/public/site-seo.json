@@ -1,0 +1,73 @@
+{
+  "origin": "https://api.lolicon.beer",
+  "siteName": "ManSuiAI",
+  "description": "ManSuiAI 是面向开发者与创作者的 AI 聚合平台，提供统一 API、AI 图片生成与视频生成入口，连接 Token 市场、创作画布与漫剧制作。",
+  "image": "/mansui-social.png",
+  "pages": {
+    "/": {
+      "title": "ManSuiAI - AI 聚合平台",
+      "description": "ManSuiAI 提供统一 AI API、AI 图片生成与视频生成入口，汇聚 H3、Seed 等模型能力，连接 Token 市场、创作画布与漫剧制作。",
+      "heading": "ManSuiAI - AI 聚合平台",
+      "paragraphs": [
+        "ManSuiAI 为开发者与创作者提供统一 API、AI 图片生成、AI 视频生成和创作画布入口，支持从故事构思到漫剧制作的创作流程。",
+        "探索 H3、Seed 系列等模型能力，在 Token 市场比较模型与价格。实际可用模型和价格以当前模型目录为准。"
+      ],
+      "links": [
+        {
+          "href": "/pricing",
+          "label": "查看模型与价格"
+        },
+        {
+          "href": "https://love.lolicon.beer",
+          "label": "打开创作画布"
+        },
+        {
+          "href": "/about",
+          "label": "了解 ManSuiAI"
+        }
+      ]
+    },
+    "/about": {
+      "title": "关于 ManSuiAI - AI 聚合平台",
+      "description": "了解 ManSuiAI 的统一 AI API、图片生成、视频生成与 H3、Seed 模型能力，探索创作画布和漫剧制作流程。",
+      "heading": "关于 ManSuiAI",
+      "paragraphs": [
+        "ManSuiAI 连接 API 接入与视觉创作，让文本、图片和视频工作流汇聚在同一平台。",
+        "H3 与 Seed 系列是平台模型能力的示例；实际可用模型与价格以当前模型目录为准。"
+      ],
+      "links": [
+        {
+          "href": "/",
+          "label": "返回首页"
+        },
+        {
+          "href": "/pricing",
+          "label": "查看模型与价格"
+        },
+        {
+          "href": "https://love.lolicon.beer",
+          "label": "前往创作画布"
+        }
+      ]
+    },
+    "/pricing": {
+      "title": "ManSuiAI 模型与价格 - AI 聚合平台",
+      "description": "查看 ManSuiAI 当前公开的 AI 模型目录与价格，比较文本、图片生成和视频生成能力，为 API 接入与创作选择模型。",
+      "heading": "ManSuiAI 模型与价格",
+      "paragraphs": [
+        "在当前公开目录中比较文本、图片和视频模型的能力与价格信息。",
+        "按创作需求选择模型；模型是否可用以及最终计费以页面实时信息为准。"
+      ],
+      "links": [
+        {
+          "href": "/",
+          "label": "返回首页"
+        },
+        {
+          "href": "/about",
+          "label": "了解平台"
+        }
+      ]
+    }
+  }
+}

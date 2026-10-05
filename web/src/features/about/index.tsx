@@ -24,6 +24,7 @@ import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { Skeleton } from '@/components/ui/skeleton'
+import { usePublicContentSEO } from '@/hooks/use-public-content-seo'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -156,6 +157,10 @@ export function About() {
   const contentIsHtml = hasContent && isLikelyHtml(rawContent)
   // 请求失败与管理员未配置必须分开：前者可重试，后者是正常空状态。
   const loadFailed = Boolean(error) || data?.success === false
+  usePublicContentSEO(
+    '/about',
+    !isLoading && !loadFailed ? hasContent : undefined
+  )
 
   if (isLoading) {
     return (

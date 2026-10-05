@@ -12,9 +12,12 @@ import (
 
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
-var SystemName = "New API"
+// SystemName 是部署站点的默认显示名称，管理端设置仍可覆盖。
+var SystemName = "ManSuiAI - AI 聚合平台"
 var Footer = ""
-var Logo = ""
+
+// Logo 是默认鲸鱼娘图标地址，管理端设置仍可覆盖。
+var Logo = "/mansui-icon.png"
 var TopUpLink = ""
 
 // var ChatLink = ""

@@ -19,7 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-import { DEFAULT_SYSTEM_NAME, DEFAULT_LOGO } from '@/lib/constants'
+import {
+  DEFAULT_LOGO,
+  DEFAULT_SYSTEM_NAME,
+  normalizeSystemLogo,
+  normalizeSystemName,
+} from '@/lib/constants'
 
 export type CurrencyDisplayType = 'USD' | 'CNY' | 'TOKENS' | 'CUSTOM'
 
@@ -65,10 +70,7 @@ interface SystemConfigState {
   setLoading: (loading: boolean) => void
 }
 
-/**
- * System configuration store with automatic persistence
- * Manages system name, logo, footer HTML and loading states
- */
+/** 自动持久化系统名称、图标、页脚、货币显示和加载状态。 */
 export const useSystemConfigStore = create<SystemConfigState>()(
   persist(
     (set) => ({
@@ -80,16 +82,24 @@ export const useSystemConfigStore = create<SystemConfigState>()(
       loading: true,
       loadedLogoUrl: DEFAULT_LOGO,
       setConfig: (newConfig) =>
-        set((state) => ({
-          config: {
-            ...state.config,
-            ...newConfig,
-            currency: {
-              ...state.config.currency,
-              ...(newConfig.currency ?? {}),
+        set((state) => {
+          const systemName = normalizeSystemName(
+            newConfig.systemName ?? state.config.systemName
+          )
+          const logo = normalizeSystemLogo(newConfig.logo ?? state.config.logo)
+          return {
+            config: {
+              ...state.config,
+              ...newConfig,
+              systemName,
+              logo,
+              currency: {
+                ...state.config.currency,
+                ...newConfig.currency,
+              },
             },
-          },
-        })),
+          }
+        }),
       setLoadedLogoUrl: (url) => set({ loadedLogoUrl: url }),
       setLoading: (loading) => set({ loading }),
     }),
@@ -99,6 +109,36 @@ export const useSystemConfigStore = create<SystemConfigState>()(
         config: state.config,
         loadedLogoUrl: state.loadedLogoUrl,
       }),
+      merge: (persisted, current) => {
+        const persistedState =
+          persisted !== null &&
+          typeof persisted === 'object' &&
+          !Array.isArray(persisted)
+            ? (persisted as Partial<SystemConfigState>)
+            : {}
+        const persistedConfig = persistedState.config
+        const logo = normalizeSystemLogo(
+          persistedConfig?.logo ?? current.config.logo
+        )
+        return {
+          ...current,
+          config: {
+            ...current.config,
+            ...persistedConfig,
+            systemName: normalizeSystemName(
+              persistedConfig?.systemName ?? current.config.systemName
+            ),
+            logo,
+            currency: {
+              ...current.config.currency,
+              ...persistedConfig?.currency,
+            },
+          },
+          loadedLogoUrl: normalizeSystemLogo(
+            persistedState.loadedLogoUrl ?? logo
+          ),
+        }
+      },
     }
   )
 )

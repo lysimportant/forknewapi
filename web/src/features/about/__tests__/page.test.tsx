@@ -208,16 +208,17 @@ it.each(['network', 'business'])(
   }
 )
 
-it('未配置正文时显示站点原有充值、远程协助和群联系方式', async () => {
+it('未配置正文时展示平台能力、画布入口和站点支持联系方式', async () => {
   stubAboutResponse({ success: true, message: '', data: '' })
   const { view, queryClient } = renderAbout()
 
   expect(
-    await screen.findByRole('heading', { name: 'Top-up assistance' })
+    await screen.findByRole('heading', { name: 'Unified API access' })
   ).toBeVisible()
   expect(
-    screen.getByRole('heading', { name: 'Remote setup assistance' })
+    screen.getByRole('heading', { name: 'AI images and video' })
   ).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Creative canvas' })).toBeVisible()
   expect(
     screen.getByRole('heading', { name: 'Questions and support' })
   ).toBeVisible()
@@ -225,9 +226,12 @@ it('未配置正文时显示站点原有充值、远程协助和群联系方式'
   expect(screen.getByText('811481586')).toBeVisible()
   expect(
     screen.getByText(
-      'Need help connecting Codex or ChatGPT? Contact the administrator for remote setup assistance.'
+      'Availability and pricing follow the current model catalog, channel configuration, and upstream permissions.'
     )
   ).toBeVisible()
+  expect(
+    screen.getByRole('link', { name: 'Open creative canvas' })
+  ).toHaveAttribute('href', 'https://love.lolicon.beer')
   expect(
     screen.queryByText('Get started in three steps')
   ).not.toBeInTheDocument()
@@ -245,7 +249,7 @@ it('原有运营正文使用优化版式展示，管理员账号和 QQ 群号可
   const user = userEvent.setup()
   const { view, queryClient } = renderAbout()
 
-  await screen.findByRole('heading', { name: 'Top-up assistance' })
+  await screen.findByRole('heading', { name: 'Unified API access' })
   expect(screen.queryByText(originalContent)).not.toBeInTheDocument()
   expect(screen.getAllByText('hkcustom0928')).toHaveLength(1)
   expect(screen.getAllByText('811481586')).toHaveLength(1)

@@ -23,11 +23,14 @@ import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
+import { usePublicContentSEO } from '@/hooks/use-public-content-seo'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import { MansuiHome } from './components/mansui-home'
 import { useHomePageContent } from './hooks'
+
+import '@/styles/mansui-home.css'
 
 export function Home() {
   const { i18n, t } = useTranslation()
@@ -35,7 +38,11 @@ export function Home() {
   const { resolvedTheme } = useTheme()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
-  const { content, isLoaded, isUrl } = useHomePageContent()
+  const { content, isLoaded, isUrl, loadFailed } = useHomePageContent()
+  usePublicContentSEO(
+    '/',
+    isLoaded && !loadFailed ? content.trim().length > 0 : undefined
+  )
 
   const syncIframePreferences = useCallback(() => {
     try {
@@ -122,11 +129,7 @@ export function Home() {
 
   return (
     <PublicLayout showMainContainer={false}>
-      <Hero isAuthenticated={isAuthenticated} />
-      <Stats />
-      <Features />
-      <HowItWorks />
-      <CTA isAuthenticated={isAuthenticated} />
+      <MansuiHome isAuthenticated={isAuthenticated} />
       <Footer />
     </PublicLayout>
   )

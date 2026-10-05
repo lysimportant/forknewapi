@@ -36,4 +36,6 @@ export interface HomePageContentResult {
   content: string
   isLoaded: boolean
   isUrl: boolean
+  /** 内容请求失败时为 true；SEO 应保留服务端已确认的元数据。 */
+  loadFailed: boolean
 }

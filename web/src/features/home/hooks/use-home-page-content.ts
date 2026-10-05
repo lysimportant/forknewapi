@@ -27,13 +27,11 @@ import type { HomePageContentResult } from '../types'
 
 const STORAGE_KEY = 'home_page_content'
 
-/**
- * Hook to load and manage custom home page content
- * Supports both Markdown/HTML content and iframe URLs
- */
+/** 加载自定义首页的 Markdown、HTML 或嵌入网址，并区分空内容与请求失败以维护 SEO。 */
 export function useHomePageContent(): HomePageContentResult {
   const [content, setContent] = useState<string>('')
   const [isLoaded, setIsLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -51,16 +49,24 @@ export function useHomePageContent(): HomePageContentResult {
 
         if (!mounted) return
 
-        if (success && data) {
-          setContent(data)
-          localStorage.setItem(STORAGE_KEY, data)
+        if (success) {
+          setLoadFailed(false)
+          if (data) {
+            setContent(data)
+            localStorage.setItem(STORAGE_KEY, data)
+          } else {
+            setContent('')
+            localStorage.removeItem(STORAGE_KEY)
+          }
         } else {
-          // Clear content if API returns empty
+          setLoadFailed(true)
+          // 保持现有业务失败清理行为，同时标记无法确认最新内容。
           setContent('')
           localStorage.removeItem(STORAGE_KEY)
         }
       } catch (error) {
         if (!mounted) return
+        setLoadFailed(true)
         handleServerError(error, i18next.t('Failed to load home page content'))
       } finally {
         if (mounted) {
@@ -78,5 +84,5 @@ export function useHomePageContent(): HomePageContentResult {
 
   const isUrl = isHttpUrl(content)
 
-  return { content, isLoaded, isUrl }
+  return { content, isLoaded, isUrl, loadFailed }
 }
