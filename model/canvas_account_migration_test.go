@@ -193,6 +193,24 @@ func testCanvasManagedRepair(t *testing.T, db *gorm.DB) {
 	require.NoError(t, err)
 	assert.Equal(t, groupFixed.Token.Key, groupReplay.Token.Key)
 
+	// 普通组误切 Auto 会附带范围；恢复普通组时必须清空该范围。
+	groupFixed.Token.Group = "auto"
+	require.NoError(t, groupFixed.Token.SetAutoGroups([]string{"vip"}))
+	require.NoError(t, groupFixed.Token.Update())
+	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-auto-read"})
+	require.ErrorIs(t, err, ErrCanvasManagedTokenGroupMismatch)
+	autoTarget, err := GetCanvasManagedTokenRepairTarget(grant.ID, "default")
+	require.NoError(t, err)
+	autoFixed, err := RepairCanvasManagedToken(CanvasManagedTokenRepairInput{
+		GrantID: grant.ID, GroupID: "default", OperationID: "repair-from-auto", Repair: *autoTarget,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, groupFixed.Token.Id, autoFixed.Token.Id)
+	assert.Equal(t, groupFixed.Token.Key, autoFixed.Token.Key)
+	assert.Equal(t, "default", autoFixed.Token.Group)
+	assert.Empty(t, autoFixed.Token.AutoGroups)
+	assert.Empty(t, autoFixed.Managed.AutoGroups)
+
 	// 禁用或人工换 Key 不是可自动修复的合同变化。
 	require.NoError(t, db.Model(&Token{}).Where("id = ?", groupFixed.Token.Id).Update("status", common.TokenStatusDisabled).Error)
 	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-disabled"})

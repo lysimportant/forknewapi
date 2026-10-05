@@ -529,13 +529,11 @@ func RepairCanvasManagedToken(input CanvasManagedTokenRepairInput) (*CanvasManag
 				return fmt.Errorf("invalidate repairing token cache: %w", err)
 			}
 			tokenUpdates := map[string]any{"group": managed.GroupID, "expired_time": grant.ExpiresAt}
-			if managed.GroupID == "auto" {
-				if err := token.SetAutoGroups(input.AutoGroups); err != nil {
-					return err
-				}
-				tokenUpdates["auto_groups"] = token.AutoGroups
-				managed.AutoGroups = token.AutoGroups
+			if err := token.SetAutoGroups(input.AutoGroups); err != nil {
+				return err
 			}
+			tokenUpdates["auto_groups"] = token.AutoGroups
+			managed.AutoGroups = token.AutoGroups
 			if err := tx.Model(&Token{}).Where("id = ? AND user_id = ?", token.Id, grant.UserID).Updates(tokenUpdates).Error; err != nil {
 				return err
 			}
@@ -1124,7 +1122,7 @@ func canvasManagedTokenContractValidIgnoringGroup(managed *CanvasManagedToken, t
 	if err != nil {
 		return false
 	}
-	if managed.GroupID == "auto" {
+	if managed.GroupID == "auto" || token.Group == "auto" {
 		// 分组被人工改动时后台可能同时清空或重写 auto_groups；repair
 		// 会以当前调用方过滤后的范围覆盖该字段，因此这里只需确认 JSON 可解析。
 		return true
