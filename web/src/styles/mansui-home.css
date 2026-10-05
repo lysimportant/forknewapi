@@ -1,3 +1,9 @@
+html:has(.mansui-landing),
+body:has(.mansui-landing) {
+  color-scheme: dark;
+  background: #03070b;
+}
+
 .mansui-home {
   --mansui-ink: #e6f3f8;
   --mansui-muted: #91a8b5;

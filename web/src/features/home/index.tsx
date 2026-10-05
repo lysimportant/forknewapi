@@ -16,11 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
+import { LoadingState } from '@/components/loading-state'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { usePublicContentSEO } from '@/hooks/use-public-content-seo'
@@ -32,6 +33,7 @@ import { useHomePageContent } from './hooks'
 
 import '@/styles/mansui-home.css'
 
+/** 显示默认或管理员自定义首页，内容就绪前保留服务端确定的首屏背景。 */
 export function Home() {
   const { i18n, t } = useTranslation()
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -39,6 +41,20 @@ export function Home() {
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
   const { content, isLoaded, isUrl, loadFailed } = useHomePageContent()
+  const defaultHomeBootstrap = useRef(
+    document.documentElement.dataset.homeBoot === 'default'
+  )
+
+  useLayoutEffect(() => {
+    if (!isLoaded && defaultHomeBootstrap.current) {
+      document.documentElement.dataset.homeBoot = 'default'
+    } else {
+      delete document.documentElement.dataset.homeBoot
+    }
+    return () => {
+      delete document.documentElement.dataset.homeBoot
+    }
+  }, [isLoaded])
   usePublicContentSEO(
     '/',
     isLoaded && !loadFailed ? content.trim().length > 0 : undefined
@@ -67,11 +83,15 @@ export function Home() {
 
   if (!isLoaded) {
     return (
-      <PublicLayout showMainContainer={false}>
-        <main className='flex min-h-screen items-center justify-center'>
-          <div className='text-muted-foreground'>{t('Loading...')}</div>
-        </main>
-      </PublicLayout>
+      <div
+        className={defaultHomeBootstrap.current ? 'mansui-landing' : undefined}
+      >
+        <PublicLayout showMainContainer={false}>
+          <main className='flex min-h-screen items-center justify-center'>
+            <LoadingState />
+          </main>
+        </PublicLayout>
+      </div>
     )
   }
 

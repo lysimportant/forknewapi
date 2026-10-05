@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useRouterState } from '@tanstack/react-router'
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
@@ -77,9 +77,12 @@ export function SiteSEO() {
     systemName,
   ])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     removeServerSEOContent(document)
-  }, [])
+    if (pathname !== '/') {
+      delete document.documentElement.dataset.homeBoot
+    }
+  }, [pathname])
 
   return null
 }

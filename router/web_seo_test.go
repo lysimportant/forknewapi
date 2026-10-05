@@ -165,6 +165,44 @@ func TestPublicWebRouteInjectsEscapedMetadataAndSemanticContent(t *testing.T) {
 	assert.Contains(t, body, `<script id="site-jsonld" type="application/ld+json">`)
 }
 
+func TestHomeModeSEOHeadMarkerMatchesResolvedHome(t *testing.T) {
+	manifest := `{"siteName":"ManSuiAI","description":"site","pages":{"/":{"title":"home","heading":"Home"},"/about":{"title":"about","heading":"About"}}}`
+	tests := []struct {
+		name       string
+		path       string
+		homeOption string
+		wantMode   string
+	}{
+		{name: "default with query", path: "/?campaign=test", homeOption: "", wantMode: "default"},
+		{name: "default with blank content", path: "/", homeOption: "  \n\t", wantMode: "default"},
+		{name: "custom home", path: "/", homeOption: "https://custom.example/content", wantMode: "custom"},
+		{name: "about trailing slash", path: "/about/?source=test", homeOption: "", wantMode: ""},
+		{name: "private page", path: "/sign-in", homeOption: "", wantMode: ""},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			withSEOOption(t, "HomePageContent", testCase.homeOption)
+			response := performSEORequest(newSEOWebRouter(t, manifest), testCase.path, "api.lolicon.beer")
+			require.Equal(t, http.StatusOK, response.Code)
+			body := response.Body.String()
+			marker := `<meta name="mansui-home-mode" content="` + testCase.wantMode + `" />`
+			if testCase.wantMode == "" {
+				assert.NotContains(t, body, `name="mansui-home-mode"`)
+				return
+			}
+			assert.Equal(t, 1, strings.Count(body, marker))
+		})
+	}
+}
+
+func TestHomeModeSEOHeadMarkerIsNotDuplicatedOnRerender(t *testing.T) {
+	withSEOOption(t, "HomePageContent", "")
+	page := resolveSEOPage(defaultSiteSEOManifest(), "/", true)
+	first := renderSEOIndex([]byte(testSEOIndex), page)
+	second := renderSEOIndex(first, page)
+	assert.Equal(t, 1, strings.Count(string(second), `name="mansui-home-mode"`))
+}
+
 func TestSEOIndexSupportsSingularAndMissingMarkerFallbacks(t *testing.T) {
 	page := resolveSEOPage(defaultSiteSEOManifest(), "/", true)
 	singular := renderSEOIndex([]byte(`<!doctype html><html><head><!--site-seo-head--></head><body><!--site-seo-content--><div id="root"></div></body></html>`), page)

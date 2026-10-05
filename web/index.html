@@ -56,6 +56,80 @@
     <!--site-seo-head:end-->
 
     <meta name="theme-color" content="#fff" />
+    <script id="theme-bootstrap">
+      /** 在入口资源加载前恢复主题，仅为服务端确认的默认首页启用深色底。 */
+      ;(function () {
+        var root = document.documentElement
+        var theme = 'system'
+        try {
+          var stored = document.cookie.match(/(?:^|;\s*)vite-ui-theme=([^;]*)/)
+          if (stored && /^(light|dark|system)$/.test(stored[1])) {
+            theme = stored[1]
+          }
+        } catch {
+          // 浏览器禁用 Cookie 时仍按系统主题显示。
+        }
+        var dark =
+          theme === 'dark' ||
+          (theme === 'system' &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches)
+        root.classList.add(dark ? 'dark' : 'light')
+        if (
+          window.location.pathname === '/' &&
+          document.querySelector('meta[name="mansui-home-mode"]')?.content ===
+            'default'
+        ) {
+          root.dataset.homeBoot = 'default'
+        }
+      })()
+    </script>
+    <style>
+      html {
+        background: #fff;
+      }
+      html.dark {
+        color-scheme: dark;
+        background: oklch(0.235 0 0);
+      }
+      body {
+        margin: 0;
+      }
+      html[data-home-boot='default'],
+      html[data-home-boot='default'] body,
+      html:has(meta[name='mansui-home-mode'][content='default']),
+      html:has(meta[name='mansui-home-mode'][content='default']) body {
+        color-scheme: dark;
+        color: #e6f3f8;
+        background: #03070b;
+      }
+      #public-seo-content {
+        box-sizing: border-box;
+        min-height: 100svh;
+        max-width: 64rem;
+        margin: auto;
+        padding: clamp(3rem, 10vh, 8rem) 1.5rem;
+        font-family: system-ui, sans-serif;
+        line-height: 1.7;
+      }
+      #public-seo-content h1 {
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      #public-seo-content p {
+        margin-block: 1.5rem;
+      }
+      #public-seo-content nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem 1.5rem;
+      }
+      #public-seo-content a {
+        color: inherit;
+        text-decoration: underline;
+        text-underline-offset: 0.25em;
+      }
+    </style>
     <!--umami-->
     <!--Google Analytics-->
   </head>

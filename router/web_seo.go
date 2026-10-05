@@ -60,6 +60,7 @@ type resolvedSEOPage struct {
 	JSONLD      template.JS
 	Index       bool
 	ShowContent bool
+	HomeMode    string
 }
 
 // seoHeadTemplate 生成公开页完整元数据或私有页 noindex 标记。
@@ -67,6 +68,7 @@ var seoHeadTemplate = template.Must(template.New("site-seo-head").Parse(
 	"<title>{{.Title}}</title>\n" +
 		"<meta name=\"title\" content=\"{{.Title}}\" />\n" +
 		"<meta name=\"description\" content=\"{{.Description}}\" />\n" +
+		"{{if .HomeMode}}<meta name=\"mansui-home-mode\" content=\"{{.HomeMode}}\" />\n{{end}}" +
 		"{{if .Index}}<meta name=\"robots\" content=\"index, follow\" />\n" +
 		"<link rel=\"canonical\" href=\"{{.Canonical}}\" />\n" +
 		"<meta property=\"og:type\" content=\"website\" />\n" +
@@ -286,6 +288,13 @@ func resolveSEOPage(manifest siteSEOManifest, requestPath string, knownRoute boo
 		resolved.Links = page.Links
 		resolved.ShowContent = strings.TrimSpace(page.Heading) != ""
 	}
+	if routePath == "/" {
+		if customContent {
+			resolved.HomeMode = "custom"
+		} else {
+			resolved.HomeMode = "default"
+		}
+	}
 	resolved.Canonical = canonicalSiteOrigin + canonicalRoutePath(routePath)
 	jsonLD, err := common.Marshal(map[string]any{
 		"@context":    "https://schema.org",
@@ -466,7 +475,7 @@ func isStaticSEOHeadNode(node *html.Node) bool {
 	case "meta":
 		name := strings.ToLower(htmlAttribute(node, "name"))
 		property := strings.ToLower(htmlAttribute(node, "property"))
-		return name == "title" || name == "description" || name == "robots" || strings.HasPrefix(name, "twitter:") || strings.HasPrefix(property, "og:")
+		return name == "title" || name == "description" || name == "robots" || name == "mansui-home-mode" || strings.HasPrefix(name, "twitter:") || strings.HasPrefix(property, "og:")
 	case "link":
 		for rel := range strings.FieldsSeq(strings.ToLower(htmlAttribute(node, "rel"))) {
 			if rel == "canonical" {

@@ -55,3 +55,17 @@
 - Lighthouse 最终结果：性能 73、可访问性 100、最佳实践 100、SEO 100；LCP 3.3s、TBT 180ms。修正模型名称与 ID 的实际文本空白后，label-content-name-mismatch 不再报错。首屏约 3 MiB 与未使用 JavaScript 仍属既有性能限制。
 - 证据目录：.local-tests/mansui-whale/ 包含最终构建与测试日志、模型目录快照、官方资料复核结果、18 项浏览器结果、10 项动画结果、三个视口下潜/上浮轨迹及截图、帧采样和 Lighthouse；临时工具、数据库和二进制不提交。
 - 交付检查点：本轮实现与验收完成，任务提交及 annotated Tag v1.0.0-rc.37.custom.31 交付至 fork/main（https://github.com/lysimportant/forknewapi.git）；不推官方 origin、不部署生产。生产生效仍需重新构建并更新服务。
+
+## 刷新白底修复（2026-10-05）
+
+- P1 首屏衔接修复；基线 `main` / `d99b5755a`，跟踪 `fork/main`，开始时工作区干净。Node 24.12.0、Go 1.26.0（模块 1.25.1）、本地 Bun 1.4.2 与现有 web/node_modules。
+- 已复现：线上刷新先显示未排版的白底 SEO 摘要，随后进入深色首页；首页内容接口等待分支也使用普通主题。基线 SEO/首页 2 文件 22 项测试通过。
+- 目标：默认首页初始 HTML、接口等待页和正式首页背景一致；主题 cookie 在入口脚本前应用；保留可抓取 SEO 正文、自定义首页及其他页面的主题行为。
+- 范围与回滚：仅 Web 首屏背景与 HTML 启动标记，不变更数据库、认证或计费契约，不安装依赖、不部署生产。回滚本轮提交并重建前后端产物即可，无数据迁移。
+- 验收：先失败后通过的首屏回归；相关 Go/前端测试、lint/typecheck/build；浏览器普通刷新、延迟资源/接口、深浅色、自定义页面和路由离开检查；最终 diff 与目标远端核验。
+- 实现：后端在首页 HTML 中输出默认/自定义内容标记；入口内联脚本提前恢复主题 cookie，内联样式为 SEO 摘要提供对应背景。默认首页等待接口时沿用深色壳，React 提交时清理摘要，内容就绪或离开路由时清理启动标记；兼容 StrictMode effect 重放。复用 PublicLayout、LoadingState 和 mansui-landing，不新增组件或依赖。
+- 红绿验证：旧入口脚本保存 dark cookie 后未设置 html.dark，新增服务端模式测试也先失败；补齐实现后通过。StrictMode 下 pending 标记提前清理的回归已修复。
+- 最终检查：`bun run test src/features/home/__tests__/bootstrap.test.tsx --reporter=verbose` 13/13；既有首页/关于页/SEO/status-query 共 4 文件 46/46。`go test ./router -count=1`、`go vet ./router`、目标 TS/TSX oxlint、限定 Oxfmt、`bun run build:check`、最终 `bun run typecheck`、重新嵌入 web/dist 的 `GOWORK=off go build`、`git diff --check` 通过。
+- 浏览器验收：隔离 SQLite 服务 http://127.0.0.1:3046/，本地代理覆盖外部 JS/CSS 不到达、首页接口挂起/恢复、无脚本和自定义页面。默认首页在初始摘要、等待和正式页面三个阶段的 html/body 背景均为 rgb(3, 7, 11)；自定义内容和离开首页保持普通主题；深色偏好刷新保持，最终产物页面无控制台 error。截图已逐项检查，日志及临时代理保存在 `.local-tests/home-flash/`。
+- 过程恢复：测试子代理遇到临时 429 后由主代理接手；使用现有 jsdom Document 和 node:vm 验证真实入口脚本，未安装依赖。远端 Schannel 握手失败后使用单次 `http.sslBackend=openssl` 成功核对远端，不修改全局 Git 配置。
+- 交付：任务中文提交及 annotated Tag `v1.0.0-rc.37.custom.34`，目标 `fork/main`（https://github.com/lysimportant/forknewapi.git）。本轮不部署生产；服务器需拉取 main 并重新构建前端及包含 web/dist 的 Go 产物后生效。现有首屏资源体积优化继续保持独立待办。

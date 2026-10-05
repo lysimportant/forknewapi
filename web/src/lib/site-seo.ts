@@ -336,7 +336,8 @@ export function applySiteSEO(
   scripts.forEach((duplicate) => duplicate.remove())
 }
 
-/** 在 React 首次提交后移除服务端提供的无脚本语义摘要。 */
+/** 在 React 提交后移除服务端语义摘要与仅供首屏使用的首页模式标记。 */
 export function removeServerSEOContent(documentRoot: Document): void {
   documentRoot.querySelector('#public-seo-content')?.remove()
+  documentRoot.querySelector('meta[name="mansui-home-mode"]')?.remove()
 }
