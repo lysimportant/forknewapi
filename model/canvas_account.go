@@ -48,8 +48,12 @@ var (
 	ErrCanvasAutoGroupEmpty = errors.New("canvas auto group scope is empty")
 	// ErrCanvasIdempotencyConflict 表示相同 operation_id 被用于不同请求。
 	ErrCanvasIdempotencyConflict = errors.New("canvas idempotency operation conflicts with the original request")
-	// ErrCanvasManagedTokenChanged 表示原 Token 已被删除、禁用、改组或修改关键权限。
+	// ErrCanvasManagedTokenChanged 表示原 Token 被禁用或修改了不可自动恢复的关键权限。
 	ErrCanvasManagedTokenChanged = errors.New("canvas managed token changed")
+	// ErrCanvasManagedTokenMissing 表示管理关系仍在，但原 Token 行已删除。
+	ErrCanvasManagedTokenMissing = errors.New("canvas managed token missing")
+	// ErrCanvasManagedTokenGroupMismatch 表示原 Token 仍存在但分组已被人工改动。
+	ErrCanvasManagedTokenGroupMismatch = errors.New("canvas managed token group mismatch")
 	// ErrCanvasTokenLimitReached 表示用户 Token 数量已达到站点上限。
 	ErrCanvasTokenLimitReached = errors.New("canvas managed token limit reached")
 	// ErrCanvasPermissionRevisionConflict 表示受理请求携带的权限修订已过期。
@@ -131,6 +135,56 @@ type CanvasManagedTokenRotation struct {
 	TokenID            int    `json:"token_id"`
 	CredentialRevision int64  `json:"credential_revision"`
 	KeyFingerprint     string `json:"key_fingerprint"`
+}
+
+// CanvasManagedTokenRepair 描述显式修复已删除 Token 所需的旧身份事实。
+// 修复只接受原 managed 行的 Token ID 与 credential revision，不接受旧 Key。
+type CanvasManagedTokenRepair struct {
+	TokenID            int   `json:"token_id"`
+	CredentialRevision int64 `json:"credential_revision"`
+}
+
+// CanvasManagedTokenRepairInput 描述受保护的 Token 修复请求。
+// AutoGroups 是当前用户权限过滤后的显式范围，Repair 绑定待修复的旧 Token。
+type CanvasManagedTokenRepairInput struct {
+	GrantID     string
+	GroupID     string
+	OperationID string
+	AutoGroups  []string
+	Repair      CanvasManagedTokenRepair
+}
+
+// GetCanvasManagedTokenRepairTarget 读取本人 grant 与原分组绑定的非敏感修复事实。
+// 仅在 Token 缺失或被人工改组且其它固定合同仍有效时返回；其它状态一律拒绝。
+func GetCanvasManagedTokenRepairTarget(grantID, groupID string) (*CanvasManagedTokenRepair, error) {
+	grantID = strings.TrimSpace(grantID)
+	groupID = strings.TrimSpace(groupID)
+	if grantID == "" || groupID == "" {
+		return nil, ErrCanvasManagedTokenChanged
+	}
+	var managed CanvasManagedToken
+	if err := DB.Where("grant_id = ? AND group_id = ?", grantID, groupID).First(&managed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrCanvasManagedTokenChanged
+		}
+		return nil, err
+	}
+	if managed.Status != CanvasManagedTokenStatusActive || managed.ReplacedByID != nil {
+		return nil, ErrCanvasManagedTokenChanged
+	}
+	var token Token
+	err := DB.Unscoped().Where("id = ? AND user_id = ?", managed.TokenID, managed.UserID).First(&token).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && token.DeletedAt.Valid) {
+		return &CanvasManagedTokenRepair{TokenID: managed.TokenID, CredentialRevision: managed.CredentialRevision}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if token.Status == common.TokenStatusEnabled && token.ExpiredTime > time.Now().Unix() &&
+		token.Group != managed.GroupID && canvasManagedTokenContractValidIgnoringGroup(&managed, &token) {
+		return &CanvasManagedTokenRepair{TokenID: managed.TokenID, CredentialRevision: managed.CredentialRevision}, nil
+	}
+	return nil, ErrCanvasManagedTokenChanged
 }
 
 // CanvasAcceptanceInput 描述供应商调用受理前必须匹配的冻结授权事实。
@@ -365,6 +419,249 @@ func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuth
 	return authority, err
 }
 
+// RepairCanvasManagedToken 显式修复已删除或被人工改组的管理 Token。
+// 缺失 Token 会签发新 ID/Key；仅分组变化会保留 ID/Key；两种路径都递增凭据修订。
+// 修复不复活禁用、改权限或已撤销关系，且通过独立的 operation digest 幂等。
+func RepairCanvasManagedToken(input CanvasManagedTokenRepairInput) (*CanvasManagedAuthority, error) {
+	input.GrantID = strings.TrimSpace(input.GrantID)
+	input.GroupID = strings.TrimSpace(input.GroupID)
+	input.OperationID = strings.TrimSpace(input.OperationID)
+	if input.GrantID == "" || input.GroupID == "" || len(input.GroupID) > 191 || !canvasOperationIDPattern.MatchString(input.OperationID) ||
+		input.Repair.TokenID <= 0 || input.Repair.CredentialRevision < 1 || input.Repair.CredentialRevision >= 9007199254740991 {
+		return nil, ErrCanvasIdempotencyConflict
+	}
+	if input.GroupID == CanvasExcludedGroup {
+		return nil, ErrCanvasGroupExcluded
+	}
+	input.AutoGroups = normalizeCanvasAutoGroups(input.AutoGroups)
+	if input.GroupID == "auto" && len(input.AutoGroups) == 0 {
+		return nil, ErrCanvasAutoGroupEmpty
+	}
+	if input.GroupID != "auto" {
+		input.AutoGroups = nil
+	}
+	digest := canvasRepairOperationDigest(input)
+	var managedID int64
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&CanvasGrant{}).Where("id = ?", input.GrantID).UpdateColumn("updated_at", gorm.Expr("updated_at"))
+		if result.Error != nil {
+			return result.Error
+		}
+		var grant CanvasGrant
+		if err := lockForUpdate(tx).First(&grant, "id = ?", input.GrantID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrCanvasGrantInvalid
+			}
+			return err
+		}
+		if grant.Status != CanvasGrantStatusActive || grant.ExpiresAt <= time.Now().Unix() {
+			return ErrCanvasGrantInvalid
+		}
+
+		var operation CanvasIdempotencyOperation
+		err := tx.Where("grant_id = ? AND operation_id = ?", grant.ID, input.OperationID).First(&operation).Error
+		if err == nil {
+			if operation.RequestDigest != digest {
+				return ErrCanvasIdempotencyConflict
+			}
+			var managed CanvasManagedToken
+			if err := lockForUpdate(tx).First(&managed, operation.ManagedTokenID).Error; err != nil {
+				return err
+			}
+			if err := validateCanvasRepairReplayWithTx(tx, &grant, &managed, input); err != nil {
+				return err
+			}
+			managedID = managed.ID
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		var managed CanvasManagedToken
+		if err := lockForUpdate(tx).Where("grant_id = ? AND group_id = ?", grant.ID, input.GroupID).First(&managed).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrCanvasManagedTokenChanged
+			}
+			return err
+		}
+		if managed.UserID != grant.UserID || managed.ReplacedByID != nil || managed.Status != CanvasManagedTokenStatusActive ||
+			managed.TokenID != input.Repair.TokenID || managed.CredentialRevision != input.Repair.CredentialRevision {
+			return ErrCanvasManagedTokenChanged
+		}
+
+		token, repairKind, err := loadCanvasRepairTokenWithTx(tx, &managed)
+		if err != nil {
+			return err
+		}
+		now := time.Now().Unix()
+		if repairKind == canvasManagedRepairGroup && token != nil && token.ExpiredTime != grant.ExpiresAt && grant.IssuedAt < managed.UpdatedAt {
+			return ErrCanvasManagedTokenChanged
+		}
+		switch repairKind {
+		case canvasManagedRepairMissing:
+			if token != nil && token.Key != "" {
+				if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+					return fmt.Errorf("invalidate deleted token cache: %w", err)
+				}
+			}
+			replacement, createErr := createCanvasManagedReplacementTokenWithTx(tx, &grant, input.GroupID, input.AutoGroups)
+			if createErr != nil {
+				return createErr
+			}
+			fingerprint := sha256.Sum256([]byte(replacement.GetFullKey()))
+			managed.TokenID = replacement.Id
+			managed.CredentialRevision++
+			managed.KeyFingerprint = hex.EncodeToString(fingerprint[:])
+			managed.AutoGroups = replacement.AutoGroups
+			if err := tx.Model(&CanvasManagedToken{}).Where("id = ?", managed.ID).Updates(map[string]any{
+				"token_id": managed.TokenID, "credential_revision": managed.CredentialRevision,
+				"key_fingerprint": managed.KeyFingerprint, "auto_groups": managed.AutoGroups,
+				"updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+		case canvasManagedRepairGroup:
+			if token == nil {
+				return ErrCanvasManagedTokenChanged
+			}
+			if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+				return fmt.Errorf("invalidate repairing token cache: %w", err)
+			}
+			tokenUpdates := map[string]any{"group": managed.GroupID, "expired_time": grant.ExpiresAt}
+			if managed.GroupID == "auto" {
+				if err := token.SetAutoGroups(input.AutoGroups); err != nil {
+					return err
+				}
+				tokenUpdates["auto_groups"] = token.AutoGroups
+				managed.AutoGroups = token.AutoGroups
+			}
+			if err := tx.Model(&Token{}).Where("id = ? AND user_id = ?", token.Id, grant.UserID).Updates(tokenUpdates).Error; err != nil {
+				return err
+			}
+			managed.CredentialRevision++
+			fingerprint := sha256.Sum256([]byte(token.GetFullKey()))
+			managed.KeyFingerprint = hex.EncodeToString(fingerprint[:])
+			if err := tx.Model(&CanvasManagedToken{}).Where("id = ?", managed.ID).Updates(map[string]any{
+				"credential_revision": managed.CredentialRevision, "key_fingerprint": managed.KeyFingerprint,
+				"auto_groups": managed.AutoGroups, "updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+		default:
+			return ErrCanvasManagedTokenChanged
+		}
+
+		operation = CanvasIdempotencyOperation{
+			GrantID: grant.ID, OperationID: input.OperationID, RequestDigest: digest,
+			ManagedTokenID: managed.ID, CreatedAt: now,
+		}
+		if err := tx.Create(&operation).Error; err != nil {
+			return err
+		}
+		managedID = managed.ID
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	authority, err := ReconcileCanvasManagedAuthority(managedID)
+	if err != nil {
+		return nil, err
+	}
+	if authority.Managed.CredentialRevision != input.Repair.CredentialRevision+1 {
+		return nil, ErrCanvasManagedTokenChanged
+	}
+	return authority, nil
+}
+
+type canvasManagedRepairKind uint8
+
+const (
+	canvasManagedRepairNone canvasManagedRepairKind = iota
+	canvasManagedRepairMissing
+	canvasManagedRepairGroup
+)
+
+// loadCanvasRepairTokenWithTx 区分软删除/缺失和单独的人工改组。
+// 读取使用 Unscoped 仅为确认删除事实，不会把已删除 Token 重新启用。
+func loadCanvasRepairTokenWithTx(tx *gorm.DB, managed *CanvasManagedToken) (*Token, canvasManagedRepairKind, error) {
+	var token Token
+	err := lockForUpdate(tx.Unscoped()).First(&token, "id = ? AND user_id = ?", managed.TokenID, managed.UserID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, canvasManagedRepairMissing, nil
+	}
+	if err != nil {
+		return nil, canvasManagedRepairNone, err
+	}
+	if token.DeletedAt.Valid {
+		return &token, canvasManagedRepairMissing, nil
+	}
+	if token.Status != common.TokenStatusEnabled || token.ExpiredTime <= time.Now().Unix() {
+		return &token, canvasManagedRepairNone, nil
+	}
+	if token.Group != managed.GroupID && canvasManagedTokenContractValidIgnoringGroup(managed, &token) {
+		return &token, canvasManagedRepairGroup, nil
+	}
+	return &token, canvasManagedRepairNone, nil
+}
+
+// validateCanvasRepairReplayWithTx 只接受原修复结果仍保持预期版本的幂等重试。
+func validateCanvasRepairReplayWithTx(tx *gorm.DB, grant *CanvasGrant, managed *CanvasManagedToken, input CanvasManagedTokenRepairInput) error {
+	if managed.GrantID != grant.ID || managed.GroupID != input.GroupID || managed.UserID != grant.UserID || managed.ReplacedByID != nil || managed.Status != CanvasManagedTokenStatusActive ||
+		managed.CredentialRevision != input.Repair.CredentialRevision+1 {
+		return ErrCanvasManagedTokenChanged
+	}
+	var token Token
+	if err := tx.First(&token, "id = ? AND user_id = ?", managed.TokenID, grant.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrCanvasManagedTokenMissing
+		}
+		return err
+	}
+	if token.Status != common.TokenStatusEnabled || token.ExpiredTime <= time.Now().Unix() || !canvasManagedTokenContractValid(managed, &token) {
+		return ErrCanvasManagedTokenChanged
+	}
+	return nil
+}
+
+// createCanvasManagedReplacementTokenWithTx 只创建新 Token，不创建第二条 managed 关系。
+func createCanvasManagedReplacementTokenWithTx(tx *gorm.DB, grant *CanvasGrant, group string, autoGroups []string) (*Token, error) {
+	var user User
+	if err := lockForUpdate(tx).First(&user, grant.UserID).Error; err != nil {
+		return nil, err
+	}
+	if user.Status != common.UserStatusEnabled {
+		return nil, ErrCanvasGrantInvalid
+	}
+	var count int64
+	if err := tx.Model(&Token{}).Where("user_id = ?", grant.UserID).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count >= int64(operation_setting.GetMaxUserTokens()) {
+		return nil, ErrCanvasTokenLimitReached
+	}
+	key, err := common.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	token := &Token{
+		UserId: grant.UserID, Key: key, Status: common.TokenStatusEnabled,
+		Name: canvasManagedTokenName(grant.InstanceID, group), CreatedTime: now, AccessedTime: now,
+		ExpiredTime: grant.ExpiresAt, UnlimitedQuota: true, Group: group, CrossGroupRetry: false,
+	}
+	if group == "auto" {
+		if err := token.SetAutoGroups(autoGroups); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Create(token).Error; err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
 // ReconcileCanvasManagedAuthority 读取权威表并在权限指纹变化时单调递增修订。
 // 指纹覆盖用户、grant、Token、相关站点选项、Ability 和渠道状态。
 func ReconcileCanvasManagedAuthority(managedID int64) (*CanvasManagedAuthority, error) {
@@ -555,7 +852,8 @@ func createCanvasManagedTokenWithTx(tx *gorm.DB, grant *CanvasGrant, group strin
 	}
 	managed := CanvasManagedToken{
 		GrantID: grant.ID, UserID: grant.UserID, GroupID: group, TokenID: token.Id,
-		CredentialRevision: 1, PermissionRevision: 0, Status: CanvasManagedTokenStatusActive,
+		CredentialRevision: 1, KeyFingerprint: canvasTokenKeyFingerprint(token.GetFullKey()),
+		PermissionRevision: 0, Status: CanvasManagedTokenStatusActive,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if group == "auto" {
@@ -567,6 +865,13 @@ func createCanvasManagedTokenWithTx(tx *gorm.DB, grant *CanvasGrant, group strin
 	return &managed, nil
 }
 
+// canvasTokenKeyFingerprint 计算管理 Token 当前完整 Key 的固定指纹。
+// 指纹用于识别人工换 Key，而不会把可用 Key 写入管理关系或日志。
+func canvasTokenKeyFingerprint(key string) string {
+	fingerprint := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(fingerprint[:])
+}
+
 // validateCanvasManagedTokenWithTx 校验现有关系，并只恢复未被人工修改的撤销 Token。
 func validateCanvasManagedTokenWithTx(tx *gorm.DB, grant *CanvasGrant, managed *CanvasManagedToken, autoGroups []string) error {
 	if managed.UserID != grant.UserID || managed.ReplacedByID != nil {
@@ -575,9 +880,13 @@ func validateCanvasManagedTokenWithTx(tx *gorm.DB, grant *CanvasGrant, managed *
 	var token Token
 	if err := tx.First(&token, "id = ? AND user_id = ?", managed.TokenID, grant.UserID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrCanvasManagedTokenChanged
+			return ErrCanvasManagedTokenMissing
 		}
 		return err
+	}
+	if token.Status == common.TokenStatusEnabled && token.ExpiredTime > time.Now().Unix() &&
+		token.Group != managed.GroupID && canvasManagedTokenContractValidIgnoringGroup(managed, &token) {
+		return ErrCanvasManagedTokenGroupMismatch
 	}
 	if !canvasManagedTokenContractValid(managed, &token) {
 		return ErrCanvasManagedTokenChanged
@@ -648,7 +957,7 @@ func loadCanvasManagedAuthorityWithTx(tx *gorm.DB, authority *CanvasManagedAutho
 	}
 	if err := lockForUpdate(tx).First(&authority.Token, "id = ? AND user_id = ?", authority.Managed.TokenID, authority.Managed.UserID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrCanvasManagedTokenChanged
+			return ErrCanvasManagedTokenMissing
 		}
 		return err
 	}
@@ -657,6 +966,10 @@ func loadCanvasManagedAuthorityWithTx(tx *gorm.DB, authority *CanvasManagedAutho
 	}
 	if authority.Grant.UserID != authority.Managed.UserID {
 		return ErrCanvasManagedTokenChanged
+	}
+	if authority.Token.Status == common.TokenStatusEnabled && authority.Token.ExpiredTime > time.Now().Unix() &&
+		authority.Token.Group != authority.Managed.GroupID && canvasManagedTokenContractValidIgnoringGroup(&authority.Managed, &authority.Token) {
+		return ErrCanvasManagedTokenGroupMismatch
 	}
 	if authority.Token.Status != common.TokenStatusEnabled || authority.Token.ExpiredTime <= time.Now().Unix() || !canvasManagedTokenContractValid(&authority.Managed, &authority.Token) {
 		return ErrCanvasManagedTokenChanged
@@ -779,11 +1092,46 @@ func canvasManagedTokenContractValid(managed *CanvasManagedToken, token *Token) 
 		return false
 	}
 	managedGroups, err := canvasManagedAutoGroups(managed)
-	if err != nil || !equalStringSlices(groups, managedGroups) {
+	if err != nil {
+		return false
+	}
+	if !equalStringSlices(groups, managedGroups) {
 		return false
 	}
 	if managed.GroupID == "auto" {
 		return len(groups) > 0 && !slicesContainsString(groups, CanvasExcludedGroup)
+	}
+	return len(groups) == 0
+}
+
+// canvasManagedTokenContractValidIgnoringGroup 校验除分组字段外的管理 Token 固定合同。
+// 该判别只用于显式 repair，避免把禁用、过期或权限变化误判成可修复的人工改组。
+func canvasManagedTokenContractValidIgnoringGroup(managed *CanvasManagedToken, token *Token) bool {
+	if managed == nil || token == nil || token.Id != managed.TokenID || token.UserId != managed.UserID ||
+		token.CrossGroupRetry || !token.UnlimitedQuota || token.ModelLimitsEnabled || token.ModelLimits != "" {
+		return false
+	}
+	if token.AllowIps != nil && strings.TrimSpace(*token.AllowIps) != "" {
+		return false
+	}
+	if managed.KeyFingerprint != "" {
+		fingerprint := sha256.Sum256([]byte(token.GetFullKey()))
+		if hex.EncodeToString(fingerprint[:]) != managed.KeyFingerprint {
+			return false
+		}
+	}
+	groups, err := token.GetAutoGroups()
+	if err != nil {
+		return false
+	}
+	if managed.GroupID == "auto" {
+		// 分组被人工改动时后台可能同时清空或重写 auto_groups；repair
+		// 会以当前调用方过滤后的范围覆盖该字段，因此这里只需确认 JSON 可解析。
+		return true
+	}
+	managedGroups, err := canvasManagedAutoGroups(managed)
+	if err != nil || !equalStringSlices(groups, managedGroups) {
+		return false
 	}
 	return len(groups) == 0
 }
@@ -851,6 +1199,23 @@ func canvasOperationDigest(grantID, group string) string {
 		Group   string `json:"group"`
 	}{GrantID: grantID, Group: group})
 	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+// canvasRepairOperationDigest 将显式 repair 的身份事实和范围绑定到独立摘要空间。
+// operation_id 由唯一索引绑定；摘要仍包含它，避免不同 repair 意图共享请求事实。
+func canvasRepairOperationDigest(input CanvasManagedTokenRepairInput) string {
+	encoded, _ := common.Marshal(struct {
+		GrantID     string                   `json:"grant_id"`
+		GroupID     string                   `json:"group_id"`
+		OperationID string                   `json:"operation_id"`
+		AutoGroups  []string                 `json:"auto_groups,omitempty"`
+		Repair      CanvasManagedTokenRepair `json:"repair"`
+	}{
+		GrantID: input.GrantID, GroupID: input.GroupID, OperationID: input.OperationID,
+		AutoGroups: input.AutoGroups, Repair: input.Repair,
+	})
+	digest := sha256.Sum256([]byte("repair:" + string(encoded)))
 	return hex.EncodeToString(digest[:])
 }
 

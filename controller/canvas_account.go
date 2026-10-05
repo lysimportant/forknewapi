@@ -69,6 +69,7 @@ type canvasTokenExchangeRequest struct {
 type canvasManagedGroupRequest struct {
 	OperationID string                            `json:"operation_id"`
 	Rotation    *model.CanvasManagedTokenRotation `json:"rotation,omitempty"`
+	Repair      *model.CanvasManagedTokenRepair   `json:"repair,omitempty"`
 }
 
 // canvasAccountUser 是返回给受信 Canvas 的最小用户身份投影。
@@ -324,17 +325,23 @@ func GetCanvasAccount(c *gin.Context) {
 // PutCanvasManagedGroup 为 grant 的指定可用分组幂等创建或恢复唯一管理 Token。
 // 普通分组固定路由；auto 保存排除后的非空显式范围且关闭跨组重试。
 func PutCanvasManagedGroup(c *gin.Context) {
-	canvasManagedGroup(c, false)
+	canvasManagedGroup(c, "manage")
 }
 
 // PostCanvasRotateGroup 在 Canvas 已持久化轮换意图并排空旧任务后，幂等更新指定管理 Key。
 // 仅接受有效 grant；旧 Token、版本及指纹必须匹配，响应不进入审计日志。
 func PostCanvasRotateGroup(c *gin.Context) {
-	canvasManagedGroup(c, true)
+	canvasManagedGroup(c, "rotate")
+}
+
+// PostCanvasRepairGroup 在登录或分组同步中恢复当前授权下缺失或错组的 Key。
+// 仅接受原 Token 身份和持久操作 ID；重复请求不创建第二把 Key。
+func PostCanvasRepairGroup(c *gin.Context) {
+	canvasManagedGroup(c, "repair")
 }
 
 // canvasManagedGroup 共用账号、分组和响应边界，读取与轮换使用不同操作摘要。
-func canvasManagedGroup(c *gin.Context, rotate bool) {
+func canvasManagedGroup(c *gin.Context, operation string) {
 	configs, ok := canvasAccountConfiguration(c)
 	if !ok {
 		return
@@ -357,7 +364,7 @@ func canvasManagedGroup(c *gin.Context, rotate bool) {
 		return
 	}
 	var request canvasManagedGroupRequest
-	if err := common.DecodeJson(c.Request.Body, &request); err != nil || rotate != (request.Rotation != nil) {
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || (operation == "rotate") != (request.Rotation != nil) || (operation == "repair") != (request.Repair != nil) {
 		canvasAccountJSONError(c, http.StatusBadRequest, "canvas_operation_invalid", "Canvas 分组操作无效")
 		return
 	}
@@ -365,11 +372,33 @@ func canvasManagedGroup(c *gin.Context, rotate bool) {
 	if group == "auto" {
 		autoGroups = canvasAccountAutoGroups(user)
 	}
-	authority, err := model.EnsureCanvasManagedToken(model.CanvasManagedTokenInput{
-		GrantID: grant.ID, GroupID: group, OperationID: request.OperationID, AutoGroups: autoGroups,
-		Rotation: request.Rotation,
-	})
+	var authority *model.CanvasManagedAuthority
+	var err error
+	if operation == "repair" {
+		authority, err = model.RepairCanvasManagedToken(model.CanvasManagedTokenRepairInput{
+			GrantID: grant.ID, GroupID: group, OperationID: request.OperationID, AutoGroups: autoGroups, Repair: *request.Repair,
+		})
+	} else {
+		authority, err = model.EnsureCanvasManagedToken(model.CanvasManagedTokenInput{
+			GrantID: grant.ID, GroupID: group, OperationID: request.OperationID, AutoGroups: autoGroups,
+			Rotation: request.Rotation,
+		})
+	}
 	if err != nil {
+		if operation == "manage" && (errors.Is(err, model.ErrCanvasManagedTokenMissing) || errors.Is(err, model.ErrCanvasManagedTokenGroupMismatch)) {
+			target, targetErr := model.GetCanvasManagedTokenRepairTarget(grant.ID, group)
+			if targetErr != nil {
+				canvasAccountModelError(c, targetErr)
+				return
+			}
+			code, message := "canvas_managed_token_missing", "Canvas 分组 Key 已删除，同步将自动恢复"
+			if errors.Is(err, model.ErrCanvasManagedTokenGroupMismatch) {
+				code, message = "canvas_managed_token_group_mismatch", "Canvas Key 分组已变化，同步将自动恢复"
+			}
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": code, "message": message, "data": target})
+			return
+		}
 		canvasAccountModelError(c, err)
 		return
 	}
@@ -386,8 +415,10 @@ func canvasManagedGroup(c *gin.Context, rotate bool) {
 		storedAutoGroups = []string{}
 	}
 	action := "canvas.token.manage"
-	if rotate {
+	if operation == "rotate" {
 		action = "canvas.token.rotate"
+	} else if operation == "repair" {
+		action = "canvas.token.repair"
 	}
 	recordUserSecurityAudit(c, user.Id, action, map[string]any{
 		"success": true, "grant_id": grant.ID, "group": group, "token_id": authority.Token.Id,
@@ -575,6 +606,10 @@ func canvasAccountModelError(c *gin.Context, err error) {
 		canvasAccountJSONError(c, http.StatusConflict, "canvas_auto_group_empty", "自动路由当前没有可用实际分组")
 	case errors.Is(err, model.ErrCanvasIdempotencyConflict):
 		canvasAccountJSONError(c, http.StatusConflict, "canvas_operation_conflict", "operation_id 与原请求不一致")
+	case errors.Is(err, model.ErrCanvasManagedTokenMissing):
+		canvasAccountJSONError(c, http.StatusConflict, "canvas_managed_token_missing", "Canvas 分组 Key 已删除，请同步恢复")
+	case errors.Is(err, model.ErrCanvasManagedTokenGroupMismatch):
+		canvasAccountJSONError(c, http.StatusConflict, "canvas_managed_token_group_mismatch", "Canvas Key 分组已变化，请同步恢复")
 	case errors.Is(err, model.ErrCanvasManagedTokenChanged):
 		canvasAccountJSONError(c, http.StatusConflict, "canvas_managed_token_changed", "Canvas 管理 Token 已被修改，请重新授权")
 	case errors.Is(err, model.ErrCanvasTokenLimitReached):

@@ -330,7 +330,22 @@ Content-Type: application/json
 }
 ```
 
-普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、删除、改组、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突，不会静默改回。通过令牌管理接口人工修改期限时，令牌与管理关系在同一事务中更新为不可自动恢复；同一秒内的修改、改为永久或撤销后的改期也适用。普通改名不终止管理关系，Canvas 内部续期不走人工配置入口。
+普通分组固定到该分组，`cross_group_retry` 关闭。`auto` 使用当前用户权限、站点 Auto 顺序及 `MaxTokenAutoGroups` 过滤后的非空显式范围，并再次排除 `神秘分组`；空范围拒绝创建，不能回退继承全局 Auto。管理 Token 随 grant 到期且由 New API 计费。用户禁用、限制模型、修改 Auto 范围或修改其他固定字段后，接口返回冲突；删除和单独改组通过下述 repair 合同恢复。通过令牌管理接口人工修改期限时，令牌与管理关系在同一事务中更新为不可自动恢复；同一秒内的修改、改为永久或撤销后的改期也适用。普通改名不终止管理关系，Canvas 内部续期不走人工配置入口。
+
+如果原 Token 行被删除（包括软删除），或仍可用但被人工改到其它分组，普通 `PUT` 不会生成第二把 Key，而是返回 `409` 和非敏感恢复事实：
+
+```json
+{
+  "success": false,
+  "code": "canvas_managed_token_missing",
+  "message": "Canvas 分组 Key 已删除，同步将自动恢复",
+  "data": {"token_id": 456, "credential_revision": 1}
+}
+```
+
+错组时 `code` 为 `canvas_managed_token_group_mismatch`，`data` 结构相同。`data` 只来自当前 grant 和原分组的管理关系，不含 Key、指纹或用户可用凭据；没有该关系、Token 被禁用、过期、换 Key、改权限或撤销时返回 `canvas_managed_token_changed`，不能据此强行恢复。Canvas 登录、刷新和手动同步应持久化一个新的 repair operation，然后调用：
+
+`POST /api/canvas/groups/:group/repair` 请求体为 `{"operation_id":"固定操作编号","repair":{"token_id":456,"credential_revision":1}}`。缺失路径在事务内创建新 Token 和新 Key，错组路径保留原 Token ID/Key、恢复原分组及当前 Auto 范围；两者都将 `credential_revision` 加一。相同 operation ID 和相同请求重试返回同一结果，换 operation ID 不能跳过旧 ID/修订校验。修复会立即使软删除 Key 缓存失效；修复不等待旧任务排空，调用方不得改用新 Key 重发旧请求。修复成功响应与 PUT 相同，Key 仅返回给持有有效 grant 的服务端调用方并由 Canvas 加密保存，不返回浏览器或写入日志。
 
 受控轮换使用 `POST /api/canvas/groups/:group/rotate`，请求体为 `{"operation_id":"固定操作编号","rotation":{"token_id":123,"credential_revision":1,"key_fingerprint":"原完整 Key 的 SHA-256 小写十六进制"}}`。调用方必须先持久化意图、停止该组新提交并收尾旧任务及回执；New API 不掌握 Canvas 队列状态，不能代替这个检查。接口要求本人有效 grant、纳入组、原 Token、版本和指纹匹配，保留 Token ID 与账务归属，原子更换 Key 并递增修订；响应格式与 PUT 相同。原操作重试返回同一新 Key，换操作编号重试旧版本返回 409，读取 PUT 不接受 rotation 字段。
 
@@ -402,7 +417,9 @@ Canvas 使用管理 Token 发起创建类请求时，必须且只能发送一个
 | 403 | `canvas_execution_mismatch` | 执行身份、策略分组或 Auto 范围不一致 |
 | 409 | `canvas_operation_conflict` | 相同 operation ID 携带不同请求 |
 | 409 | `canvas_auto_group_empty` | Auto 过滤后没有可用实际分组 |
-| 409 | `canvas_managed_token_changed` | 管理 Token 被修改、删除或不可恢复 |
+| 409 | `canvas_managed_token_missing` | 管理 Token 行缺失；响应 `data` 提供 `token_id` 和 `credential_revision` 供 repair |
+| 409 | `canvas_managed_token_group_mismatch` | 管理 Token 仍存在但分组被人工改动；响应 `data` 提供修复事实 |
+| 409 | `canvas_managed_token_changed` | 管理 Token 被禁用、过期、换 Key、改权限、撤销或其它不可恢复修改 |
 | 409 | `canvas_permission_changed` | 权限修订已过期，Canvas 必须刷新后重选 |
 | 409 | `canvas_token_limit_reached` | 用户 Token 数量达到站点上限 |
 | 503 | `canvas_account_misconfigured` | 启用后部署配置不完整或不合法 |

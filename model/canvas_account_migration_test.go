@@ -118,8 +118,88 @@ func TestCanvasAccountDatabaseMatrix(t *testing.T) {
 			t.Run("controlled-rotation", func(t *testing.T) {
 				testCanvasControlledRotation(t, db)
 			})
+			t.Run("managed-repair", func(t *testing.T) {
+				testCanvasManagedRepair(t, db)
+			})
 		})
 	}
+}
+
+// testCanvasManagedRepair 验证缺失/错组修复、幂等重试和不可恢复修改边界。
+func testCanvasManagedRepair(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	previousDB, previousRedis := DB, common.RedisEnabled
+	DB, common.RedisEnabled = db, false
+	t.Cleanup(func() { DB, common.RedisEnabled = previousDB, previousRedis })
+	models := []any{&User{}, &Token{}, &Channel{}, &Ability{}, &Option{}, &CanvasGrant{}, &CanvasManagedToken{}, &CanvasIdempotencyOperation{}}
+	require.NoError(t, db.AutoMigrate(models...))
+	t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(models...)) })
+	initCol()
+	user := User{Id: 7401, Username: "canvas-repair-test", Group: "default", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&user).Error)
+	channel := Channel{Id: 8401, Name: "canvas-repair", Type: 1, Status: common.ChannelStatusEnabled, Models: "canvas-test-model", Group: "default"}
+	require.NoError(t, db.Create(&channel).Error)
+	require.NoError(t, db.Create(&Ability{Group: "default", Model: "canvas-test-model", ChannelId: channel.Id, Enabled: true}).Error)
+	var grant *CanvasGrant
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		grant, err = UpsertCanvasGrantWithTx(tx, "canvas-repair", "repair-test", user.Id, strings.Repeat("r", 64), "tokens:manage", time.Now().Unix()+7200)
+		return err
+	}))
+	initial, err := EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-initial"})
+	require.NoError(t, err)
+	oldID, oldKey, oldRevision := initial.Token.Id, initial.Token.Key, initial.Managed.CredentialRevision
+
+	// 删除原行后，普通 PUT 只返回可恢复的旧身份事实，repair 才签发新 Key。
+	require.NoError(t, db.Delete(&Token{}, oldID).Error)
+	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-missing-read"})
+	require.ErrorIs(t, err, ErrCanvasManagedTokenMissing)
+	target, err := GetCanvasManagedTokenRepairTarget(grant.ID, "default")
+	require.NoError(t, err)
+	assert.Equal(t, oldID, target.TokenID)
+	assert.Equal(t, oldRevision, target.CredentialRevision)
+	repairInput := CanvasManagedTokenRepairInput{
+		GrantID: grant.ID, GroupID: "default", OperationID: "repair-missing", Repair: *target,
+	}
+	repaired, err := RepairCanvasManagedToken(repairInput)
+	require.NoError(t, err)
+	assert.NotEqual(t, oldID, repaired.Token.Id)
+	assert.NotEqual(t, oldKey, repaired.Token.Key)
+	assert.Equal(t, oldRevision+1, repaired.Managed.CredentialRevision)
+	replayed, err := RepairCanvasManagedToken(repairInput)
+	require.NoError(t, err)
+	assert.Equal(t, repaired.Token.Id, replayed.Token.Id)
+	assert.Equal(t, repaired.Token.Key, replayed.Token.Key)
+	var tokenCount int64
+	require.NoError(t, db.Model(&Token{}).Where("user_id = ?", user.Id).Count(&tokenCount).Error)
+	assert.Equal(t, int64(1), tokenCount)
+
+	// 仅人工改组时保留同一 Token/Key，并递增 credential_revision。
+	current := repaired
+	require.NoError(t, db.Model(&Token{}).Where("id = ?", current.Token.Id).Update("group", "vip").Error)
+	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-group-read"})
+	require.ErrorIs(t, err, ErrCanvasManagedTokenGroupMismatch)
+	groupTarget, err := GetCanvasManagedTokenRepairTarget(grant.ID, "default")
+	require.NoError(t, err)
+	groupRepair := CanvasManagedTokenRepairInput{
+		GrantID: grant.ID, GroupID: "default", OperationID: "repair-group", Repair: *groupTarget,
+	}
+	groupFixed, err := RepairCanvasManagedToken(groupRepair)
+	require.NoError(t, err)
+	assert.Equal(t, current.Token.Id, groupFixed.Token.Id)
+	assert.Equal(t, current.Token.Key, groupFixed.Token.Key)
+	assert.Equal(t, current.Managed.CredentialRevision+1, groupFixed.Managed.CredentialRevision)
+	groupReplay, err := RepairCanvasManagedToken(groupRepair)
+	require.NoError(t, err)
+	assert.Equal(t, groupFixed.Token.Key, groupReplay.Token.Key)
+
+	// 禁用或人工换 Key 不是可自动修复的合同变化。
+	require.NoError(t, db.Model(&Token{}).Where("id = ?", groupFixed.Token.Id).Update("status", common.TokenStatusDisabled).Error)
+	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-disabled"})
+	require.ErrorIs(t, err, ErrCanvasManagedTokenChanged)
+	require.NoError(t, db.Model(&Token{}).Where("id = ?", groupFixed.Token.Id).Updates(map[string]any{"status": common.TokenStatusEnabled, "key": "manually-replaced-key"}).Error)
+	_, err = EnsureCanvasManagedToken(CanvasManagedTokenInput{GrantID: grant.ID, GroupID: "default", OperationID: "repair-key-changed"})
+	require.ErrorIs(t, err, ErrCanvasManagedTokenChanged)
 }
 
 // testCanvasControlledRotation 在三种实际数据库中验证回滚、原操作重试及人工修改边界。

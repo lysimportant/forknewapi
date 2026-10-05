@@ -436,6 +436,84 @@ func TestCanvasControlledRotation(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, request(login.Grant.Token, "default", true, body).Code)
 }
 
+// TestCanvasManagedTokenRepair 验证同步提供非敏感修复目标，登录后可幂等补建或恢复原组。
+func TestCanvasManagedTokenRepair(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			user, identity := setupCanvasAccountControllerTest(t)
+			login := authorizeCanvasAccountForTest(t, identity)
+			old := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "initial"))
+			tokenID, err := strconv.Atoi(old.TokenID)
+			require.NoError(t, err)
+			if missing {
+				require.NoError(t, model.DeleteTokenById(tokenID, user.Id))
+			} else {
+				var token model.Token
+				require.NoError(t, model.DB.First(&token, tokenID).Error)
+				token.Group = "vip"
+				require.NoError(t, token.Update())
+			}
+			// 重新登录更新授权后仍能识别原 Key，而不要求已有本地凭据。
+			login = authorizeCanvasAccountForTest(t, identity)
+			failed := canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "login-sync")
+			require.Equal(t, http.StatusConflict, failed.Code, failed.Body.String())
+			var failure canvasAccountTestResponse[model.CanvasManagedTokenRepair]
+			require.NoError(t, common.Unmarshal(failed.Body.Bytes(), &failure))
+			if missing {
+				assert.Equal(t, "canvas_managed_token_missing", failure.Code)
+			} else {
+				assert.Equal(t, "canvas_managed_token_group_mismatch", failure.Code)
+			}
+			assert.Equal(t, model.CanvasManagedTokenRepair{TokenID: tokenID, CredentialRevision: 1}, failure.Data)
+			assert.NotContains(t, failed.Body.String(), old.Key)
+			assert.Equal(t, "no-store", failed.Header().Get("Cache-Control"))
+			body, err := common.Marshal(canvasManagedGroupRequest{OperationID: "repair-1", Repair: &failure.Data})
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusUnauthorized, canvasRepairGroupRequestForTest("invalid-grant", "default", body).Code)
+			assert.Equal(t, http.StatusForbidden, canvasRepairGroupRequestForTest(login.Grant.Token, model.CanvasExcludedGroup, body).Code)
+			assert.Equal(t, http.StatusBadRequest, canvasRepairGroupRequestForTest(login.Grant.Token, "default", []byte(`{"operation_id":"missing-target"}`)).Code)
+			repaired := decodeCanvasManagedGroupForTest(t, canvasRepairGroupRequestForTest(login.Grant.Token, "default", body))
+			assert.Equal(t, "default", repaired.Group)
+			assert.Equal(t, "2", repaired.CredentialRevision)
+			if missing {
+				assert.NotEqual(t, old.TokenID, repaired.TokenID)
+				assert.NotEqual(t, old.Key, repaired.Key)
+			} else {
+				assert.Equal(t, old.TokenID, repaired.TokenID)
+				assert.Equal(t, old.Key, repaired.Key)
+			}
+			assert.Equal(t, repaired, decodeCanvasManagedGroupForTest(t, canvasRepairGroupRequestForTest(login.Grant.Token, "default", body)))
+			assert.Equal(t, repaired, decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "after-repair")))
+			var count int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+			var audit []model.AuditLog
+			require.NoError(t, model.LOG_DB.Where("action = ?", "canvas.token.repair").Find(&audit).Error)
+			require.NotEmpty(t, audit)
+			auditJSON, err := common.Marshal(audit)
+			require.NoError(t, err)
+			for _, secret := range []string{strings.TrimPrefix(old.Key, "sk-"), strings.TrimPrefix(repaired.Key, "sk-"), login.Grant.Token} {
+				assert.NotContains(t, string(auditJSON), secret)
+			}
+			revoked := canvasAccountControllerRequest(http.MethodPost, "/api/canvas/revoke", "{}", login.Grant.Token, PostCanvasRevoke)
+			require.Equal(t, http.StatusOK, revoked.Code)
+			assert.Equal(t, http.StatusUnauthorized, canvasRepairGroupRequestForTest(login.Grant.Token, "default", body).Code)
+		})
+	}
+}
+
+// canvasRepairGroupRequestForTest 通过真实处理器校验 repair 请求的授权、参数及响应。
+func canvasRepairGroupRequestForTest(grant, group string, body []byte) *httptest.ResponseRecorder {
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/canvas/groups/"+url.PathEscape(group)+"/repair", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("Authorization", "Bearer "+grant)
+	c.Params = gin.Params{{Key: "group", Value: group}}
+	PostCanvasRepairGroup(c)
+	return response
+}
+
 // canvasManagedGroupRequestForTest 向管理分组处理器发送隔离请求。
 func canvasManagedGroupRequestForTest(t *testing.T, grant, group, operation string) *httptest.ResponseRecorder {
 	t.Helper()
