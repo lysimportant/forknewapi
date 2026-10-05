@@ -128,9 +128,11 @@ export function Home() {
   }
 
   return (
-    <PublicLayout showMainContainer={false}>
-      <MansuiHome isAuthenticated={isAuthenticated} />
-      <Footer />
-    </PublicLayout>
+    <div className='mansui-landing'>
+      <PublicLayout showMainContainer={false}>
+        <MansuiHome isAuthenticated={isAuthenticated} />
+        <Footer />
+      </PublicLayout>
+    </div>
   )
 }

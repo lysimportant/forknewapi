@@ -21,3 +21,17 @@
 - 交付：中文提交并创建 `v1.0.0-rc.37.custom.29` annotated Tag，目标为 `fork/main`（https://github.com/lysimportant/forknewapi.git）；不推送官方 origin。本轮不部署生产、不修改线上配置。线上更新需重新构建含 `web/dist` 的镜像/二进制。
 - UI 复用：复用 Button/buttonVariants、Tooltip、Accordion、CopyButton、PublicLayout 与 Footer；新增 CSS 球体/波纹与画布流程展示属于品牌视觉，现有通用组件不提供这些视觉布局，未安装额外应用依赖。
 - 验收：公开 HTML/title/canonical/robots/sitemap；私有 noindex、未知 404；深浅色桌面/窄屏截图；动画/悬停/键盘/跳转；相关测试、typecheck/lint/build、Go test/vet/build。
+
+## Canvas 粒子首屏修订（2026-10-05）
+
+- 用户要求：取消首屏人物大图，改为科技感 Canvas 粒子特效，文字置于特效中央。
+- P1 视觉修订，按大变更交付；基线 `main` / `1a9c177d7`，开始时工作区干净，运行环境与依赖沿用上方记录。
+- 实现：三维粒子环、轨道脉冲、透视波面和外围星尘；鼠标轻微视差；中央品牌与 API/画布入口；默认首页导航配色调整。鲸鱼娘继续用作站点图标。
+- 复用与范围：复用现有 Button、Tooltip、Accordion 和 PublicLayout；组件库没有装饰性粒子场，使用原生 Canvas 2D，不新增应用依赖。保留 SEO、模型悬停说明、管理员自定义内容；不修改认证、数据库、计费或模型契约，不部署生产。
+- 降级：手动暂停、减少动态偏好、离屏/隐藏暂停、有限 DPR 与窄屏降密；Canvas 不可用时文字与链接仍可用。无数据迁移，回滚本轮代码后重新构建即可。
+- 验证通过：`bun run build:check`（含 typecheck）、`go build`；主页/关于页/SEO/status-query 共 4 文件 46 测试，最后删除无效粒子排序后主页 9/9 再次通过；改动 TS/TSX 的 oxlint 与 Oxfmt、`git diff --check` 通过。
+- 浏览器验收：18 项既有 SEO/模型/自定义页面检查和 10 项粒子首屏检查通过；实看 1920、1440、1024、390px 深浅色截图，中央文字与入口可读，无横向溢出和页面异常。验证实际图像暂停/恢复、动态切换 reduced-motion、离屏停绘/返回恢复、SPA 卸载及无 Canvas 降级。
+- 性能测量：桌面 Chrome headless 1440×900、DPR 1，在截图/读回前采样 110 帧；移除 `lighter` 加色混合中无效的逐帧深度排序后，回调中位数 18.3ms、P95 22.9ms，约 30fps（修改前同方式 20.1ms / 24.7ms）。这是本机采样，不作为其他设备或生产性能保证。
+- Lighthouse 最终桌面：性能 71、可访问性 100、最佳实践 100、SEO 100；LCP 3.3s、TBT 210ms。首次性能复测因密集测试触发本地 Web 访问限流，确认 HTTP 429 后重启本任务隔离预览并串行复测，未修改任何限流配置。首屏包体及加载时序仍有既有优化空间，另行处理。
+- 证据：`.local-tests/mansui-particles/` 保存构建/测试日志、28 项浏览器检查结果、帧采样、最终截图与 Lighthouse 报告；预览为 http://127.0.0.1:3045/，使用隔离 SQLite。
+- 交付：任务中文提交与 annotated Tag `v1.0.0-rc.37.custom.30`，目标 `fork/main`；不部署生产。运行时/媒体偏好/生命周期已由代码审查及上述验收确认，没有未完成的本轮实现事项。

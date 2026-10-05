@@ -50,6 +50,8 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
+import { ParticleScene } from './particle-scene'
+
 /** 默认主页输入，登录状态仅用于调整创作引导文案。 */
 interface MansuiHomeProps {
   isAuthenticated: boolean
@@ -362,23 +364,18 @@ export function ModelMarquee() {
   )
 }
 
-/** 渲染品牌首屏、双入口行动按钮与鲸鱼主题视觉。 */
+/** 将可索引的品牌文字与操作入口置于粒子场景中央，并提供动效暂停控制。 */
 function HeroSection() {
   const { t } = useTranslation()
+  const [isScenePaused, setIsScenePaused] = useState(false)
 
   return (
     <section className='mansui-hero' aria-labelledby='mansui-home-title'>
-      <div className='mansui-ripple-field' aria-hidden='true'>
-        <span />
-        <span />
-        <span />
-      </div>
-      <div className='mansui-shell mansui-hero-grid'>
+      <ParticleScene paused={isScenePaused} />
+      <div className='mansui-hero-atmosphere' aria-hidden='true' />
+      <div className='mansui-hero-frame' aria-hidden='true' />
+      <div className='mansui-shell mansui-hero-center'>
         <div className='mansui-hero-copy'>
-          <div className='mansui-brand-mark'>
-            <img src='/mansui-icon.png' alt='' width='44' height='44' />
-            <span>{t('ManSuiAI creative intelligence')}</span>
-          </div>
           <p className='mansui-kicker'>
             {t('AI creation, connected end to end')}
           </p>
@@ -386,12 +383,14 @@ function HeroSection() {
             id='mansui-home-title'
             aria-label={`ManSuiAI - ${t('AI aggregation platform')}`}
           >
-            <span>ManSuiAI -</span>
-            <span>{t('AI aggregation platform')}</span>
+            <span className='mansui-hero-wordmark'>ManSuiAI</span>
+            <span className='mansui-hero-platform'>
+              {t('AI aggregation platform')}
+            </span>
           </h1>
           <p className='mansui-hero-lede'>
             {t(
-              'Bring AI empowerment, the Token market, and comics creation into one ocean-blue creative portal.'
+              'One API for text, images, video, and the stories you want to create.'
             )}
           </p>
           <div className='mansui-hero-actions'>
@@ -407,26 +406,36 @@ function HeroSection() {
               className='mansui-secondary-button'
             />
           </div>
-        </div>
-
-        <div className='mansui-hero-visual'>
-          <div className='mansui-globe' aria-hidden='true'>
-            <span className='mansui-globe-ring mansui-globe-ring-one' />
-            <span className='mansui-globe-ring mansui-globe-ring-two' />
-            <span className='mansui-globe-ring mansui-globe-ring-three' />
-            <span className='mansui-globe-core' />
-          </div>
-          <div className='mansui-portrait-frame'>
-            <div className='mansui-portrait-aura' aria-hidden='true' />
-            <img
-              src='/mansui-whale.webp'
-              alt={t('Blue whale-inspired ManSuiAI guide')}
-              width='768'
-              height='768'
-              fetchPriority='high'
-            />
+          <div className='mansui-hero-capabilities'>
+            <span>{t('Unified AI access')}</span>
+            <span>{t('Token market')}</span>
+            <span>{t('Comics creation')}</span>
           </div>
         </div>
+      </div>
+      <div className='mansui-shell mansui-hero-bottom'>
+        <a className='mansui-explore-link' href='#mansui-model-title'>
+          <span>{t('Explore the models')}</span>
+          <span aria-hidden='true'>↓</span>
+        </a>
+        <Button
+          variant='ghost'
+          size='icon'
+          className='mansui-scene-toggle'
+          aria-label={
+            isScenePaused
+              ? t('Resume background animation')
+              : t('Pause background animation')
+          }
+          aria-pressed={isScenePaused}
+          onClick={() => setIsScenePaused((paused) => !paused)}
+        >
+          <HugeiconsIcon
+            icon={isScenePaused ? PlayIcon : PauseIcon}
+            strokeWidth={1.5}
+            aria-hidden='true'
+          />
+        </Button>
       </div>
     </section>
   )

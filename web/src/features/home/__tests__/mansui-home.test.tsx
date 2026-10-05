@@ -24,7 +24,7 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 
 import { MansuiHome, ModelMarquee } from '../components/mansui-home'
 
@@ -35,7 +35,48 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+/** 创建粒子场景测试所需的最小 Canvas 2D 边界。 */
+function createCanvasContext(): CanvasRenderingContext2D {
+  const gradient = {
+    addColorStop: vi.fn(),
+  } as unknown as CanvasGradient
+
+  return {
+    beginPath: vi.fn(),
+    clearRect: vi.fn(),
+    createRadialGradient: vi.fn(() => gradient),
+    drawImage: vi.fn(),
+    fillRect: vi.fn(),
+    lineTo: vi.fn(),
+    moveTo: vi.fn(),
+    restore: vi.fn(),
+    save: vi.fn(),
+    setLineDash: vi.fn(),
+    setTransform: vi.fn(),
+    stroke: vi.fn(),
+  } as unknown as CanvasRenderingContext2D
+}
+
+/** 覆盖减少动态媒体查询，并保留完整 MediaQueryList 契约。 */
+function mockReducedMotion(matches: boolean): void {
+  vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+    matches: query === '(prefers-reduced-motion: reduce)' ? matches : false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(() => false),
+  }))
+}
+
 test('renders pricing and canvas destinations as native external links', () => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
   render(<MansuiHome isAuthenticated={false} />)
 
   const destinations = [
@@ -62,6 +103,108 @@ test('renders pricing and canvas destinations as native external links', () => {
       expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     }
   }
+})
+
+test('keeps the centered hero and destinations available without canvas support', () => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame')
+  render(<MansuiHome isAuthenticated={false} />)
+
+  const heading = screen.getByRole('heading', {
+    level: 1,
+    name: 'ManSuiAI - AI aggregation platform',
+  })
+  const hero = heading.closest<HTMLElement>('section')
+  expect(hero).not.toBeNull()
+  expect(heading).toBeVisible()
+  expect(
+    within(hero as HTMLElement).getByRole('link', {
+      name: 'Explore API and pricing',
+    })
+  ).toHaveAttribute('href', 'https://api.lolicon.beer/pricing')
+  expect(
+    within(hero as HTMLElement).getByRole('link', {
+      name: 'Open creative canvas',
+    })
+  ).toHaveAttribute('href', 'https://love.lolicon.beer')
+  expect(within(hero as HTMLElement).queryByRole('img')).not.toBeInTheDocument()
+  expect(hero?.querySelector('canvas')).toHaveAttribute('aria-hidden', 'true')
+  expect(requestFrame).not.toHaveBeenCalled()
+})
+
+test('pauses and resumes the background animation from the hero control', async () => {
+  const user = userEvent.setup()
+  mockReducedMotion(false)
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+    createCanvasContext()
+  )
+
+  let nextFrame = 0
+  const pendingFrames = new Map<number, FrameRequestCallback>()
+  const requestFrame = vi
+    .spyOn(globalThis, 'requestAnimationFrame')
+    .mockImplementation((callback) => {
+      nextFrame += 1
+      pendingFrames.set(nextFrame, callback)
+      return nextFrame
+    })
+  const cancelFrame = vi
+    .spyOn(globalThis, 'cancelAnimationFrame')
+    .mockImplementation((handle) => {
+      pendingFrames.delete(handle)
+    })
+
+  render(<MansuiHome isAuthenticated={false} />)
+
+  const pauseButton = screen.getByRole('button', {
+    name: 'Pause background animation',
+  })
+  expect(pauseButton).toHaveAttribute('aria-pressed', 'false')
+  expect(requestFrame).toHaveBeenCalledTimes(1)
+  expect(pendingFrames.size).toBe(1)
+
+  await user.click(pauseButton)
+
+  const resumeButton = screen.getByRole('button', {
+    name: 'Resume background animation',
+  })
+  expect(resumeButton).toHaveAttribute('aria-pressed', 'true')
+  expect(cancelFrame).toHaveBeenCalledTimes(1)
+  expect(pendingFrames.size).toBe(0)
+
+  await user.click(resumeButton)
+
+  expect(
+    screen.getByRole('button', { name: 'Pause background animation' })
+  ).toHaveAttribute('aria-pressed', 'false')
+  expect(requestFrame).toHaveBeenCalledTimes(2)
+  expect(pendingFrames.size).toBe(1)
+})
+
+test('keeps hero content visible without scheduling motion in reduced-motion mode', () => {
+  mockReducedMotion(true)
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+    createCanvasContext()
+  )
+  const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame')
+
+  render(<MansuiHome isAuthenticated={false} />)
+
+  expect(
+    screen.getByRole('heading', {
+      level: 1,
+      name: 'ManSuiAI - AI aggregation platform',
+    })
+  ).toBeVisible()
+  expect(
+    screen.getAllByRole('link', { name: 'Explore API and pricing' })[0]
+  ).toBeVisible()
+  expect(
+    screen.getAllByRole('link', { name: 'Open creative canvas' })[0]
+  ).toBeVisible()
+  expect(requestFrame).not.toHaveBeenCalled()
 })
 
 test('keeps the marquee paused when pointer leaves while focus remains inside', () => {
