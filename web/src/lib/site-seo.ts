@@ -368,8 +368,9 @@ export function applySiteSEO(
   scripts.forEach((duplicate) => duplicate.remove())
 }
 
-/** 在 React 提交后移除服务端语义摘要与仅供首屏使用的首页模式标记。 */
+/** 在 React 提交后撤销全站加载遮罩，移除服务端摘要及首页模式元数据。 */
 export function removeServerSEOContent(documentRoot: Document): void {
   documentRoot.querySelector('#public-seo-content')?.remove()
   documentRoot.querySelector('meta[name="mansui-home-mode"]')?.remove()
+  delete documentRoot.documentElement.dataset.appBoot
 }

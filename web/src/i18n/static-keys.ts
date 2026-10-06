@@ -19,6 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
+  // 入口 HTML 的构建时加载文案由脚本读取，需显式登记。
+  'Dafeiyu is swimming your way',
+  'Your blue-haired whale companion is connecting you to an ocean of AI possibilities.',
   // ManSuiAI 首页模型说明、创作流程和常见问题采用动态翻译键。
   'Chat and text generation for general-purpose AI workflows.',
   'Text and code generation for instruction-driven workflows.',

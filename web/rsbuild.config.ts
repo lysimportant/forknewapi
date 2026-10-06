@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,6 +8,29 @@ import { pluginTailwindcss } from '@rsbuild/plugin-tailwindcss'
 import { tanstackRouter } from '@tanstack/router-plugin/rspack'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+/** 将首屏所需的三条翻译内联到 HTML，避免等待应用包后才出现加载说明。 */
+const bootTranslations = Object.fromEntries(
+  ['en', 'zh', 'zh-TW', 'fr', 'ja', 'ru', 'vi'].map((locale) => {
+    const { translation } = JSON.parse(
+      readFileSync(
+        path.join(__dirname, `src/i18n/locales/${locale}.json`),
+        'utf8'
+      )
+    ) as { translation: Record<string, string> }
+    return [
+      locale,
+      {
+        status: translation['Loading...'],
+        title: translation['Dafeiyu is swimming your way'],
+        description:
+          translation[
+            'Your blue-haired whale companion is connecting you to an ocean of AI possibilities.'
+          ],
+      },
+    ]
+  })
+)
 
 export default defineConfig(({ envMode }) => {
   const env = loadEnv({ mode: envMode, prefixes: ['VITE_'] })
@@ -64,6 +88,7 @@ export default defineConfig(({ envMode }) => {
     },
     html: {
       template: './index.html',
+      templateParameters: { bootTranslations },
     },
     server: {
       host: '0.0.0.0',

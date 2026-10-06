@@ -69,7 +69,7 @@
 
     <meta name="theme-color" content="#fff" />
     <script id="theme-bootstrap">
-      /** 在入口资源加载前恢复主题，仅为服务端确认的默认首页启用深色底。 */
+      /** 在入口资源加载前显示全站加载遮罩；仅默认首页强制使用深色底。 */
       ;(function () {
         var root = document.documentElement
         var theme = 'system'
@@ -86,17 +86,19 @@
           (theme === 'system' &&
             window.matchMedia('(prefers-color-scheme: dark)').matches)
         root.classList.add(dark ? 'dark' : 'light')
+        root.dataset.appBoot = 'loading'
         if (
           window.location.pathname === '/' &&
           document.querySelector('meta[name="mansui-home-mode"]')?.content ===
             'default'
         ) {
           root.dataset.homeBoot = 'default'
-          // 入口资源加载失败时恢复可读正文，避免蒙版永久阻挡页面。
-          window.setTimeout(function () {
-            delete root.dataset.homeBoot
-          }, 15000)
         }
+        // 入口资源加载失败时恢复可读正文，避免蒙版永久阻挡页面。
+        window.setTimeout(function () {
+          delete root.dataset.appBoot
+          delete root.dataset.homeBoot
+        }, 15000)
       })()
     </script>
     <style>
@@ -146,6 +148,8 @@
         text-underline-offset: 0.25em;
       }
       #home-boot-overlay {
+        --boot-muted: #526b79;
+        --boot-ring: rgb(48 99 125 / 18%);
         display: none;
         position: fixed;
         inset: 0;
@@ -154,12 +158,29 @@
         align-items: center;
         justify-content: center;
         gap: 1.75rem;
-        background: rgb(3 7 11 / 84%);
+        box-sizing: border-box;
+        padding: 2rem 1.5rem;
+        color: #22495e;
+        background: rgb(248 251 253 / 94%);
+        font-family: system-ui, sans-serif;
+        text-align: center;
         -webkit-backdrop-filter: blur(20px);
         backdrop-filter: blur(20px);
       }
+      html.dark #home-boot-overlay,
+      html[data-home-boot='default'] #home-boot-overlay {
+        --boot-muted: #a6c3d2;
+        --boot-ring: rgb(185 225 242 / 18%);
+        color: #d7edf7;
+        background: rgb(3 7 11 / 94%);
+      }
+      html[data-app-boot='loading'] #home-boot-overlay,
       html[data-home-boot='default'] #home-boot-overlay {
         display: flex;
+      }
+      html[data-app-boot='loading'] #public-seo-content,
+      html[data-home-boot='default'] #public-seo-content {
+        visibility: hidden;
       }
       #home-boot-overlay::before {
         content: '';
@@ -187,10 +208,34 @@
       .home-boot-spinner {
         width: 22px;
         height: 22px;
-        border: 2px solid rgb(185 225 242 / 18%);
-        border-top-color: #b9e1f2;
+        border: 2px solid var(--boot-ring);
+        border-top-color: currentColor;
         border-radius: 50%;
         animation: home-boot-spin 0.9s linear infinite;
+      }
+      .home-boot-status {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+        color: var(--boot-muted);
+        font-size: 0.875rem;
+      }
+      .home-boot-copy {
+        position: relative;
+        max-width: 26rem;
+        line-height: 1.7;
+      }
+      .home-boot-copy p {
+        margin: 0;
+      }
+      #home-boot-title {
+        font-size: 1.125rem;
+        font-weight: 600;
+      }
+      #home-boot-description {
+        margin-top: 0.5rem;
+        color: var(--boot-muted);
+        font-size: 0.875rem;
       }
       @keyframes home-boot-spin {
         to {
@@ -210,7 +255,7 @@
   <body>
     <div id="root" translate="no" class="notranslate"></div>
     <!--site-seo-content-->
-    <div id="home-boot-overlay" role="progressbar" aria-label="ManSuiAI">
+    <div id="home-boot-overlay" role="status" aria-live="polite">
       <img
         src="/mansui-icon.png"
         alt=""
@@ -218,7 +263,49 @@
         height="88"
         fetchpriority="high"
       />
-      <span class="home-boot-spinner" aria-hidden="true"></span>
+      <div class="home-boot-status">
+        <span class="home-boot-spinner" aria-hidden="true"></span>
+        <span id="home-boot-status"><%= bootTranslations.en.status %></span>
+      </div>
+      <div class="home-boot-copy">
+        <p id="home-boot-title"><%= bootTranslations.en.title %></p>
+        <p id="home-boot-description"><%= bootTranslations.en.description %></p>
+      </div>
     </div>
+    <script id="boot-translations" type="application/json">
+      <%= JSON.stringify(bootTranslations).replace(/</g, '\\u003c') %>
+    </script>
+    <script id="boot-copy">
+      /** 从构建时嵌入的语言包读取首屏文案，不依赖尚未下载的应用资源。 */
+      ;(function () {
+        var language = navigator.language || 'en'
+        try {
+          language = localStorage.getItem('i18nextLng') || language
+        } catch {
+          // 禁用存储时沿用浏览器语言。
+        }
+        language = language.trim().replace(/_/g, '-').toLowerCase()
+        if (language.startsWith('zh')) {
+          language = /^(zhtw|zh-(tw|hk|mo|hant))(?:-|$)/.test(language)
+            ? 'zh-TW'
+            : 'zh'
+        } else {
+          language = language.split('-')[0]
+        }
+        var translations = JSON.parse(
+          document.getElementById('boot-translations').textContent
+        )
+        var copy = translations[language] || translations.en
+        document.getElementById('home-boot-overlay').lang = translations[
+          language
+        ]
+          ? language
+          : 'en'
+        document.getElementById('home-boot-status').textContent = copy.status
+        document.getElementById('home-boot-title').textContent = copy.title
+        document.getElementById('home-boot-description').textContent =
+          copy.description
+      })()
+    </script>
   </body>
 </html>

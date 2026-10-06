@@ -27,6 +27,7 @@ import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
 import { createAppQueryClient } from '@/lib/query-client'
+import { removeServerSEOContent } from '@/lib/site-seo'
 import { readCachedStatus, statusQueryOptions } from '@/lib/status-query'
 
 import { DirectionProvider } from './context/direction-provider'
@@ -54,6 +55,19 @@ const router = createRouter({
   context: { queryClient },
   defaultPreload: 'intent',
   defaultPreloadStaleTime: 0,
+})
+
+/** 首次路由解析后清理遮罩，覆盖错误页；默认首页的数据等待仍由 Home 管理。 */
+const unsubscribeBootstrap = router.subscribe('onResolved', () => {
+  removeServerSEOContent(document)
+  if (
+    router.state.matches.some(
+      (match) => match.status === 'error' || match.status === 'notFound'
+    )
+  ) {
+    delete document.documentElement.dataset.homeBoot
+  }
+  unsubscribeBootstrap()
 })
 
 // Register the router instance for type safety

@@ -151,6 +151,7 @@ function installHomeAdapter(reply: HomeReply): {
 function prepareHomeDocument(mode: 'default' | 'custom'): void {
   document.documentElement.className = ''
   document.documentElement.removeAttribute('data-home-boot')
+  document.documentElement.removeAttribute('data-app-boot')
   document.querySelector('meta[name="mansui-home-mode"]')?.remove()
   const meta = document.createElement('meta')
   meta.name = 'mansui-home-mode'
@@ -191,7 +192,7 @@ function renderHome(path = '/') {
       createRoute({
         getParentRoute: () => rootRoute,
         path: routePath,
-        component: () => null,
+        component: () => <SiteSEO />,
       })
     ),
   ])
@@ -269,10 +270,27 @@ afterEach(async () => {
   api.defaults.adapter = originalAdapter
   document.querySelector('meta[name="mansui-home-mode"]')?.remove()
   document.documentElement.removeAttribute('data-home-boot')
+  document.documentElement.removeAttribute('data-app-boot')
   vi.restoreAllMocks()
 })
 
 describe('Home 首屏主题衔接', () => {
+  test('价格页挂载后撤销刷新遮罩并移除服务端摘要', async () => {
+    document.documentElement.dataset.appBoot = 'loading'
+    const summary = document.createElement('section')
+    summary.id = 'public-seo-content'
+    summary.textContent = 'Server pricing summary'
+    document.body.append(summary)
+    const { view, queryClient } = renderHome('/pricing')
+
+    await waitFor(() =>
+      expect(document.documentElement).not.toHaveAttribute('data-app-boot')
+    )
+    expect(document.querySelector('#public-seo-content')).toBeNull()
+    view.unmount()
+    queryClient.clear()
+  })
+
   test('默认首页请求 pending 时保留深色壳并显示共享 LoadingState', async () => {
     prepareHomeDocument('default')
     const network = installHomeAdapter('pending')
@@ -421,7 +439,7 @@ describe('theme-bootstrap 入口脚本', () => {
     expect(documentRoot.documentElement.dataset.homeBoot).toBe('default')
   })
 
-  test('真实入口包含无 SEO 文案的站点图标遮罩并保留 SEO 正文入口', () => {
+  test('真实入口复用站点图标并保留 SEO 正文入口', () => {
     const documentRoot = new DOMParser().parseFromString(indexHtml, 'text/html')
     const overlay = documentRoot.querySelector('#home-boot-overlay')
 
@@ -429,7 +447,6 @@ describe('theme-bootstrap 入口脚本', () => {
     expect(overlay?.querySelector('img')?.getAttribute('src')).toBe(
       '/mansui-icon.png'
     )
-    expect(overlay?.textContent?.trim()).toBe('')
     expect(indexHtml).toContain('<!--site-seo-content-->')
   })
 
@@ -437,6 +454,7 @@ describe('theme-bootstrap 入口脚本', () => {
     const documentRoot = new DOMParser().parseFromString(indexHtml, 'text/html')
 
     expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
+    expect(documentRoot.documentElement.dataset.appBoot).toBeUndefined()
     expect(documentRoot.querySelector('#home-boot-overlay')).not.toBeNull()
   })
 
@@ -457,16 +475,23 @@ describe('theme-bootstrap 入口脚本', () => {
     expect(documentRoot.documentElement.dataset.homeBoot).toBeUndefined()
   })
 
-  test.each([
-    ['custom home', '/', 'custom'],
-    ['non-home route', '/about', 'default'],
-  ] as const)('%s 不启动首页遮罩超时', (_name, path, homeMode) => {
-    const { timeoutDelays } = runThemeBootstrap({
-      path,
-      systemDark: false,
-      homeMode,
-    })
+  test.each(['/', '/pricing', '/about', '/sign-in', '/dashboard', '/missing'])(
+    '%s 刷新时启用遮罩，资源未加载时按时恢复可读内容',
+    (path) => {
+      const {
+        document: documentRoot,
+        timeoutDelays,
+        flushTimeouts,
+      } = runThemeBootstrap({
+        path,
+        systemDark: false,
+        homeMode: 'custom',
+      })
 
-    expect(timeoutDelays).toEqual([])
-  })
+      expect(documentRoot.documentElement.dataset.appBoot).toBe('loading')
+      expect(timeoutDelays).toEqual([15_000])
+      flushTimeouts()
+      expect(documentRoot.documentElement.dataset.appBoot).toBeUndefined()
+    }
+  )
 })
