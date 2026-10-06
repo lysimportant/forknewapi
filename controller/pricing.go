@@ -2,6 +2,7 @@ package controller
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -11,7 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string) []model.Pricing {
+// filterPricingByUsableGroups 返回当前可用模型，并移除调用者不可见的分组名称。
+// 结果中的分组切片独立于全局定价缓存，避免不同角色的请求互相污染。
+func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string, role int) []model.Pricing {
 	if len(pricing) == 0 {
 		return pricing
 	}
@@ -21,6 +24,9 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 
 	filtered := make([]model.Pricing, 0, len(pricing))
 	for _, item := range pricing {
+		item.EnableGroup = slices.DeleteFunc(slices.Clone(item.EnableGroup), func(group string) bool {
+			return !service.IsGroupVisible(group, role)
+		})
 		if common.StringsContains(item.EnableGroup, "all") {
 			filtered = append(filtered, item)
 			continue
@@ -35,6 +41,7 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
+// GetPricing 返回调用者可见的模型、分组倍率与自动分组目录；角色来自认证中间件。
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
@@ -56,7 +63,16 @@ func GetPricing(c *gin.Context) {
 	}
 
 	usableGroup = service.GetUserUsableGroups(group)
-	pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	role := c.GetInt("role")
+	for name := range usableGroup {
+		if !service.IsGroupVisible(name, role) {
+			delete(usableGroup, name)
+		}
+	}
+	pricing = filterPricingByUsableGroups(pricing, usableGroup, role)
+	autoGroups := slices.DeleteFunc(service.GetUserAutoGroup(group), func(name string) bool {
+		return !service.IsGroupVisible(name, role)
+	})
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {
@@ -71,7 +87,7 @@ func GetPricing(c *gin.Context) {
 		"group_ratio":        groupRatio,
 		"usable_group":       usableGroup,
 		"supported_endpoint": model.GetSupportedEndpointMap(),
-		"auto_groups":        service.GetUserAutoGroup(group),
+		"auto_groups":        autoGroups,
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }

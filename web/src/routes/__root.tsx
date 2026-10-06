@@ -43,7 +43,34 @@ import {
 } from '@/lib/auth-session'
 import { subscribeAuthSessionEvents } from '@/lib/auth-session-sync'
 import { resolveLegacyRoute } from '@/lib/legacy-route'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
+
+/**
+ * 订阅认证可见性变化，并清理或刷新依赖当前用户角色的请求缓存。
+ *
+ * @param queryClient - 保存用户与角色相关请求结果的 QueryClient。
+ * @returns 取消 Zustand 订阅的函数。
+ */
+export function subscribeAuthQueryCacheInvalidation(
+  queryClient: QueryClient
+): () => void {
+  return useAuthStore.subscribe((state, previousState) => {
+    const sid = state.auth.session?.sid
+    const previousSID = previousState.auth.session?.sid
+    if (sid !== previousSID) {
+      queryClient.clear()
+      return
+    }
+
+    const isAdmin = (state.auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
+    const wasAdmin = (previousState.auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
+    if (isAdmin !== wasAdmin) {
+      queryClient.getMutationCache().clear()
+      void queryClient.resetQueries()
+    }
+  })
+}
 
 function RootComponent() {
   const navigate = useNavigate()
@@ -60,14 +87,7 @@ function RootComponent() {
   }, [])
 
   useEffect(
-    () =>
-      useAuthStore.subscribe((state, previousState) => {
-        const sid = state.auth.session?.sid
-        const previousSID = previousState.auth.session?.sid
-        if (sid !== previousSID) {
-          queryClient.clear()
-        }
-      }),
+    () => subscribeAuthQueryCacheInvalidation(queryClient),
     [queryClient]
   )
 

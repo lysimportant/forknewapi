@@ -19,12 +19,33 @@ For commercial licensing, please contact support@quantumnous.com
 import { AxiosError, type AxiosAdapter } from 'axios'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { ROLE } from '@/lib/roles'
+import { useAuthStore, type AuthBundle } from '@/stores/auth-store'
+
 import { api, getNotice } from '../api'
 
 const originalAdapter = api.defaults.adapter
 
+const authBundle: AuthBundle = {
+  access_token: 'access-token',
+  token_type: 'Bearer',
+  access_expires_at: 2_000_000_000,
+  user: { id: 1, username: 'cache-user', role: ROLE.ADMIN },
+  session: {
+    sid: 'cache-session',
+    current: true,
+    login_method: 'password',
+    ip: '127.0.0.1',
+    user_agent: 'test',
+    created_at: 1,
+    last_active_at: 1,
+    expires_at: 2_000_000_000,
+  },
+}
+
 afterEach(() => {
   api.defaults.adapter = originalAdapter
+  useAuthStore.getState().auth.reset()
   vi.restoreAllMocks()
 })
 
@@ -75,4 +96,50 @@ it('public notices keep their existing ETag revalidation policy', async () => {
   api.defaults.adapter = adapter
   await getNotice()
   expect(adapter.mock.calls[0][0].headers.get('Cache-Control')).toBeNull()
+})
+
+it('does not reuse an in-flight administrator GET after same-session demotion', async () => {
+  useAuthStore.getState().auth.setBundle(authBundle)
+  let releaseAdministratorRequest: (() => void) | undefined
+  const administratorRequestGate = new Promise<void>((resolve) => {
+    releaseAdministratorRequest = resolve
+  })
+  const adapter = vi.fn<AxiosAdapter>(async (config) => {
+    if (adapter.mock.calls.length === 1) {
+      await administratorRequestGate
+      return {
+        data: { success: true, data: { groups: ['administrator'] } },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    }
+    return {
+      data: { success: true, data: { groups: ['user'] } },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }
+  })
+  api.defaults.adapter = adapter
+
+  const administratorRequest = api.get('/api/pricing')
+  await vi.waitFor(() => expect(adapter).toHaveBeenCalledOnce())
+  useAuthStore.getState().auth.setUser({
+    ...authBundle.user,
+    role: ROLE.USER,
+  })
+
+  try {
+    const userRequest = api.get('/api/pricing')
+    await vi.waitFor(() => expect(adapter).toHaveBeenCalledTimes(2))
+    await expect(userRequest).resolves.toMatchObject({
+      data: { data: { groups: ['user'] } },
+    })
+  } finally {
+    releaseAdministratorRequest?.()
+    await administratorRequest
+  }
 })

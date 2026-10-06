@@ -26,6 +26,7 @@ import {
   refreshAuthentication,
 } from '@/lib/auth-session'
 import { handleServerError } from '@/lib/handle-server-error'
+import { ROLE } from '@/lib/roles'
 import {
   getServerErrorMessage,
   safeServerErrorMessage,
@@ -62,8 +63,11 @@ api.get = ((url: string, config: ApiRequestConfig = {}) => {
   if (config.disableDuplicate) return originalGet(url, config)
 
   const params = config.params ? JSON.stringify(config.params) : '{}'
-  const sessionSID = useAuthStore.getState().auth.session?.sid || 'anonymous'
-  const key = `${sessionSID}:${url}?${params}`
+  const auth = useAuthStore.getState().auth
+  const sessionSID = auth.session?.sid || 'anonymous'
+  const roleVisibility =
+    (auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN ? 'admin' : 'user'
+  const key = `${sessionSID}:${roleVisibility}:${url}?${params}`
   const existingRequest = inFlightGet.get(key)
   if (existingRequest) return existingRequest
 

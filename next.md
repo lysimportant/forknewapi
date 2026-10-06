@@ -761,3 +761,18 @@ P2。基线为干净的 `main@d82010330`。线上 `/pricing` 的原始 HTML 包�
 - [ ] 服务器更新：拉取 `fork/main` 后重新构建前端及内嵌资源的 Go 可执行文件，或重新构建 Docker 镜像并重建容器；仅刷新浏览器或拉取源代码不会替换已运行的内嵌页面。本轮未部署生产。
 
 无 API、认证、计费、数据库或依赖变更，无数据迁移。交付目标为 `fork/main` 与 annotated Tag `v1.0.0-rc.37.custom.36`；回滚可重新部署前一构建，不改用户数据。运行时为 Node 24.12.0、本地 Bun 1.4.2、Go 1.26.0；本地隔离预览 `http://127.0.0.1:3057`，检查点与截图位于 `.local-tests/pricing-loading/`。
+
+## 22. 2026-10-06 神秘分组仅管理员可见
+
+P1。基线为干净的 `main@204549194`。精确名称“神秘分组”的价格目录、模型所属组、分组倍率、用户分组选项、Token Auto 选项和性能统计，仅向已认证管理员及超级管理员展示；普通用户和访客隐藏，混合分组模型保留其他可见组。角色由服务端会话解析，客户端参数不能提升权限。
+
+公开 `/api/user/groups` 复用 `TryUserAuth` 识别管理员：无凭据时继续允许匿名读取；携带已识别但失效的站内凭据时返回 401，避免将失效会话降为匿名结果。
+
+服务端禁止相关接口缓存，定价过滤复制分组切片，避免污染跨用户共享缓存；前端复用现有认证订阅，在同一会话跨管理员权限边界时清空旧结果并重新查询，GET 去重也按该边界隔离未完成请求。保留既有令牌、历史记录、调用和计费权限，以及 Canvas 全角色排除该组的原有规则。无数据库结构、查询实现或依赖变更，无数据迁移；回滚可恢复前一构建。
+
+- [x] `go test ./controller ./service ./middleware ./router`、`go vet ./controller ./service ./middleware ./router` 通过；集中回归覆盖访客/普通用户/管理员/root、相近名称、管理员与普通用户交替请求、伪造角色、同会话降权及过期会话。
+- [x] 认证缓存及请求竞态专项 17 项、价格页/首页加载/SEO 回归 289 项通过；原实现的两个缓存问题均经 red/green 验证。`bun run typecheck` 等价 `tsgo -b`、修改文件 oxlint/oxfmt、`bun run build` 和 Go 构建通过。
+- [x] 最终 Go 产物在隔离 3058 端口通过四角色 HTTP、管理接口直访权限、no-store 及普通/管理员实际登录后的搜索筛选验证，共 8 项；无页面异常或非预期 console error。匿名初始化的 refresh 401 单列为预期行为。临时服务与数据库已清理，报告及截图位于 `.local-tests/secret-group/`。
+- [ ] 服务器更新：拉取 `fork/main` 并重建前端和内嵌资源的 Go 产物，或重建镜像及容器；本轮不执行生产部署。
+
+安全审查参考 OWASP [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html) Cheat Sheets 和 ASVS 5.0.0 V8（8.1.1/8.1.2、8.2.2/8.2.3、8.3.1/8.3.2）；仅验证本次分组可见性边界。检查点位于 `.local-tests/secret-group/`，交付目标为 `fork/main` 与 annotated Tag `v1.0.0-rc.37.custom.37`。

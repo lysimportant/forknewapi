@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -173,14 +174,18 @@ func GetToken(c *gin.Context) {
 	common.ApiSuccess(c, buildMaskedTokenResponse(token))
 }
 
+// GetTokenAutoGroups 返回当前角色可见的 Auto 选项，保留全局调用顺序与数量上限。
 func GetTokenAutoGroups(c *gin.Context) {
 	userGroup, err := getTokenRequestUserGroup(c)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	groups := slices.DeleteFunc(service.GetUserAutoGroup(userGroup), func(group string) bool {
+		return !service.IsGroupVisible(group, c.GetInt("role"))
+	})
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    groups,
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }

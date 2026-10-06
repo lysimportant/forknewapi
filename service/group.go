@@ -11,6 +11,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// IsGroupVisible 按已认证角色限制分组目录与统计的展示；不改变调用和计费权限。
+// 神秘分组仅管理员及 root 可见，未认证角色按普通访客处理；其他精确名称不受影响。
+func IsGroupVisible(group string, role int) bool {
+	return group != "神秘分组" || role >= common.RoleAdminUser
+}
+
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {

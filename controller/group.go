@@ -23,13 +23,17 @@ func GetGroups(c *gin.Context) {
 	})
 }
 
+// GetUserGroups 返回用户可用且对其角色可见的分组选项，隐藏项不影响既有令牌的调用权限。
 func GetUserGroups(c *gin.Context) {
 	usableGroups := make(map[string]map[string]any)
 	userGroup := ""
 	userId := c.GetInt("id")
 	userGroup, _ = model.GetUserGroup(userId, false)
 	userUsableGroups := service.GetUserUsableGroups(userGroup)
-	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
+	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		if !service.IsGroupVisible(groupName, c.GetInt("role")) {
+			continue
+		}
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
 			usableGroups[groupName] = map[string]any{

@@ -16,8 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { QueryClient } from '@tanstack/react-query'
-import { afterEach, describe, expect, test } from 'vitest'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+import { ROLE } from '@/lib/roles'
+import { subscribeAuthQueryCacheInvalidation } from '@/routes/__root'
 
 import { useAuthStore, type AuthBundle } from '../stores/auth-store'
 import {
@@ -322,5 +325,91 @@ describe('authentication session coordination', () => {
     expect(queryClient.getQueryData(['account', bundle.user.id])).toBe(
       undefined
     )
+  })
+})
+
+describe('authentication query cache coordination', () => {
+  test('a session change clears cached queries and mutations', () => {
+    useAuthStore.getState().auth.setBundle(bundle)
+    const queryClient = new QueryClient()
+    const unsubscribe = subscribeAuthQueryCacheInvalidation(queryClient)
+    queryClient.setQueryData(['pricing'], { groups: ['default'] })
+    queryClient.getMutationCache().build(queryClient, {
+      mutationKey: ['account', 'update'],
+      mutationFn: async () => undefined,
+    })
+
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      session: { ...bundle.session, sid: 'session-b' },
+    })
+
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0)
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0)
+    unsubscribe()
+    queryClient.clear()
+  })
+
+  test.each([
+    ['user to administrator', ROLE.USER, ROLE.ADMIN],
+    ['administrator to user', ROLE.ADMIN, ROLE.USER],
+  ])(
+    'a same-session %s transition resets mounted queries and refetches them',
+    async (_name, initialRole, nextRole) => {
+      useAuthStore.getState().auth.setBundle({
+        ...bundle,
+        user: { ...bundle.user, role: initialRole },
+      })
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+      queryClient.setQueryData(['pricing'], { groups: ['stale-group'] })
+      const queryFn = vi.fn().mockResolvedValue({ groups: ['fresh-group'] })
+      const observer = new QueryObserver(queryClient, {
+        queryKey: ['pricing'],
+        queryFn,
+        staleTime: 5 * 60 * 1000,
+      })
+      const unsubscribeObserver = observer.subscribe(() => undefined)
+      const unsubscribeAuth = subscribeAuthQueryCacheInvalidation(queryClient)
+
+      useAuthStore.getState().auth.setUser({ ...bundle.user, role: nextRole })
+
+      await vi.waitFor(() => {
+        expect(queryFn).toHaveBeenCalledOnce()
+        expect(observer.getCurrentResult().data).toEqual({
+          groups: ['fresh-group'],
+        })
+      })
+      unsubscribeAuth()
+      unsubscribeObserver()
+      queryClient.clear()
+    }
+  )
+
+  test('a same-session transition within administrator roles keeps the cache', async () => {
+    useAuthStore.getState().auth.setBundle({
+      ...bundle,
+      user: { ...bundle.user, role: ROLE.ADMIN },
+    })
+    const queryClient = new QueryClient()
+    const unsubscribe = subscribeAuthQueryCacheInvalidation(queryClient)
+    queryClient.setQueryData(['pricing'], { groups: ['admin-group'] })
+    queryClient.getMutationCache().build(queryClient, {
+      mutationKey: ['account', 'update'],
+      mutationFn: async () => undefined,
+    })
+
+    useAuthStore
+      .getState()
+      .auth.setUser({ ...bundle.user, role: ROLE.SUPER_ADMIN })
+    await Promise.resolve()
+
+    expect(queryClient.getQueryData(['pricing'])).toEqual({
+      groups: ['admin-group'],
+    })
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(1)
+    unsubscribe()
+    queryClient.clear()
   })
 })
