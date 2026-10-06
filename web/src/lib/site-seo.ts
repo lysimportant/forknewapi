@@ -245,10 +245,15 @@ function removePublicMetadata(documentRoot: Document): void {
   for (const property of [
     'og:type',
     'og:site_name',
+    'og:locale',
     'og:title',
     'og:description',
     'og:url',
     'og:image',
+    'og:image:secure_url',
+    'og:image:type',
+    'og:image:width',
+    'og:image:height',
     'og:image:alt',
   ]) {
     removeMeta(documentRoot, 'property', property)
@@ -321,10 +326,25 @@ export function applySiteSEO(
   setCanonical(documentRoot, resolved.canonical)
   setMeta(documentRoot, 'property', 'og:type', 'website')
   setMeta(documentRoot, 'property', 'og:site_name', resolved.siteName)
+  setMeta(documentRoot, 'property', 'og:locale', 'zh_CN')
   setMeta(documentRoot, 'property', 'og:title', resolved.title)
   setMeta(documentRoot, 'property', 'og:description', resolved.description)
   setMeta(documentRoot, 'property', 'og:url', resolved.canonical)
   setMeta(documentRoot, 'property', 'og:image', resolved.image)
+  setMeta(documentRoot, 'property', 'og:image:secure_url', resolved.image)
+  if (resolved.image === `${SITE_SEO_MANIFEST.origin}/mansui-social.png`) {
+    setMeta(documentRoot, 'property', 'og:image:type', 'image/png')
+    setMeta(documentRoot, 'property', 'og:image:width', '1200')
+    setMeta(documentRoot, 'property', 'og:image:height', '630')
+  } else {
+    for (const property of [
+      'og:image:type',
+      'og:image:width',
+      'og:image:height',
+    ]) {
+      removeMeta(documentRoot, 'property', property)
+    }
+  }
   setMeta(documentRoot, 'property', 'og:image:alt', resolved.imageAlt)
   setMeta(documentRoot, 'name', 'twitter:card', 'summary_large_image')
   setMeta(documentRoot, 'name', 'twitter:title', resolved.title)

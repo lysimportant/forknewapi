@@ -50,19 +50,20 @@ type siteSEOLink struct {
 
 // resolvedSEOPage 保存单次请求最终使用的安全 SEO 输出。
 type resolvedSEOPage struct {
-	SiteName    string
-	Title       string
-	Description string
-	Canonical   string
-	Image       string
-	ImageAlt    string
-	Heading     string
-	Paragraphs  []string
-	Links       []siteSEOLink
-	JSONLD      template.JS
-	Index       bool
-	ShowContent bool
-	HomeMode    string
+	SiteName         string
+	Title            string
+	Description      string
+	Canonical        string
+	Image            string
+	ImageAlt         string
+	KnownSocialImage bool
+	Heading          string
+	Paragraphs       []string
+	Links            []siteSEOLink
+	JSONLD           template.JS
+	Index            bool
+	ShowContent      bool
+	HomeMode         string
 }
 
 // seoHeadTemplate 生成公开页完整元数据或私有页 noindex 标记。
@@ -75,10 +76,15 @@ var seoHeadTemplate = template.Must(template.New("site-seo-head").Parse(
 		"<link rel=\"canonical\" href=\"{{.Canonical}}\" />\n" +
 		"<meta property=\"og:type\" content=\"website\" />\n" +
 		"<meta property=\"og:site_name\" content=\"{{.SiteName}}\" />\n" +
+		"<meta property=\"og:locale\" content=\"zh_CN\" />\n" +
 		"<meta property=\"og:title\" content=\"{{.Title}}\" />\n" +
 		"<meta property=\"og:description\" content=\"{{.Description}}\" />\n" +
 		"<meta property=\"og:url\" content=\"{{.Canonical}}\" />\n" +
 		"<meta property=\"og:image\" content=\"{{.Image}}\" />\n" +
+		"<meta property=\"og:image:secure_url\" content=\"{{.Image}}\" />\n" +
+		"{{if .KnownSocialImage}}<meta property=\"og:image:type\" content=\"image/png\" />\n" +
+		"<meta property=\"og:image:width\" content=\"1200\" />\n" +
+		"<meta property=\"og:image:height\" content=\"630\" />\n{{end}}" +
 		"{{if .ImageAlt}}<meta property=\"og:image:alt\" content=\"{{.ImageAlt}}\" />\n{{end}}" +
 		"<meta name=\"twitter:card\" content=\"summary_large_image\" />\n" +
 		"<meta name=\"twitter:title\" content=\"{{.Title}}\" />\n" +
@@ -276,6 +282,7 @@ func resolveSEOPage(manifest siteSEOManifest, requestPath string, knownRoute boo
 		ImageAlt:    manifest.ImageAlt,
 		Index:       publicPage,
 	}
+	resolved.KnownSocialImage = resolved.Image == canonicalSiteOrigin+"/mansui-social.png"
 	if !publicPage {
 		return resolved
 	}

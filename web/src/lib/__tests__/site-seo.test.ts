@@ -88,6 +88,22 @@ it('SPA 公开页导航会替换唯一元数据、规范链接和结构化数据
   expect(document.querySelectorAll('title')).toHaveLength(1)
   expect(document.querySelectorAll('meta[name="description"]')).toHaveLength(1)
   expect(document.querySelectorAll('meta[property="og:title"]')).toHaveLength(1)
+  expect(document.querySelector('meta[property="og:locale"]')).toHaveAttribute(
+    'content',
+    'zh_CN'
+  )
+  expect(
+    document.querySelector('meta[property="og:image:secure_url"]')
+  ).toHaveAttribute('content', 'https://api.lolicon.beer/mansui-social.png')
+  expect(
+    document.querySelector('meta[property="og:image:type"]')
+  ).toHaveAttribute('content', 'image/png')
+  expect(
+    document.querySelector('meta[property="og:image:width"]')
+  ).toHaveAttribute('content', '1200')
+  expect(
+    document.querySelector('meta[property="og:image:height"]')
+  ).toHaveAttribute('content', '630')
   expect(document.querySelectorAll('script#site-jsonld')).toHaveLength(1)
   expect(
     JSON.parse(
