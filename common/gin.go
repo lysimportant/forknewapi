@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -288,6 +289,40 @@ func ParseMultipartFormReusable(c *gin.Context) (*multipart.Form, error) {
 	}
 	c.Request.Body = io.NopCloser(storage)
 	return form, nil
+}
+
+// MultipartFileReference 为字段 field 的第 index 个上传文件生成请求内引用。
+// index 为从零开始的文件顺序；首个文件保留旧引用格式，后续文件使用独立命名空间。
+// 返回值仅供插件原样传回宿主，不包含文件内容或路径。
+func MultipartFileReference(field string, index int) string {
+	if index == 0 {
+		return "request_file:" + field
+	}
+	return "request_file_index:" + strconv.Itoa(index) + ":" + field
+}
+
+// ResolveMultipartFileReference 根据 ref 读取 form 中对应的上传文件头，不打开文件。
+// 旧引用读取字段的首个文件；索引引用读取同字段的指定文件，字段名可包含冒号。
+// 格式无效、索引溢出、字段不存在或索引越界时返回错误，不能回退到首个文件。
+func ResolveMultipartFileReference(form *multipart.Form, ref string) (*multipart.FileHeader, error) {
+	field, legacy := strings.CutPrefix(ref, "request_file:")
+	index := 0
+	if !legacy {
+		indexed, ok := strings.CutPrefix(ref, "request_file_index:")
+		if !ok {
+			return nil, fmt.Errorf("invalid file reference %q", ref)
+		}
+		rawIndex, indexedField, found := strings.Cut(indexed, ":")
+		parsed, err := strconv.Atoi(rawIndex)
+		if !found || err != nil || parsed <= 0 || strconv.Itoa(parsed) != rawIndex {
+			return nil, fmt.Errorf("invalid file reference %q", ref)
+		}
+		field, index = indexedField, parsed
+	}
+	if field == "" || form == nil || index >= len(form.File[field]) {
+		return nil, fmt.Errorf("unknown file reference %q", ref)
+	}
+	return form.File[field][index], nil
 }
 
 func processFormMap(formMap map[string]any, v any) error {

@@ -268,28 +268,27 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 				}
 				continue
 			}
-			field := strings.TrimPrefix(part.FileRef, "request_file:")
-			files := form.File[field]
-			if len(files) == 0 {
-				return nil, fmt.Errorf("unknown file reference %q", part.FileRef)
+			header, resolveErr := common.ResolveMultipartFileReference(form, part.FileRef)
+			if resolveErr != nil {
+				return nil, resolveErr
 			}
-			file, openErr := files[0].Open()
+			file, openErr := header.Open()
 			if openErr != nil {
 				return nil, openErr
 			}
 			filename := part.Filename
 			if filename == "" {
-				filename = files[0].Filename
+				filename = header.Filename
 			}
-			header := make(textproto.MIMEHeader)
+			partHeader := make(textproto.MIMEHeader)
 			disposition := mime.FormatMediaType("form-data", map[string]string{"name": part.Name, "filename": filename})
 			if disposition == "" {
 				file.Close()
 				return nil, fmt.Errorf("invalid multipart name or filename")
 			}
-			header.Set("Content-Disposition", disposition)
-			header.Set("Content-Type", files[0].Header.Get("Content-Type"))
-			destination, copyErr := writer.CreatePart(header)
+			partHeader.Set("Content-Disposition", disposition)
+			partHeader.Set("Content-Type", header.Header.Get("Content-Type"))
+			destination, copyErr := writer.CreatePart(partHeader)
 			if copyErr == nil {
 				_, copyErr = io.Copy(destination, file)
 			}
@@ -389,15 +388,10 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 	if encoding != "base64" && encoding != "dataUrl" {
 		return "", fmt.Errorf("file placeholder encoding must be \"base64\" or \"dataUrl\"")
 	}
-	if form == nil {
-		return "", fmt.Errorf("unknown file reference %q", ref)
+	header, resolveErr := common.ResolveMultipartFileReference(form, ref)
+	if resolveErr != nil {
+		return "", resolveErr
 	}
-	field := strings.TrimPrefix(ref, "request_file:")
-	files := form.File[field]
-	if len(files) == 0 {
-		return "", fmt.Errorf("unknown file reference %q", ref)
-	}
-	header := files[0]
 	maxBytes := limit
 	if raw, exists := placeholder["maxBytes"]; exists {
 		n, ok := usageNumber(raw, false)
@@ -1316,8 +1310,8 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 				if form, err := common.ParseMultipartFormReusable(c); err == nil {
 					defer form.RemoveAll()
 					for field, headers := range form.File {
-						for _, header := range headers {
-							files = append(files, map[string]any{"ref": "request_file:" + field, "field": field, "filename": header.Filename, "mimeType": header.Header.Get("Content-Type"), "size": header.Size})
+						for index, header := range headers {
+							files = append(files, map[string]any{"ref": common.MultipartFileReference(field, index), "field": field, "filename": header.Filename, "mimeType": header.Header.Get("Content-Type"), "size": header.Size})
 						}
 					}
 				}

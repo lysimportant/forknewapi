@@ -296,6 +296,10 @@ func TestBuildTaskPluginRouteRequestBodyUnion(t *testing.T) {
 	require.NoError(t, err)
 	_, err = file.Write([]byte("file bytes stay in Go"))
 	require.NoError(t, err)
+	file, err = writer.CreateFormFile("input", "second.png")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("second file stays in Go"))
+	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/body", bytes.NewReader(multipartBody.Bytes()))
@@ -306,9 +310,13 @@ func TestBuildTaskPluginRouteRequestBodyUnion(t *testing.T) {
 	assert.Equal(t, string(jsplugin.BodyMultipart), decodedBody["kind"])
 	assert.Equal(t, []string{"one", "two"}, decodedBody["fields"].(map[string][]string)["tag"])
 	files := decodedBody["files"].([]map[string]any)
-	require.Len(t, files, 1)
+	require.Len(t, files, 2)
 	assert.Equal(t, "image.png", files[0]["filename"])
-	assert.NotContains(t, fmt.Sprint(files[0]), "file bytes stay in Go")
+	assert.Equal(t, "request_file:input", files[0]["ref"])
+	assert.Equal(t, "second.png", files[1]["filename"])
+	assert.Equal(t, "request_file_index:1:input", files[1]["ref"])
+	assert.NotContains(t, fmt.Sprint(files), "file bytes stay in Go")
+	assert.NotContains(t, fmt.Sprint(files), "second file stays in Go")
 }
 
 func TestBuildTaskPluginRouteRequestRejectsUnsafeBodies(t *testing.T) {

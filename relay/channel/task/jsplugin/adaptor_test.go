@@ -84,7 +84,7 @@ func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {
 	source := `
 export const meta = {apiVersion:1,key:"multipart",name:"Multipart",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
-export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",bodyType:"multipart",parts:[{name:"model",value:"m"},{name:"input_reference",fileRef:ctx.files[0].ref}]}; }
+export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",bodyType:"multipart",parts:[{name:"model",value:"m"}].concat(ctx.files.map(function(file){return {name:file.field,fileRef:file.ref};}))}; }
 export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function buildQueryRequest(){return {url:"https://example.com"}} export function parseTaskResult(){return {status:"SUCCESS"}}
 `
 	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
@@ -98,6 +98,10 @@ export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function 
 	require.NoError(t, err)
 	_, err = file.Write([]byte("image-bytes"))
 	require.NoError(t, err)
+	file, err = writer.CreateFormFile("input_reference", "second.png")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("second-image-bytes"))
+	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(input.Bytes()))
@@ -110,25 +114,33 @@ export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function 
 	reader := multipart.NewReader(bytes.NewReader(requestBytes), strings.TrimPrefix(c.GetHeader("Content-Type"), "multipart/form-data; boundary="))
 	form, err := reader.ReadForm(1024)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, form.RemoveAll()) })
 	assert.Equal(t, []string{"m"}, form.Value["model"])
-	require.Len(t, form.File["input_reference"], 1)
-	opened, err := form.File["input_reference"][0].Open()
-	require.NoError(t, err)
-	content, err := io.ReadAll(opened)
-	require.NoError(t, err)
-	assert.Equal(t, "image-bytes", string(content))
+	require.Len(t, form.File["input_reference"], 2)
+	for index, expected := range []struct{ filename, content string }{{"ref.png", "image-bytes"}, {"second.png", "second-image-bytes"}} {
+		header := form.File["input_reference"][index]
+		assert.Equal(t, expected.filename, header.Filename)
+		opened, openErr := header.Open()
+		require.NoError(t, openErr)
+		content, readErr := io.ReadAll(opened)
+		require.NoError(t, opened.Close())
+		require.NoError(t, readErr)
+		assert.Equal(t, expected.content, string(content))
+	}
 }
 
 func TestTaskAdaptorInlinesJSONFilePlaceholders(t *testing.T) {
 	const fileBytes = "image-bytes"
+	const secondFileBytes = "second-image-bytes"
 	encoded := base64.StdEncoding.EncodeToString([]byte(fileBytes))
+	secondEncoded := base64.StdEncoding.EncodeToString([]byte(secondFileBytes))
 	source := `
 export const meta = {apiVersion:1,key:"json-inline",name:"JSON Inline",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
 export function buildSubmitRequest(ctx) {
   return {url:ctx.baseUrl+"/submit",body:{
     prompt:"p",
     image:{__fileRef:ctx.files[0].ref,encoding:"base64"},
-    nested:{items:[{__fileRef:ctx.files[0].ref,encoding:"dataUrl",mimeType:"image/png"}]},
+    nested:{items:[{__fileRef:ctx.files[0].ref,encoding:"dataUrl",mimeType:"image/png"},{__fileRef:ctx.files[1].ref,encoding:"dataUrl"}]},
     dataUrl:{__fileRef:ctx.files[0].ref,encoding:"dataUrl"}
   }};
 }
@@ -139,7 +151,7 @@ export function parseSubmitResponse(){return {taskId:"1"}} export function build
 	adaptor := New(plugin)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
 	adaptor.Init(info)
-	c := newMultipartFileContext(t, "input_reference", "ref.png", "image/jpeg", []byte(fileBytes))
+	c := newMultipartFileContext(t, "input_reference:frame", "ref.png", "image/jpeg", []byte(fileBytes), []byte(secondFileBytes))
 	c.Set("task_request", map[string]any{"prompt": "p"})
 	body, err := adaptor.BuildRequestBody(c, info)
 	require.NoError(t, err)
@@ -151,8 +163,9 @@ export function parseSubmitResponse(){return {taskId:"1"}} export function build
 	assert.Equal(t, encoded, decoded["image"])
 	nested := decoded["nested"].(map[string]any)
 	items := nested["items"].([]any)
-	require.Len(t, items, 1)
+	require.Len(t, items, 2)
 	assert.Equal(t, "data:image/png;base64,"+encoded, items[0])
+	assert.Equal(t, "data:image/jpeg;base64,"+secondEncoded, items[1])
 	assert.Equal(t, "data:image/jpeg;base64,"+encoded, decoded["dataUrl"])
 }
 
@@ -162,9 +175,19 @@ func TestTaskAdaptorJSONFilePlaceholderErrors(t *testing.T) {
 		part        string
 		fileSize    int
 		globalMB    int
+		multipart   bool
 		wantContain string
 	}{
 		{name: "unknown ref", part: `{__fileRef:"request_file:missing",encoding:"base64"}`, fileSize: 4, wantContain: `unknown file reference "request_file:missing"`},
+		{name: "multipart unknown ref", part: `{name:"images",fileRef:"request_file:missing"}`, fileSize: 4, multipart: true, wantContain: "unknown file reference"},
+		{name: "multipart indexed out of range", part: `{name:"images",fileRef:"request_file_index:1:input_reference"}`, fileSize: 4, multipart: true, wantContain: "unknown file reference"},
+		{name: "indexed unknown field", part: `{__fileRef:"request_file_index:1:missing",encoding:"base64"}`, fileSize: 4, wantContain: "unknown file reference"},
+		{name: "indexed out of range", part: `{__fileRef:"request_file_index:1:input_reference",encoding:"base64"}`, fileSize: 4, wantContain: "unknown file reference"},
+		{name: "indexed negative", part: `{__fileRef:"request_file_index:-1:input_reference",encoding:"base64"}`, fileSize: 4, wantContain: "invalid file reference"},
+		{name: "indexed overflow", part: `{__fileRef:"request_file_index:18446744073709551616:input_reference",encoding:"base64"}`, fileSize: 4, wantContain: "invalid file reference"},
+		{name: "indexed noncanonical", part: `{__fileRef:"request_file_index:01:input_reference",encoding:"base64"}`, fileSize: 4, wantContain: "invalid file reference"},
+		{name: "indexed zero", part: `{__fileRef:"request_file_index:0:input_reference",encoding:"base64"}`, fileSize: 4, wantContain: "invalid file reference"},
+		{name: "indexed missing separator", part: `{__fileRef:"request_file_index:1",encoding:"base64"}`, fileSize: 4, wantContain: "invalid file reference"},
 		{name: "extra key", part: `{__fileRef:"request_file:input_reference",encoding:"base64",extra:true}`, fileSize: 4, wantContain: "invalid file placeholder"},
 		{name: "missing encoding", part: `{__fileRef:"request_file:input_reference"}`, fileSize: 4, wantContain: "encoding"},
 		{name: "oversize maxBytes", part: `{__fileRef:"request_file:input_reference",encoding:"base64",maxBytes:3}`, fileSize: 4, wantContain: "3 byte limit"},
@@ -178,11 +201,15 @@ func TestTaskAdaptorJSONFilePlaceholderErrors(t *testing.T) {
 				constant.MaxFileDownloadMB = testCase.globalMB
 				t.Cleanup(func() { constant.MaxFileDownloadMB = previous })
 			}
+			descriptor := "body:" + testCase.part
+			if testCase.multipart {
+				descriptor = "bodyType:\"multipart\",parts:[" + testCase.part + "]"
+			}
 			source := strings.Replace(`
 export const meta = {apiVersion:1,key:"json-inline-err",name:"JSON Inline Err",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
-export function buildSubmitRequest() { return {url:"https://provider.example/submit",body:PLACEHOLDER}; }
+export function buildSubmitRequest() { return {url:"https://provider.example/submit",DESCRIPTOR}; }
 export function parseSubmitResponse(){return {taskId:"1"}} export function buildQueryRequest(){return {url:"https://example.com"}} export function parseTaskResult(){return {status:"SUCCESS"}}
-`, "PLACEHOLDER", testCase.part, 1)
+`, "DESCRIPTOR", descriptor, 1)
 			plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
 			require.NoError(t, err)
 			adaptor := New(plugin)
@@ -197,17 +224,20 @@ export function parseSubmitResponse(){return {taskId:"1"}} export function build
 	}
 }
 
-func newMultipartFileContext(t *testing.T, field, filename, contentType string, content []byte) *gin.Context {
+// newMultipartFileContext 构造同字段的文件上传；contents 保留各文件的顺序与独立内容。
+func newMultipartFileContext(t *testing.T, field, filename, contentType string, contents ...[]byte) *gin.Context {
 	t.Helper()
 	var input bytes.Buffer
 	writer := multipart.NewWriter(&input)
-	part, err := writer.CreatePart(textproto.MIMEHeader{
-		"Content-Disposition": {`form-data; name="` + field + `"; filename="` + filename + `"`},
-		"Content-Type":        {contentType},
-	})
-	require.NoError(t, err)
-	_, err = part.Write(content)
-	require.NoError(t, err)
+	for _, content := range contents {
+		part, err := writer.CreatePart(textproto.MIMEHeader{
+			"Content-Disposition": {`form-data; name="` + field + `"; filename="` + filename + `"`},
+			"Content-Type":        {contentType},
+		})
+		require.NoError(t, err)
+		_, err = part.Write(content)
+		require.NoError(t, err)
+	}
 	require.NoError(t, writer.Close())
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(input.Bytes()))

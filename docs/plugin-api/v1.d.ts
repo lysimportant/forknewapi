@@ -15,6 +15,7 @@ export interface HostUtils {
   volcSignV4(request: {method: string; url: string; headers?: Record<string, string>; body?: string; accessKey: string; secretKey: string; region?: string; service?: string; timestamp?: number}): Record<string, string>;
 }
 declare global {const utils: HostUtils;}
+/** 请求内文件引用；同名字段各文件拥有独立 ref，插件应原样使用，不根据 field 拼接。 */
 export type FileReference = Readonly<{ref: string; field: string; filename: string; mimeType: string; size: number}>;
 export type FilePlaceholder = Readonly<{__fileRef: string; encoding: "base64" | "dataUrl"; mimeType?: string; maxBytes?: number}>;
 export type DecodedBody =
