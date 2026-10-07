@@ -251,6 +251,87 @@ func TestMoonAdditionalModelsContracts(t *testing.T) {
 		assert.Equal(t, "reference_to_video", request["action"])
 	})
 
+	t.Run("底价协议入口最终只发送有序图片URL", func(t *testing.T) {
+		images := []any{"https://cdn.example/first.jpg?X-Amz-Signature=fixture%2Fvalue&X-Amz-Expires=600", "https://cdn.example/second.jpg"}
+		for _, tc := range []struct {
+			name, protocol string
+			body           map[string]any
+		}{
+			{
+				name: "Canvas", protocol: "openai_video",
+				body: map[string]any{
+					"model": "sd2-930-fast", "prompt": "@图片1 @图片2", "seconds": 5,
+					"metadata": map[string]any{
+						"resolution": "720p", "ratio": "16:9",
+						"content": []any{
+							map[string]any{"type": "text", "text": "@图片1 @图片2"},
+							map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": images[0]}},
+							map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": images[1]}},
+						},
+					},
+				},
+			},
+			{
+				name: "Responses", protocol: "openai_responses",
+				body: map[string]any{
+					"model": "sd2-930-fast", "seconds": 5, "resolution": "720p", "ratio": "16:9",
+					"input": []any{map[string]any{"role": "user", "content": []any{
+						map[string]any{"type": "input_text", "text": "@图片1 @图片2"},
+						map[string]any{"type": "input_image", "image_url": images[0]},
+						map[string]any{"type": "input_image", "image_url": images[1]},
+					}}},
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{tc.protocol, "decodeRequest"}, map[string]any{
+					"model": "sd2-930-fast", "body": map[string]any{"kind": "json", "value": tc.body},
+				})
+				require.NoError(t, callErr)
+				encoded, marshalErr := common.Marshal(value)
+				require.NoError(t, marshalErr)
+				var decoded struct {
+					Action      string         `json:"action"`
+					RequestBody map[string]any `json:"requestBody"`
+				}
+				require.NoError(t, common.Unmarshal(encoded, &decoded))
+				assert.Equal(t, "reference_to_video", decoded.Action)
+
+				request := submit(t, "sd2-930-fast", decoded.RequestBody)
+				assert.Equal(t, "POST", request["method"])
+				assert.Equal(t, "https://moon.example/proxy/v1/videos", request["url"])
+				assert.Equal(t, true, request["noRetry"])
+				headers, ok := request["headers"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "task-additional", headers["Idempotency-Key"])
+				upstreamBody, ok := request["body"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, images, upstreamBody["images"])
+
+				facts := callObject(t, "extractUsage", map[string]any{
+					"upstreamModel": "sd2-930-fast", "usagePurpose": "facts", "requestBody": decoded.RequestBody,
+				})
+				assert.Equal(t, float64(2), facts["image_input_count"])
+				assert.Equal(t, float64(0), facts["video_input_count"])
+			})
+		}
+	})
+
+	t.Run("底价首尾帧不降级为普通参考图", func(t *testing.T) {
+		for _, role := range []string{"first_frame", "last_frame"} {
+			t.Run(role, func(t *testing.T) {
+				_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"upstreamModel": "sd2-930-fast", "baseUrl": "https://moon.example/v1", "apiKey": "fixture", "publicTaskId": "task-frame",
+					"requestBody": map[string]any{
+						"prompt": "frame", "seconds": 5, "resolution": "720p",
+						"images": []any{map[string]any{"url": "https://cdn.example/frame.jpg", "role": role}},
+					},
+				})
+				require.ErrorContains(t, callErr, "Moon budget plugin does not support first_frame or last_frame roles")
+			})
+		}
+	})
+
 	t.Run("Seedance下界、自动时长与纯音频可提交", func(t *testing.T) {
 		for _, tc := range []struct {
 			model      string

@@ -294,3 +294,55 @@ u("resolution") == "1080p"
 本轮仅修改 Moon 插件、既有合同测试与验证文档；无数据库、依赖、前端或宿主插件 API 迁移，未修改实际售价，未使用真实 Moon Key 发起付费生成，也未部署生产。回滚前先把新 Grok 表达式改回旧插件可识别的配置，等待新版插件创建的在途任务完成，再恢复旧插件版本。
 
 验证：插件 CLI lint、Moon oxlint/oxfmt、Moon 集中合同测试、`go vet -mod=readonly ./...` 和 `go build -mod=readonly ./...` 通过；全仓 `go test -mod=readonly ./... -count=1 -timeout=240s` 首次运行返回失败且未保留完整输出，第二次完整运行通过。真实账号模型权限、当前分组价格、上游任务和最终成片仍待外部验收。
+
+## 2026-10-07 底价参考图 URL 格式修复
+
+本轮 P1，基线 `main@ac5ae9c91`、Moon `1.6.0`，工作区原先干净；Go 1.26.0、Node 24.12.0，使用已有依赖。目标是复现并修正 Canvas 普通参考图片进入 Moon 底价渠道后的外发格式，并验证同一任务的查询和制品获取。验收不涉及生产部署、对象存储迁移、用户项目改写、价格调整或其他模型适配。
+
+生产失败任务的网关记录显示 Moon `1.6.0` 返回 `invalid_reference`。本地红测确认：Canvas 的 `metadata.content` 图片在插件中变成 `images: [{url, role: "reference_image"}]`，原先直接发给上游；旧测试只覆盖 URL 字符串数组。Moon 公开底价文档描述 URL 引用，未声明该图片对象结构。本次 `1.6.1` 将底价图片字段 `images`、`image_urls`、`image_refs`、`reference_images` 中的普通图片对象转换为 URL 字符串，保留顺序、重复条目和原始查询参数。Canvas/Responses 解码、精确模型 ID、计费数量、幂等头及 `noRetry` 保护继续保留。
+
+URL 数组无法表达首尾帧角色，且当前没有确认该系列的首尾帧映射合同，因此 `first_frame` / `last_frame` 在供应商 POST 和扣费前明确拒绝，不再静默当普通图片提交。已有字符串输入和其他模型系列保持原合同。本次没有数据库 schema、依赖、宿主 Plugin API v1 或价格迁移；回滚前等待在途任务结算并保留任务和日志，再恢复之前的插件，不能靠重新生成恢复结果。
+
+### 本地验证
+
+- 定向红绿回归覆盖 Canvas 与 Responses 的最终外发 URL 数组、顺序、计费图片数、幂等头、`noRetry` 和首尾帧拒绝；全部 Moon 合同及 `go test -mod=readonly ./plugins -count=1` 通过。
+- 隔离真实 HTTP 链：Canvas 内存 API `18337` → New API 独立 SQLite 实例 `18335` → Moon Mock `18336`。使用合成账号、凭据和 PNG；冻结 v1 后建立 v2，仍读取 v1；Range 预检 206，同一签名链接匿名 GET 200。合成 HTTPS 来源仅在 Mock 中精确映射到本地端口，不代表公网 TLS 验收。
+- 首帧负例 400，Mock 创建次数为 0，余额未改变。普通参考图只创建一次，最终外发字符串与原签名 URL 逐字一致；任务完成后从原任务内容接口取回合成 MP4 头，计费 `9 * 0.01 + 1 * 0.02` 对应 55,000 quota。该 MP4 头只验证传输合同，不表示可播放成片。
+- 本地脚本、脱敏报告和发送检查点在忽略目录 `.local-tests/moon-reference-20261007/`；Canvas 夹具在其仓库 `.local-tests/moon-reference-bridge/`。已有 `8080` Compose 环境和用户数据未改动。
+- 本轮全仓 `go test -mod=readonly ./... -count=1 -timeout=240s`、`go vet -mod=readonly ./...`、`go build -mod=readonly ./...` 通过；全仓测试之后仅收紧错误文案并补强两个角色和签名查询串测试，专项重新通过。插件 CLI lint、Moon oxlint/oxfmt、文档格式、差异及真实凭据扫描通过。未改前端、数据库或独立 relaykit 模块，未重复这些层级的额外矩阵。
+
+### 一次真实请求
+
+用户提供临时测试凭据并授权一次最小视频测试。只在内存读取视频 Key，不存入测试数据库、报告或源码。实时目录确认 `sd2-930-fast` 可用；当前 720p 单价为 0.3 美元/秒、图片输入单价 0、视频分组倍率 1，因此 5 秒预估 1.5 美元。
+
+修复后的本地插件对 Canvas 格式解码并构造以下请求，再通过现有线上 New API 转发；线上插件尚未升级，但原有字符串数组路径可直接接收此 body。未修改生产插件或渠道设置。请求前匿名 GET 图片返回 200、`image/jpeg`、69,636 字节，SHA-256 与项目公开演示图相同。
+
+```http
+POST https://api.lolicon.beer/v1/videos
+Content-Type: application/json
+Authorization: Bearer <临时视频 Key，未记录>
+Idempotency-Key: moon-reference-4badb943-905b-46ce-8829-9cc98bbf3ae2
+```
+
+```json
+{
+  "model": "sd2-930-fast",
+  "prompt": "Use @图片1 as the visual reference. A gentle breeze moves the green leaves around the flower bud. Keep the original composition, natural lighting, and a fixed camera. No text or logos.",
+  "seconds": 5,
+  "images": ["https://love.lolicon.beer/demo/field-study-poster.jpg"],
+  "resolution": "720p",
+  "ratio": "16:9"
+}
+```
+
+北京时间 14:18:45 发起，14:18:49 收到 HTTP 200 / queued，任务 `task_LQtrgo1g9LAsKjD6qcRHuYzzeFeQj9Og`，网关请求 ID `202610070618448616319178268d9d6HpBhOhiy`。发送前以独占写入方式保存意图，创建次数为 1，随后只查询 `GET /v1/videos/{taskId}`。14:21:13 查询为 `in_progress / 40%`；14:22:25 查询为 `completed / 100%`，任务记录创建到完成相差 193 秒。14:24:16 再查令牌日志，同一请求仍只有 750,000 quota 的消费记录（按当前 500,000 quota/美元为 1.5 美元）。
+
+随后通过 `GET /v1/videos/task_LQtrgo1g9LAsKjD6qcRHuYzzeFeQj9Og/content` 成功取回 `video/mp4`，1,053,895 字节，SHA-256 为 `c38b0fbc8191a439bf1cd2e6bccab4adfbebab5648cc5b0ffcbc8090cafb1d0c`。独立 Chromium 实际解码并播放超过 1 秒，尺寸 1280×720、容器时长约 5.167 秒，媒体和页面错误均为 0；检查截图与参考图均为花苞和绿叶。视频、截图和播放验证报告仅保留在本地忽略目录，不提交媒体产物。
+
+这证明修复后的字符串格式完成了本次真实创建、查询和视频取回，不能据此宣称原生产签名 URL 已被供应商读取：真实测试使用公开静态演示图；签名素材路由只完成本地跨项目联调。
+
+### 部署与剩余验收
+
+本次实际修复在 New API Moon 插件。更新并重启 New API 内置插件，或在现有兼容宿主的「任务插件」页面上传本次 `plugins/tasks/moon/plugin.js`，确认生效版本为 `1.6.1`。若存在自定义覆盖版，仅重建内置版本不一定生效，应检查正在运行的插件版本；不要删除已有配置来试错。Canvas 已有 `7c7c1f1` 的素材签名及预检实现，本次只补充跨项目检查点，无需再改 `.env` 或购买 OSS。
+
+原项目签名素材的供应商实际可达性仍需用户部署后验收；普通图片测试不能证明音频、视频参考和首尾帧合同。保留旧任务 ID，已有任务只查询、下载，不重新创建。

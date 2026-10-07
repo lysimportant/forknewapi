@@ -158,7 +158,7 @@ const PT_FIELDS = [
   "generate_audio",
   "generateAudio",
 ];
-/** 底价渠道公开的 JSON 参数，不接收上传、内联媒体或隐式转换。 */
+/** 底价渠道公开的 JSON 参数；图片对象仅兼容宿主标准引用，提交时转换为 URL。 */
 const BUDGET_FIELDS = [
   "model",
   "prompt",
@@ -327,7 +327,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, ArtsDance, PT, budget, MiniMax H3, and Grok models",
     zh: "Moon Wan、Seedance、ArtsDance、官转、底价、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.6.0",
+  version: "1.6.1",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -875,7 +875,7 @@ function validatePTRequest(req, model) {
   };
 }
 
-/** 底价渠道允许素材字段原序透传，但每一项仍须为公网 URL 且符合模型上限。 */
+/** 底价渠道允许素材字段并保持原序，但每一项仍须为公网 URL 且符合模型上限。 */
 function validateBudgetRequest(req, model) {
   validateTopLevelFields(req, BUDGET_FIELDS, false);
   if (typeof req.prompt !== "string" || !req.prompt.trim() || req.prompt.length > 5000) throw new Error("Moon budget prompt must contain 1 to 5000 characters");
@@ -905,8 +905,9 @@ function validateBudgetRequest(req, model) {
           Object.keys(media).some((key) => !["url", ...(type === "images" ? ["role"] : ["durationSeconds"])].includes(key))
         )
           throw new Error("Moon budget references require public HTTP(S) URLs");
-        if (type === "images" && media.role !== undefined && !["first_frame", "last_frame", "reference_image"].includes(media.role))
-          throw new Error("unsupported Moon budget image role");
+        if (type === "images" && ["first_frame", "last_frame"].includes(media.role))
+          throw new Error("Moon budget plugin does not support first_frame or last_frame roles");
+        if (type === "images" && media.role !== undefined && media.role !== "reference_image") throw new Error("unsupported Moon budget image role");
         if (media.durationSeconds !== undefined) ptReferenceDuration(media.durationSeconds);
         counts[type]++;
       }
@@ -1374,6 +1375,8 @@ function normalizeRequest(req, model, facts) {
     } else {
       values.seconds = facts.duration;
       delete values.duration;
+      for (const field of ["images", "image_urls", "image_refs", "reference_images"])
+        if (values[field] !== undefined) values[field] = values[field].map((item) => (typeof item === "string" ? item : item.url));
     }
     return values;
   }
