@@ -55,7 +55,7 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "lysimportant/forknewapi" },
   description: {
     en: "Image2Pro text and reference-image video generation; optional audio/video references require upstream support",
@@ -73,9 +73,9 @@ export const meta = {
   },
 };
 
-/** 校验无内嵌凭据、控制字符和反斜杠的绝对 HTTP(S) 地址。 */
+/** 先排除 data URL，避免扫描整段 Base64；HTTP(S) 地址仍拒绝内嵌凭据、控制字符和反斜杠。 */
 function isHTTPURL(value) {
-  if (typeof value !== "string" || /[\s\\]/.test(value)) return false;
+  if (typeof value !== "string" || !/^https?:\/\//i.test(value) || /[\s\\]/.test(value)) return false;
   for (const character of value) if (character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) return false;
   return /^https?:\/\/(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]+)?(?:[/?#].*)?$/i.test(value);
 }

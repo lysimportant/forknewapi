@@ -1,6 +1,10 @@
 package plugins_test
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -109,6 +113,92 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		assert.Equal(t, []any{url, url, "data:image/png;base64,aW1hZ2U="}, req["images"])
 		assert.Equal(t, "image_to_video", intent["action"])
 	})
+
+	t.Run("FullHD图片DataURL在默认引擎期限内解码并构造提交", func(t *testing.T) {
+		frame := image.NewNRGBA(image.Rect(0, 0, 1920, 1080))
+		for y := range frame.Rect.Dy() {
+			for x := range frame.Rect.Dx() {
+				offset := frame.PixOffset(x, y)
+				frame.Pix[offset] = byte(x)
+				frame.Pix[offset+1] = byte(y)
+				frame.Pix[offset+2] = byte(x ^ y)
+				frame.Pix[offset+3] = 255
+			}
+		}
+		// 无压缩 PNG 保留 Full-HD 素材的实际体积，避免纯色压缩后退化成短字符串用例。
+		var imageBytes bytes.Buffer
+		encoder := png.Encoder{CompressionLevel: png.NoCompression}
+		require.NoError(t, encoder.Encode(&imageBytes, frame))
+		config, decodeErr := png.DecodeConfig(bytes.NewReader(imageBytes.Bytes()))
+		require.NoError(t, decodeErr)
+		assert.Equal(t, 1920, config.Width)
+		assert.Equal(t, 1080, config.Height)
+		dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes.Bytes())
+
+		// 注册保持 Options{}；两个协议都使用真实 Sobek 默认期限，不设置机器相关的毫秒阈值。
+		for _, protocol := range []string{"openai_video", "openai_responses"} {
+			t.Run(protocol, func(t *testing.T) {
+				body := map[string]any{"model": models[1], "seconds": 5}
+				if protocol == "openai_video" {
+					body["images"] = []string{dataURL}
+				} else {
+					body["input"] = []any{map[string]any{"role": "user", "content": []any{
+						map[string]any{"type": "input_image", "image_url": dataURL},
+					}}}
+				}
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{protocol, "decodeRequest"}, map[string]any{
+					"model": models[1], "body": map[string]any{"kind": "json", "value": body},
+				})
+				require.NoError(t, callErr)
+				encoded, marshalErr := common.Marshal(value)
+				require.NoError(t, marshalErr)
+				var intent map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &intent))
+				assert.Equal(t, "image_to_video", intent["action"])
+				request := intent["requestBody"].(map[string]any)
+				images := request["images"].([]any)
+				require.Len(t, images, 1)
+				assert.True(t, images[0] == dataURL, "解码必须完整保留 Data URL")
+
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"model": models[1], "upstreamModel": models[1], "requestBody": request,
+					"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1", "publicTaskId": "task_full_hd_fixture",
+				})
+				require.NoError(t, callErr)
+				encoded, marshalErr = common.Marshal(value)
+				require.NoError(t, marshalErr)
+				var descriptor map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &descriptor))
+				assert.Equal(t, "https://upstream.example/v1/videos", descriptor["url"])
+				assert.Equal(t, true, descriptor["noRetry"])
+				sent := descriptor["body"].(map[string]any)
+				images = sent["images"].([]any)
+				require.Len(t, images, 1)
+				assert.True(t, images[0] == dataURL, "提交构造不得裁切或替换 Data URL")
+			})
+		}
+	})
+
+	for _, spec := range []struct{ name, url string }{
+		{"内嵌凭据", "https://fixture-user:fixture-password@cdn.example/ref.png"},
+		{"控制字符", "https://cdn.example/ref.png?value=\x7f"},
+		{"空白", "https://cdn.example/ref image.png"},
+		{"反斜杠", `https://cdn.example\ref.png`},
+		{"非HTTP协议", "ftp://cdn.example/ref.png"},
+	} {
+		t.Run("拒绝不安全地址_"+spec.name, func(t *testing.T) {
+			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": models[1], "body": map[string]any{"kind": "json", "value": map[string]any{
+					"seconds": 5, "images": []string{spec.url},
+				}},
+			})
+			require.ErrorContains(t, callErr, "references must be HTTP(S) URLs")
+			_, callErr = plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
+				"artifactKey": "video", "data": map[string]any{"url": spec.url}, "clientRequest": map[string]any{"method": "GET"},
+			})
+			require.ErrorContains(t, callErr, "video URL is unavailable")
+		})
+	}
 
 	t.Run("同名上传字段使用独立文件引用", func(t *testing.T) {
 		files := []any{
