@@ -13,6 +13,7 @@
     "baseUrl": {"type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 191},
     "modelDiscovery": {"type": "object", "additionalProperties": false, "required": ["protocol", "path"], "properties": {"protocol": {"enum": ["openai", "gemini", "bailian"]}, "path": {"type": "string", "maxLength": 512, "pattern": "^/(?!/)(?!\\.{1,2}(?:/|$))(?!.*//)(?!.*?/\\.{1,2}(?:/|$))[A-Za-z0-9._~/-]+$"}}, "description": "管理页读取上游模型目录的协议及本地绝对路径；不声明时仅载入插件模型，不验证账号权限"},
     "channelTypes": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1}}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "modelAliases": {"type": "object", "propertyNames": {"type": "string", "minLength": 1, "maxLength": 200}, "additionalProperties": {"type": "string", "minLength": 1}, "description": "模型导入建议的客户端别名到 models 中精确上游 ID 的映射；每个上游最多一个别名，不扩大生成能力，不覆盖已有渠道映射"},
     "fetchMode": {"enum": ["per_task", "batch"]}, "allowedHosts": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "protocols": {"type": "array", "uniqueItems": true, "items": {"oneOf": [
       {"enum": ["openai_video"]},

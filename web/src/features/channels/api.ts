@@ -61,6 +61,8 @@ export type TaskPluginOption = {
   baseUrl?: string
   models: string[]
   modelDiscovery?: TaskPluginModelDiscovery
+  /** 插件建议的公开别名；模型目录响应决定本次可导入范围。 */
+  modelAliases?: Record<string, string>
   channelTypes?: number[] | null
 }
 

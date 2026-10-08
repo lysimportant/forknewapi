@@ -101,6 +101,7 @@ type Meta struct {
 	BaseURL              string                      `json:"baseUrl,omitempty"`
 	ChannelTypes         []int                       `json:"channelTypes,omitempty"`
 	Models               []string                    `json:"models"`
+	ModelAliases         map[string]string           `json:"modelAliases,omitempty"` // ModelAliases 建议的客户端别名到已适配模型的映射；仅模型导入使用，不扩大路由范围。
 	ModelDiscovery       *ModelDiscovery             `json:"modelDiscovery,omitempty"`
 	FetchMode            string                      `json:"fetchMode"`
 	AllowedHosts         []string                    `json:"allowedHosts"`
@@ -990,7 +991,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "modelAliases", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}
@@ -1098,6 +1099,20 @@ func decodeMeta(value any) (Meta, error) {
 	meta.Models, err = strictStringSlice(object, "models")
 	if err != nil {
 		return Meta{}, err
+	}
+	if rawAliases, present := object["modelAliases"]; present {
+		aliases, ok := rawAliases.(map[string]any)
+		if !ok {
+			return Meta{}, fmt.Errorf("plugin meta modelAliases must be an object")
+		}
+		meta.ModelAliases = make(map[string]string, len(aliases))
+		for alias, value := range aliases {
+			target, ok := value.(string)
+			if !ok {
+				return Meta{}, fmt.Errorf("plugin meta modelAliases targets must be strings")
+			}
+			meta.ModelAliases[alias] = target
+		}
 	}
 	meta.AllowedHosts, err = strictStringSlice(object, "allowedHosts")
 	if err != nil {
@@ -1318,6 +1333,29 @@ func normalizeV1Meta(meta *Meta) error {
 		}
 		seenFold[folded] = struct{}{}
 		models[model] = struct{}{}
+	}
+	aliasNames := make(map[string]bool, len(meta.ModelAliases))
+	aliasTargets := make(map[string]bool, len(meta.ModelAliases))
+	for alias, target := range meta.ModelAliases {
+		if alias == "" || strings.TrimSpace(alias) != alias || len(alias) > 200 || strings.Contains(alias, ",") {
+			return fmt.Errorf("plugin meta modelAliases names must be canonical and at most 200 bytes")
+		}
+		for _, character := range alias {
+			if unicode.IsControl(character) {
+				return fmt.Errorf("plugin meta modelAliases names must not contain control characters")
+			}
+		}
+		folded := asciiFold(alias)
+		if _, collision := seenFold[folded]; collision || aliasNames[folded] {
+			return fmt.Errorf("plugin meta modelAliases names must be unique and distinct from models case-insensitively")
+		}
+		if _, declared := models[target]; !declared {
+			return fmt.Errorf("plugin meta modelAliases target %q must exactly match a declared model", target)
+		}
+		if aliasTargets[target] {
+			return fmt.Errorf("plugin meta modelAliases must declare only one alias per model")
+		}
+		aliasNames[folded], aliasTargets[target] = true, true
 	}
 	hosts := make(map[string]struct{}, len(meta.AllowedHosts))
 	for index, host := range meta.AllowedHosts {

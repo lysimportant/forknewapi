@@ -668,6 +668,7 @@ func GetTaskPluginOptions(c *gin.Context) {
 				"sortPriority":   meta.SortPriority,
 				"website":        meta.Website,
 				"models":         meta.Models,
+				"modelAliases":   meta.ModelAliases,
 				"modelDiscovery": meta.ModelDiscovery,
 				"channelTypes":   meta.ChannelTypes,
 				"usageSchema":    meta.UsageSchema,

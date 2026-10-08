@@ -999,6 +999,42 @@ func TestRegistryModelDiscovery(t *testing.T) {
 	}
 }
 
+// TestRegistryModelAliases 验证别名只指向已适配模型，拒绝歧义、链式和非法映射。
+func TestRegistryModelAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		valid       bool
+	}{
+		{"旧插件", "", true},
+		{"建议别名", `modelAliases: {"Yuan-Video":"model"},`, true},
+		{"空对象", `modelAliases: {},`, true},
+		{"空值", `modelAliases: null,`, false},
+		{"数组", `modelAliases: [],`, false},
+		{"非字符串目标", `modelAliases: {"Yuan-Video":1},`, false},
+		{"目标未适配", `modelAliases: {"Yuan-Video":"unadapted"},`, false},
+		{"目标大小写不一致", `modelAliases: {"Yuan-Video":"MODEL"},`, false},
+		{"空别名", `modelAliases: {"":"model"},`, false},
+		{"别名前后空白", `modelAliases: {" Yuan-Video":"model"},`, false},
+		{"列表分隔符", `modelAliases: {"Yuan,Video":"model"},`, false},
+		{"别名大小写碰撞", `modelAliases: {"Yuan-Video":"model","yuan-video":"model"},`, false},
+		{"控制字符", `modelAliases: {"Yuan\nVideo":"model"},`, false},
+		{"别名碰撞上游", `modelAliases: {"MODEL":"model"},`, false},
+		{"同目标多别名", `modelAliases: {"Yuan-One":"model","Yuan-Two":"model"},`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded, err := CompilePlugin(routingTestPluginSource("aliases", 0, `["model"]`, tc.field, ""), Options{})
+			if !tc.valid {
+				require.ErrorContains(t, err, "modelAliases")
+				return
+			}
+			require.NoError(t, err)
+			if tc.name == "建议别名" {
+				assert.Equal(t, map[string]string{"Yuan-Video": "model"}, loaded.Meta.ModelAliases)
+			}
+		})
+	}
+}
+
 func TestRegistryNormalizesAllowedHosts(t *testing.T) {
 	tests := []struct {
 		name      string

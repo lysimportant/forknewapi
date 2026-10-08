@@ -367,6 +367,32 @@ type channelUpstreamModelCatalog struct {
 	Models            []string
 	Source            string
 	UnsupportedModels []string
+	ModelAliases      map[string]string
+}
+
+// discoveryResponse 将目录中已适配的上游模型显示为建议别名，附带待管理员保存的映射。
+// 内部 Models 仍为上游 ID，不影响自动更新检测；该方法不写入渠道或覆盖管理员配置。
+func (catalog channelUpstreamModelCatalog) discoveryResponse() gin.H {
+	models := append([]string{}, catalog.Models...)
+	mapping := make(map[string]string)
+	for index, upstream := range models {
+		for alias, target := range catalog.ModelAliases {
+			if upstream == target {
+				models[index] = alias
+				mapping[alias] = upstream
+				break
+			}
+		}
+	}
+	response := gin.H{"success": true, "message": "", "data": models}
+	if catalog.Source != "" {
+		response["source"] = catalog.Source
+		response["unsupported_models"] = catalog.UnsupportedModels
+	}
+	if len(mapping) > 0 {
+		response["model_mapping"] = mapping
+	}
+	return response
 }
 
 // fetchChannelUpstreamModelCatalog 为管理页面读取模型及其来源；普通渠道保留既有获取规则。
@@ -436,7 +462,7 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 	}
 	if plugin.Meta.ModelDiscovery == nil {
 		return channelUpstreamModelCatalog{
-			Models: normalizeModelNames(plugin.Meta.Models), Source: "plugin", UnsupportedModels: []string{},
+			Models: normalizeModelNames(plugin.Meta.Models), Source: "plugin", UnsupportedModels: []string{}, ModelAliases: plugin.Meta.ModelAliases,
 		}, nil
 	}
 	discovery := *plugin.Meta.ModelDiscovery
@@ -583,6 +609,7 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 			return channelUpstreamModelCatalog{
 				Models: intersectModelNames(ids, plugin.Meta.Models), Source: "upstream",
 				UnsupportedModels: subtractModelNames(ids, plugin.Meta.Models),
+				ModelAliases:      plugin.Meta.ModelAliases,
 			}, nil
 		}
 	}

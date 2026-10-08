@@ -34,6 +34,8 @@ import {
 import { fetchUpstreamModels, updateChannel } from '../../api'
 import {
   channelsQueryKeys,
+  mergeDiscoveredModelAliases,
+  ModelMappingValidationError,
   normalizeModelName,
   parseModelsString,
 } from '../../lib'
@@ -53,12 +55,13 @@ type FetchModelsDialogBaseProps = {
   redirectSourceModels?: string[]
   customFetcher?: () => Promise<string[] | FetchModelsResponse>
   channelName?: string | null
+  existingModelMappingOverride?: string
 }
 
 type FetchModelsDialogProps = FetchModelsDialogBaseProps &
   (
     | {
-        onModelsSelected: (models: string[]) => void
+        onModelsSelected: (models: string[], modelMapping?: string) => void
         existingModelsOverride: string[]
       }
     | {
@@ -75,6 +78,7 @@ export function FetchModelsDialog({
   redirectSourceModels = [],
   customFetcher,
   existingModelsOverride,
+  existingModelMappingOverride,
   channelName,
 }: FetchModelsDialogProps) {
   const { t } = useTranslation()
@@ -88,6 +92,8 @@ export function FetchModelsDialog({
   const [selectedModels, setSelectedModels] = useState<string[]>([])
   const [source, setSource] = useState<FetchModelsResponse['source']>()
   const [unsupportedModels, setUnsupportedModels] = useState<string[]>([])
+  const [modelMapping, setModelMapping] =
+    useState<FetchModelsResponse['model_mapping']>()
   const [fetchError, setFetchError] = useState<unknown>()
   const [hasFetched, setHasFetched] = useState(false)
   const fetchSequence = useRef(0)
@@ -98,6 +104,8 @@ export function FetchModelsDialog({
       existingModelsOverride ?? parseModelsString(activeChannel?.models || ''),
     [existingModelsOverride, activeChannel?.models]
   )
+  const existingModelMapping =
+    existingModelMappingOverride ?? activeChannel?.model_mapping ?? ''
 
   const fetchedModelSet = new Set(normalizeModelNameList(fetchedModels))
   const redirectSourceSet = new Set(
@@ -115,6 +123,7 @@ export function FetchModelsDialog({
     setFetchError(undefined)
     setSource(undefined)
     setUnsupportedModels([])
+    setModelMapping(undefined)
     setFetchedModels([])
     setCandidateModels(existingModels)
     setSelectedModels(existingModels)
@@ -151,16 +160,22 @@ export function FetchModelsDialog({
         throw createServerError(response, t('Failed to fetch models'))
       }
       const list = response.data ?? []
-      setFetchedModels(list)
-      setSource(response.source)
-      setUnsupportedModels(response.unsupported_models ?? [])
-      setHasFetched(true)
-      setCandidateModels(existingModels)
-      setSelectedModels(
+      const selected =
         response.source === 'plugin'
           ? [...new Set([...existingModels, ...list])]
           : existingModels
+      const merged = mergeDiscoveredModelAliases(
+        selected,
+        existingModelMapping,
+        response.model_mapping
       )
+      setFetchedModels(list)
+      setSource(response.source)
+      setUnsupportedModels(response.unsupported_models ?? [])
+      setModelMapping(response.model_mapping)
+      setHasFetched(true)
+      setCandidateModels(existingModels)
+      setSelectedModels(merged.models)
       if (response.source !== 'plugin') {
         toast.success(t('Fetched {{count}} models', { count: list.length }))
       }
@@ -173,9 +188,30 @@ export function FetchModelsDialog({
   }
 
   const handleSave = async () => {
+    let merged: ReturnType<typeof mergeDiscoveredModelAliases>
+    try {
+      merged = mergeDiscoveredModelAliases(
+        selectedModels,
+        existingModelMapping,
+        modelMapping
+      )
+    } catch (error) {
+      handleServerError(
+        error,
+        t('Invalid model mapping format'),
+        error instanceof ModelMappingValidationError
+          ? { title: t(error.message) }
+          : undefined
+      )
+      return
+    }
     // If onModelsSelected callback is provided, use it (form filling mode)
     if (onModelsSelected) {
-      onModelsSelected(selectedModels)
+      if (modelMapping && Object.keys(modelMapping).length > 0) {
+        onModelsSelected(merged.models, merged.modelMapping)
+      } else {
+        onModelsSelected(merged.models)
+      }
       toast.success(t('Models filled to form'))
       onOpenChange(false)
       return
@@ -185,9 +221,12 @@ export function FetchModelsDialog({
     if (!activeChannel) return
     setIsSaving(true)
     try {
-      const modelsString = selectedModels.join(',')
+      const modelsString = merged.models.join(',')
       const response = await updateChannel(activeChannel.id, {
         models: modelsString,
+        ...(modelMapping && Object.keys(modelMapping).length > 0
+          ? { model_mapping: merged.modelMapping }
+          : {}),
       })
       if (response.success) {
         toast.success(t('Models updated successfully'))
@@ -249,10 +288,11 @@ export function FetchModelsDialog({
     dialogBody = (
       <ErrorState
         title={t('Failed to fetch models')}
-        description={getServerErrorMessage(
-          fetchError,
-          t('Failed to fetch models')
-        )}
+        description={
+          fetchError instanceof ModelMappingValidationError
+            ? t(fetchError.message)
+            : getServerErrorMessage(fetchError, t('Failed to fetch models'))
+        }
         onRetry={() => {
           void handleFetchModels()
         }}

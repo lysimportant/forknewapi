@@ -19,20 +19,188 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
+import { createInstance } from 'i18next'
+import { useEffect, useState } from 'react'
+import { I18nextProvider } from 'react-i18next'
 import { afterEach, expect, test, vi } from 'vitest'
 
+import en from '@/i18n/locales/en.json'
+import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
+import { toast } from '@/lib/toast'
 
 import { fetchModels } from '../../api'
-import type { FetchModelsResponse } from '../../types'
-import { ChannelsProvider } from '../channels-provider'
+import { mergeDiscoveredModelAliases } from '../../lib/model-mapping-validation'
+import {
+  channelSchema,
+  type Channel,
+  type FetchModelsResponse,
+} from '../../types'
+import { ChannelsProvider, useChannels } from '../channels-provider'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test.each([
+  { mapping: '{', error: 'Model mapping must be valid JSON format' },
+  { mapping: '[]', error: 'Model mapping must be a valid JSON object' },
+  { mapping: '{"manual":1}', error: 'Model mapping values must be strings' },
+])(
+  'invalid existing mapping $mapping rejects alias merging without replacing the draft',
+  ({ mapping, error }) => {
+    expect(() =>
+      mergeDiscoveredModelAliases(['Yuan-New'], mapping, {
+        'Yuan-New': 'exact-upstream',
+      })
+    ).toThrow(error)
+  }
+)
+
+test('alias merging treats __proto__ as an existing model key and preserves its administrator target', () => {
+  const merged = mergeDiscoveredModelAliases(
+    ['__proto__', 'Yuan-New'],
+    '{"__proto__":"administrator-upstream","manual":"manual-upstream"}',
+    JSON.parse('{"__proto__":"provider-upstream","Yuan-New":"exact-upstream"}')
+  )
+  expect(merged.models).toEqual(['__proto__', 'Yuan-New'])
+  const mapping = JSON.parse(merged.modelMapping)
+  expect(Object.hasOwn(mapping, '__proto__')).toBe(true)
+  expect(mapping.__proto__).toBe('administrator-upstream')
+  expect(mapping.manual).toBe('manual-upstream')
+  expect(mapping['Yuan-New']).toBe('exact-upstream')
+})
+
+test('discovery keeps a selected upstream ID when it is already the source of an administrator mapping', () => {
+  const existing = '{"exact-upstream":"administrator-upstream"}'
+  const merged = mergeDiscoveredModelAliases(['exact-upstream'], existing, {
+    'Yuan-New': 'exact-upstream',
+  })
+  expect(merged.models).toEqual(['exact-upstream'])
+  expect(merged.modelMapping).toBe(existing)
+})
+
+test.each(['local', 'provider'] as const)(
+  '%s mapping errors use their intended display language without changing the form',
+  async (origin) => {
+    const i18n = createInstance()
+    await i18n.init({
+      lng: 'zh',
+      fallbackLng: 'en',
+      resources: { en, zh },
+      keySeparator: false,
+      interpolation: { escapeValue: false },
+    })
+    const client = new QueryClient()
+    const select = vi.fn()
+    const message = 'Model mapping must be valid JSON format'
+    const response: FetchModelsResponse =
+      origin === 'local'
+        ? {
+            success: true,
+            source: 'upstream',
+            data: ['Yuan-New'],
+            model_mapping: { 'Yuan-New': 'exact-upstream' },
+          }
+        : { success: false, message }
+    const fetcher = vi
+      .fn<() => Promise<FetchModelsResponse>>()
+      .mockResolvedValue(response)
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={client}>
+          <ChannelsProvider>
+            <FetchModelsDialog
+              open
+              onOpenChange={vi.fn()}
+              onModelsSelected={select}
+              existingModelsOverride={['manual-alias']}
+              existingModelMappingOverride='{'
+              customFetcher={fetcher}
+            />
+          </ChannelsProvider>
+        </QueryClientProvider>
+      </I18nextProvider>
+    )
+    const expected = origin === 'local' ? zh.translation[message] : message
+    expect(await screen.findByText(expected)).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: zh.translation['Save Models'] })
+    ).not.toBeInTheDocument()
+    expect(select).not.toHaveBeenCalled()
+    client.clear()
+  }
+)
+
+test('local mapping errors are translated when a form mapping becomes invalid before saving', async () => {
+  const i18n = createInstance()
+  await i18n.init({
+    lng: 'zh',
+    fallbackLng: 'en',
+    resources: { en, zh },
+    keySeparator: false,
+    interpolation: { escapeValue: false },
+  })
+  const client = new QueryClient()
+  const select = vi.fn()
+  const close = vi.fn()
+  const showError = vi.spyOn(toast, 'error').mockReturnValue('mapping-error')
+  const fetcher = vi
+    .fn<() => Promise<FetchModelsResponse>>()
+    .mockResolvedValue({
+      success: true,
+      source: 'upstream',
+      data: ['Yuan-New'],
+      model_mapping: { 'Yuan-New': 'exact-upstream' },
+    })
+  const user = userEvent.setup()
+  const view = render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <ChannelsProvider>
+          <FetchModelsDialog
+            open
+            onOpenChange={close}
+            onModelsSelected={select}
+            existingModelsOverride={['Yuan-New']}
+            existingModelMappingOverride='{}'
+            customFetcher={fetcher}
+          />
+        </ChannelsProvider>
+      </QueryClientProvider>
+    </I18nextProvider>
+  )
+  expect(
+    await screen.findByRole('checkbox', { name: 'Yuan-New' })
+  ).toBeChecked()
+  view.rerender(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <ChannelsProvider>
+          <FetchModelsDialog
+            open
+            onOpenChange={close}
+            onModelsSelected={select}
+            existingModelsOverride={['Yuan-New']}
+            existingModelMappingOverride='{'
+            customFetcher={fetcher}
+          />
+        </ChannelsProvider>
+      </QueryClientProvider>
+    </I18nextProvider>
+  )
+  await user.click(
+    screen.getByRole('button', { name: zh.translation['Save Models'] })
+  )
+  expect(showError).toHaveBeenCalledWith(
+    zh.translation['Model mapping must be valid JSON format']
+  )
+  expect(select).not.toHaveBeenCalled()
+  expect(close).not.toHaveBeenCalled()
+  client.clear()
 })
 
 test('plugin catalogs are identified and merged into the existing selection before saving', async () => {
@@ -109,6 +277,135 @@ test('a failed plugin fetch cannot save an empty selection and retry only offers
   await user.click(screen.getByRole('checkbox', { name: 'wan3.0-video' }))
   await user.click(screen.getByRole('button', { name: 'Save Models' }))
   expect(select).toHaveBeenCalledWith(['manual-alias', 'wan3.0-video'])
+  client.clear()
+})
+
+test('filling a form from alias discovery returns selected public models and keeps existing mappings', async () => {
+  const client = new QueryClient()
+  const select = vi.fn()
+  const mappings = {
+    'Yuan-Seedance-2.5-Official': 'seedance-2.5-guanfang-anmiao',
+    'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
+  }
+  const fetcher = vi
+    .fn<() => Promise<FetchModelsResponse>>()
+    .mockResolvedValue({
+      success: true,
+      source: 'upstream',
+      data: Object.keys(mappings),
+      model_mapping: mappings,
+    })
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <ChannelsProvider>
+        <FetchModelsDialog
+          open
+          onOpenChange={vi.fn()}
+          onModelsSelected={select}
+          existingModelsOverride={[
+            'manual-alias',
+            'seedance-2.5-guanfang-anmiao',
+          ]}
+          existingModelMappingOverride='{"manual-alias":"manual-upstream"}'
+          customFetcher={fetcher}
+        />
+      </ChannelsProvider>
+    </QueryClientProvider>
+  )
+  expect(
+    await screen.findByRole('checkbox', {
+      name: 'Yuan-Seedance-2.5-Official',
+    })
+  ).toBeChecked()
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Yuan-Seedance-2.0-LJ' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save Models' }))
+  expect(select).toHaveBeenCalledWith(
+    ['manual-alias', ...Object.keys(mappings)],
+    expect.any(String)
+  )
+  expect(JSON.parse(select.mock.calls[0][1])).toEqual({
+    'manual-alias': 'manual-upstream',
+    ...mappings,
+  })
+  client.clear()
+})
+
+/** 通过渠道列表的已保存入口打开模型获取，使用真实 API 保存路径。 */
+function SavedChannelModelDiscovery(props: { channel: Channel }) {
+  const { currentRow, setCurrentRow } = useChannels()
+  useEffect(() => {
+    setCurrentRow(props.channel)
+  }, [props.channel, setCurrentRow])
+  return <FetchModelsDialog open={Boolean(currentRow)} onOpenChange={vi.fn()} />
+}
+
+test('saved channel discovery updates models and selected alias mappings in one request without replacing administrator targets', async () => {
+  const client = new QueryClient()
+  const channel = channelSchema.parse({
+    id: 42,
+    name: 'Yuanliu channel',
+    type: 61,
+    key: '',
+    status: 1,
+    created_time: 1,
+    test_time: 0,
+    response_time: 0,
+    balance_updated_time: 0,
+    models: 'Yuan-Seedance-2.5-Official,manual-alias',
+    model_mapping:
+      '{"Yuan-Seedance-2.5-Official":"administrator-upstream","manual-alias":"manual-upstream"}',
+    group: 'default',
+  })
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      source: 'upstream',
+      data: ['Yuan-Seedance-2.5-Official', 'Yuan-Seedance-2.0-LJ'],
+      model_mapping: {
+        'Yuan-Seedance-2.5-Official': 'seedance-2.5-guanfang-anmiao',
+        'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
+      },
+      unsupported_models: ['unadapted-upstream-model'],
+    },
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(
+    <QueryClientProvider client={client}>
+      <ChannelsProvider>
+        <SavedChannelModelDiscovery channel={channel} />
+      </ChannelsProvider>
+    </QueryClientProvider>
+  )
+  const model = await screen.findByRole('checkbox', {
+    name: 'Yuan-Seedance-2.0-LJ',
+  })
+  expect(model).not.toBeChecked()
+  expect(
+    screen.queryByRole('checkbox', { name: 'unadapted-upstream-model' })
+  ).not.toBeInTheDocument()
+  await user.click(model)
+  await user.click(screen.getByRole('button', { name: 'Save Models' }))
+  expect(put).toHaveBeenCalledTimes(1)
+  expect(put).toHaveBeenCalledWith(
+    '/api/channel/',
+    expect.objectContaining({
+      id: 42,
+      models: 'Yuan-Seedance-2.5-Official,manual-alias,Yuan-Seedance-2.0-LJ',
+    }),
+    expect.anything()
+  )
+  const saved = put.mock.calls[0]?.[1] as { model_mapping: string }
+  expect(JSON.parse(saved.model_mapping)).toEqual({
+    'Yuan-Seedance-2.5-Official': 'administrator-upstream',
+    'manual-alias': 'manual-upstream',
+    'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
+  })
   client.clear()
 })
 

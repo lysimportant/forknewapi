@@ -64,6 +64,8 @@ export type TaskPluginMeta = {
   channelTypes?: number[] | null
   models: string[] | null
   modelDiscovery?: TaskPluginModelDiscovery
+  /** 公开模型别名及其已适配的精确上游 ID，不扩大插件路由。 */
+  modelAliases?: Record<string, string>
   fetchMode: string
   routes?: TaskPluginRoute[]
   protocols?: TaskPluginProtocolClaim[]

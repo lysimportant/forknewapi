@@ -27,11 +27,16 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { createInstance } from 'i18next'
 import { useState } from 'react'
+import { I18nextProvider } from 'react-i18next'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
+import en from '@/i18n/locales/en.json'
+import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
 import { ROLE } from '@/lib/roles'
+import { toast } from '@/lib/toast'
 import { useAuthStore } from '@/stores/auth-store'
 
 import type { TaskPluginOption } from '../../api'
@@ -73,6 +78,12 @@ const soraPlugin: TaskPluginOption = {
   icon: 'text',
   baseUrl: 'https://video.example',
   models: ['sora-2'],
+}
+
+/** 源流目录仅对已适配的精确模型提供公开别名。 */
+const yuanAliases = {
+  'Yuan-Seedance-2.5-Official': 'seedance-2.5-guanfang-anmiao',
+  'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
 }
 
 function deferredResponse<T>() {
@@ -1002,6 +1013,293 @@ test.each([false, true])(
     expect(
       screen.queryByRole('group', { name: 'Upstream Model Detection Settings' })
     ).not.toBeInTheDocument()
+  }
+)
+
+test.each([false, true])(
+  'successful alias discovery saves selected public models and their exact upstream mapping when editing=%s',
+  async (editing) => {
+    pluginOptions = [
+      {
+        ...plugins[0],
+        models: Object.values(yuanAliases),
+        modelAliases: yuanAliases,
+        modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+      },
+    ]
+    editingChannel = {
+      ...editingChannel,
+      type: 61,
+      models: 'custom-model,seedance-2.5-guanfang-anmiao',
+      model_mapping: '{"custom-model":"manual-upstream"}',
+      setting: '{"task_plugin_key":"video-a"}',
+    }
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          source: 'upstream',
+          data: Object.keys(yuanAliases),
+          model_mapping: yuanAliases,
+          unsupported_models: ['unadapted-seedance-model'],
+        },
+      })
+      .mockResolvedValue({ data: { success: true } })
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(
+      <ConfigurationHarness currentRow={editing ? editingChannel : undefined} />
+    )
+    if (editing) {
+      await screen.findByDisplayValue('Existing channel')
+    } else {
+      await user.click(await screen.findByRole('option', { name: /Video A/ }))
+      fireEvent.change(screen.getByLabelText('API Key *'), {
+        target: { value: 'test-key' },
+      })
+    }
+    await user.click(
+      screen.getByRole('button', { name: 'Fetch from Upstream' })
+    )
+    const official = await screen.findByRole('checkbox', {
+      name: 'Yuan-Seedance-2.5-Official',
+    })
+    expect(official).toBeChecked()
+    expect(
+      screen.queryByRole('checkbox', { name: 'seedance-2.5-guanfang-anmiao' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', { name: 'unadapted-seedance-model' })
+    ).not.toBeInTheDocument()
+    if (editing) {
+      expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
+      await user.click(
+        screen.getByRole('checkbox', { name: 'Yuan-Seedance-2.0-LJ' })
+      )
+    }
+    await user.click(
+      screen.getByRole('button', {
+        name: editing ? 'Update Channel' : 'Create Channel',
+      })
+    )
+    const request = editing ? put : post
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        editing ? '/api/channel/' : '/api/channel',
+        expect.anything(),
+        expect.anything()
+      )
+    )
+    const payload = request.mock.calls.at(-1)?.[1] as {
+      models: string
+      model_mapping: string
+      channel: { models: string; model_mapping: string }
+    }
+    const saved = editing ? payload : payload.channel
+    expect(saved.models.split(',')).toEqual(
+      editing
+        ? ['custom-model', ...Object.keys(yuanAliases)]
+        : Object.keys(yuanAliases)
+    )
+    expect(JSON.parse(saved.model_mapping)).toEqual({
+      ...(editing ? { 'custom-model': 'manual-upstream' } : {}),
+      ...yuanAliases,
+    })
+  }
+)
+
+test.each(['fetch', 'selection'] as const)(
+  'local mapping errors during %s are translated and retain the channel draft',
+  async (action) => {
+    const i18n = createInstance()
+    await i18n.init({
+      lng: 'zh',
+      fallbackLng: 'en',
+      resources: { en, zh },
+      keySeparator: false,
+      interpolation: { escapeValue: false },
+    })
+    pluginOptions = [
+      {
+        ...plugins[0],
+        modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+      },
+    ]
+    editingChannel = {
+      ...editingChannel,
+      type: 61,
+      model_mapping: '{',
+      setting: '{"task_plugin_key":"video-a"}',
+    }
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        source: 'upstream',
+        data: ['Yuan-New'],
+        model_mapping: { 'Yuan-New': 'video-a-1' },
+      },
+    })
+    const showError = vi.spyOn(toast, 'error').mockReturnValue('mapping-error')
+    const user = userEvent.setup()
+    render(
+      <I18nextProvider i18n={i18n}>
+        <ConfigurationHarness currentRow={editingChannel} />
+      </I18nextProvider>
+    )
+    await screen.findByDisplayValue('Existing channel')
+    await user.click(
+      screen.getByRole('button', {
+        name: zh.translation['Fetch from Upstream'],
+      })
+    )
+    const model = await screen.findByRole('checkbox', { name: 'Yuan-New' })
+    if (action === 'selection') {
+      showError.mockClear()
+      await user.click(model)
+    }
+    expect(showError).toHaveBeenCalledWith(
+      zh.translation['Model mapping must be valid JSON format']
+    )
+    expect(model).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'custom-model' })).toBeVisible()
+    await user.click(
+      screen.getByRole('tab', {
+        name: new RegExp(zh.translation['Routing & Mapping']),
+      })
+    )
+    expect(
+      screen.getByText(
+        zh.translation['Model mapping must be valid JSON format']
+      )
+    ).toBeVisible()
+  }
+)
+
+test('selecting a discovered alias retains conflicting administrator mappings and fills only the new selection', async () => {
+  pluginOptions = [
+    {
+      ...plugins[0],
+      models: Object.values(yuanAliases),
+      modelAliases: yuanAliases,
+      modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+    },
+  ]
+  editingChannel = {
+    ...editingChannel,
+    type: 61,
+    models: 'custom-model,Yuan-Seedance-2.5-Official',
+    model_mapping:
+      '{"custom-model":"manual-upstream","Yuan-Seedance-2.5-Official":"admin-upstream"}',
+    setting: '{"task_plugin_key":"video-a"}',
+  }
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      source: 'upstream',
+      data: Object.keys(yuanAliases),
+      model_mapping: yuanAliases,
+    },
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('button', { name: 'Fetch from Upstream' }))
+  const added = await screen.findByRole('checkbox', {
+    name: 'Yuan-Seedance-2.0-LJ',
+  })
+  expect(added).not.toBeChecked()
+  await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
+  expect(screen.getByDisplayValue('admin-upstream')).toBeVisible()
+  expect(
+    screen.queryByDisplayValue('yl_g7zy_seedance_v2_0_std')
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('tab', { name: /Connection & Models/ }))
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Yuan-Seedance-2.0-LJ' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const saved = put.mock.calls[0]?.[1] as {
+    models: string
+    model_mapping: string
+  }
+  expect(saved.models).toBe(
+    'custom-model,Yuan-Seedance-2.5-Official,Yuan-Seedance-2.0-LJ'
+  )
+  expect(JSON.parse(saved.model_mapping)).toEqual({
+    'custom-model': 'manual-upstream',
+    'Yuan-Seedance-2.5-Official': 'admin-upstream',
+    'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
+  })
+})
+
+test.each([
+  { result: 'failed', response: { success: false, message: 'Catalog denied' } },
+  { result: 'empty', response: { success: true, data: [], model_mapping: {} } },
+  {
+    result: 'unsupported-only',
+    response: {
+      success: true,
+      source: 'upstream',
+      data: [],
+      model_mapping: {},
+      unsupported_models: ['future-yuan-model'],
+    },
+  },
+])(
+  '$result alias discovery preserves saved models and mappings when another field is updated',
+  async ({ result, response }) => {
+    pluginOptions = [
+      {
+        ...plugins[0],
+        modelAliases: yuanAliases,
+        modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+      },
+    ]
+    editingChannel = {
+      ...editingChannel,
+      type: 61,
+      models: 'custom-model,Yuan-Seedance-2.5-Official',
+      model_mapping:
+        '{"custom-model":"manual-upstream","Yuan-Seedance-2.5-Official":"admin-upstream"}',
+      setting: '{"task_plugin_key":"video-a"}',
+    }
+    vi.spyOn(api, 'post').mockResolvedValue({ data: response })
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    await user.click(
+      screen.getByRole('button', { name: 'Fetch from Upstream' })
+    )
+    let expectedMessage = 'No compatible models returned by the upstream'
+    if (result === 'failed') expectedMessage = 'Catalog denied'
+    if (result === 'empty') {
+      expectedMessage = 'No models returned by the upstream'
+    }
+    expect(await screen.findByText(expectedMessage)).toBeVisible()
+    if (result === 'unsupported-only') {
+      expect(
+        screen.queryByRole('checkbox', { name: 'future-yuan-model' })
+      ).not.toBeInTheDocument()
+    }
+    fireEvent.change(screen.getByLabelText('Name *'), {
+      target: { value: 'Renamed channel' },
+    })
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0]?.[1]).toMatchObject({
+      models: editingChannel.models,
+      model_mapping: editingChannel.model_mapping,
+    })
   }
 )
 

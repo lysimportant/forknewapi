@@ -36,7 +36,7 @@ export function parseModelsString(modelsStr: string): string[] {
  * Format models array to string
  */
 export function formatModelsArray(models: string[]): string {
-  return Array.from(new Set(models)).join(',')
+  return [...new Set(models)].join(',')
 }
 
 /**
@@ -65,7 +65,7 @@ export function extractMappingSourceModels(modelMapping: string): string[] {
       .map((key) => key.trim())
       .filter(Boolean)
 
-    return Array.from(new Set(keys))
+    return [...new Set(keys)]
   } catch {
     return []
   }
@@ -90,7 +90,7 @@ export function extractRedirectModels(modelMapping: string): string[] {
       .map((value) => (typeof value === 'string' ? value.trim() : undefined))
       .filter((value): value is string => Boolean(value))
 
-    return Array.from(new Set(values))
+    return [...new Set(values)]
   } catch {
     return []
   }
@@ -157,7 +157,7 @@ export function findMissingModelsInMapping(
     .map((key) => normalizeModelName(key))
     .filter((key) => key && !modelSet.has(key))
 
-  return Array.from(new Set(missingModels))
+  return [...new Set(missingModels)]
 }
 
 /**
@@ -191,6 +191,71 @@ export function validateModelMappingJson(modelMapping: string): {
       valid: false,
       error: 'Model mapping must be valid JSON format',
     }
+  }
+}
+
+/** 本地模型映射校验错误；message 为已有翻译键，用于与供应商原始错误区分。 */
+export class ModelMappingValidationError extends Error {}
+
+/**
+ * 将已选的目录模型转换为公开别名，并补入对应映射，不覆盖管理员已有映射。
+ * @param models 当前模型选择；已选的精确上游 ID 可转换为此次目录建议的别名。
+ * @param modelMapping 当前渠道映射 JSON；没有新增映射时保留原文。
+ * @param suggestions 成功目录返回的别名映射；只写入已选别名，不删除未选的旧映射。
+ * @returns 转换后的模型选择和合并后的映射 JSON。
+ * @throws {ModelMappingValidationError} 当前映射不是合法字符串映射对象时抛错，调用方应保留草稿并翻译本地原因。
+ */
+export function mergeDiscoveredModelAliases(
+  models: string[],
+  modelMapping: string,
+  suggestions?: Record<string, string>
+): { models: string[]; modelMapping: string } {
+  if (!suggestions || Object.keys(suggestions).length === 0) {
+    return { models, modelMapping }
+  }
+  const validation = validateModelMappingJson(modelMapping)
+  if (!validation.valid) {
+    throw new ModelMappingValidationError(
+      validation.error || 'Invalid model mapping format'
+    )
+  }
+
+  const existing: Record<string, string> = modelMapping.trim()
+    ? JSON.parse(modelMapping)
+    : {}
+  const upstreamAliases = new Map<string, string[]>()
+  for (const [alias, upstream] of Object.entries(suggestions)) {
+    if (Object.hasOwn(existing, alias) && existing[alias] !== upstream) continue
+    const aliases = upstreamAliases.get(upstream) ?? []
+    aliases.push(alias)
+    upstreamAliases.set(upstream, aliases)
+  }
+  const selected = [
+    ...new Set(
+      models.flatMap((model) =>
+        Object.hasOwn(existing, model) || Object.hasOwn(suggestions, model)
+          ? [model]
+          : (upstreamAliases.get(model) ?? [model])
+      )
+    ),
+  ]
+  const additions = selected
+    .filter(
+      (model) =>
+        Object.hasOwn(suggestions, model) && !Object.hasOwn(existing, model)
+    )
+    .map((model) => [model, suggestions[model]])
+
+  return {
+    models: selected,
+    modelMapping:
+      additions.length === 0
+        ? modelMapping
+        : JSON.stringify(
+            Object.fromEntries([...Object.entries(existing), ...additions]),
+            null,
+            2
+          ),
   }
 }
 
@@ -239,9 +304,7 @@ export function categorizeModelsWithRedirect(
   ])
 
   const redirectOnlySet = new Set(
-    Array.from(normalizedRedirectModels).filter(
-      (m) => !normalizedCurrentModels.has(m)
-    )
+    [...normalizedRedirectModels].filter((m) => !normalizedCurrentModels.has(m))
   )
 
   return {

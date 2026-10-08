@@ -253,8 +253,7 @@ func FetchUpstreamModels(c *gin.Context) {
 
 	response := gin.H{"success": true, "message": "", "data": catalog.Models}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
-		response["source"] = catalog.Source
-		response["unsupported_models"] = catalog.UnsupportedModels
+		response = catalog.discoveryResponse()
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -1414,8 +1413,7 @@ func FetchModels(c *gin.Context) {
 	}
 	response := gin.H{"success": true, "message": "", "data": catalog.Models}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
-		response["source"] = catalog.Source
-		response["unsupported_models"] = catalog.UnsupportedModels
+		response = catalog.discoveryResponse()
 	}
 	c.JSON(http.StatusOK, response)
 }

@@ -169,6 +169,8 @@ import {
   hasModelConfigChanged,
   findMissingModelsInMapping,
   validateModelMappingJson,
+  mergeDiscoveredModelAliases,
+  ModelMappingValidationError,
 } from '../../lib'
 import {
   getChannelConfigurationSection,
@@ -1160,14 +1162,29 @@ export function ChannelMutateDrawer({
       return
     }
     const response = await fetchDiscoveredModels()
-    if (response?.source === 'plugin') {
-      form.setValue(
-        'models',
-        formatModelsArray([
-          ...parseModelsString(form.getValues('models')),
-          ...(response.data ?? []),
-        ])
-      )
+    if (response?.source === 'plugin' || response?.model_mapping) {
+      const currentModels = parseModelsString(form.getValues('models'))
+      const selected =
+        response.source === 'plugin'
+          ? [...currentModels, ...(response.data ?? [])]
+          : currentModels
+      try {
+        const merged = mergeDiscoveredModelAliases(
+          selected,
+          form.getValues('model_mapping') || '',
+          response.model_mapping
+        )
+        form.setValue('models', formatModelsArray(merged.models))
+        form.setValue('model_mapping', merged.modelMapping)
+      } catch (error) {
+        handleServerError(
+          error,
+          t('Invalid model mapping format'),
+          error instanceof ModelMappingValidationError
+            ? { title: t(error.message) }
+            : undefined
+        )
+      }
     }
   }, [
     isEditing,
@@ -1234,9 +1251,25 @@ export function ChannelMutateDrawer({
   // Handle model selection change from MultiSelect
   const handleModelsChange = useCallback(
     (selected: string[]) => {
-      form.setValue('models', selected.join(','))
+      try {
+        const merged = mergeDiscoveredModelAliases(
+          selected,
+          form.getValues('model_mapping') || '',
+          discovery.status === 'success' ? discovery.modelMapping : undefined
+        )
+        form.setValue('models', formatModelsArray(merged.models))
+        form.setValue('model_mapping', merged.modelMapping)
+      } catch (error) {
+        handleServerError(
+          error,
+          t('Invalid model mapping format'),
+          error instanceof ModelMappingValidationError
+            ? { title: t(error.message) }
+            : undefined
+        )
+      }
     },
-    [form]
+    [form, discovery.status, discovery.modelMapping, t]
   )
 
   // Handle successful submission

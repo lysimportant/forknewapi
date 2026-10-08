@@ -207,6 +207,8 @@ export interface FetchModelsResponse {
   data?: string[]
   source?: 'upstream' | 'plugin'
   unsupported_models?: string[]
+  /** 此次目录中可导入别名对应的上游模型；既有渠道映射优先。 */
+  model_mapping?: Record<string, string>
 }
 
 export interface CopyChannelResponse {

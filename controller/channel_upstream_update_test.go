@@ -41,11 +41,12 @@ export function parseTaskResult() { return {}; }
 
 // taskPluginDiscoveryResponse 保留模型来源和未适配模型，便于验证公开接口合同。
 type taskPluginDiscoveryResponse struct {
-	Success           bool     `json:"success"`
-	Message           string   `json:"message"`
-	Data              []string `json:"data"`
-	Source            string   `json:"source"`
-	UnsupportedModels []string `json:"unsupported_models"`
+	Success           bool              `json:"success"`
+	Message           string            `json:"message"`
+	Data              []string          `json:"data"`
+	Source            string            `json:"source"`
+	UnsupportedModels []string          `json:"unsupported_models"`
+	ModelMapping      map[string]string `json:"model_mapping"`
 }
 
 // previewTaskPluginModels 调用渠道草稿的模型获取入口，不保存渠道或执行付费请求。
@@ -74,6 +75,52 @@ func TestFetchTaskPluginModelsUsesDeclaredCatalogWithoutDiscovery(t *testing.T) 
 	unknown := previewTaskPluginModels(t, map[string]any{"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "unknown-plugin"})
 	assert.False(t, unknown.Success)
 	assert.Contains(t, unknown.Message, "not registered")
+}
+
+// TestFetchTaskPluginModelAliases 只为本次实时目录中已适配模型提供映射，内部更新检测仍使用上游 ID。
+func TestFetchTaskPluginModelAliases(t *testing.T) {
+	key := registerModelDiscoveryTestPlugin(t, `, modelDiscovery: {protocol:"openai", path:"/openapi/v1/models"}, modelAliases: {"Yuan-Wan":"wan3.0-video", "Yuan-Seedance":"seedance-2-0-official"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/openapi/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer fixture-key", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[{"id":"wan3.0-video"},{"id":"minimax-h3"},{"id":"unknown-new-model"}]}`))
+	}))
+	defer server.Close()
+	response := previewTaskPluginModels(t, map[string]any{
+		"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": key,
+		"base_url": server.URL + "/openapi/v1", "key": "fixture-key",
+	})
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, []string{"Yuan-Wan", "minimax-h3"}, response.Data)
+	assert.Equal(t, map[string]string{"Yuan-Wan": "wan3.0-video"}, response.ModelMapping)
+	assert.Equal(t, []string{"unknown-new-model"}, response.UnsupportedModels)
+	baseURL := server.URL + "/openapi/v1"
+	setting := fmt.Sprintf(`{"task_plugin_key":%q}`, key)
+	channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin, Key: "fixture-key", BaseURL: &baseURL, Setting: &setting}
+	ids, err := fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"wan3.0-video", "minimax-h3"}, ids)
+
+	db := setupModelListControllerTestDB(t)
+	existingMapping := `{"custom":"wan3.0-video"}`
+	channel.ModelMapping, channel.Models = &existingMapping, "custom"
+	channel.Name = "saved aliases"
+	require.NoError(t, db.Create(channel).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channel.Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/fetch_models/"+fmt.Sprint(channel.Id), nil)
+	FetchUpstreamModels(ctx)
+	var savedResponse taskPluginDiscoveryResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &savedResponse))
+	require.True(t, savedResponse.Success, savedResponse.Message)
+	assert.Equal(t, response.Data, savedResponse.Data)
+	assert.Equal(t, response.ModelMapping, savedResponse.ModelMapping)
+	reloaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, "custom", reloaded.Models)
+	require.NotNil(t, reloaded.ModelMapping)
+	assert.Equal(t, existingMapping, *reloaded.ModelMapping)
 }
 
 func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *testing.T) {
