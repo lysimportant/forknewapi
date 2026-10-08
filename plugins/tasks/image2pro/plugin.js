@@ -1,29 +1,29 @@
-/** Image2Pro 已确认的视频模型；目录中的其他模型不自动开放生成。 */
-const MODELS = ["无限制-Flash-中配-Video", "无限制-Flash-MAX-Video", "Seedance2.0 0.9r"];
-/** 文档参考图字段及宿主兼容别名，单次请求只选择一种入口。 */
+/** Image2Pro 仅适配此精确 Seedance 模型，目录中的其他模型不开放生成。 */
+const MODELS = ["Seedance2.0 0.9r"];
+/** 旧参考图入口继续接受，创建时统一转换为官方 content。 */
 const IMAGE_FIELDS = ["input_image", "images", "input_reference", "image", "reference_images", "image_urls"];
-/** 引用素材的统一入口、数量和格式；音视频字段为用户要求的兼容扩展，仍待上游验证。 */
+/** Seedance 2.0 引用素材数量和内联格式；视频只允许公网 URL。 */
 const MEDIA_RULES = {
   image: {
     field: "images",
     aliases: IMAGE_FIELDS,
     arrays: ["images", "reference_images", "image_urls"],
     limit: 9,
-    mimes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    mimes: ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff", "image/heic", "image/heif"],
   },
   audio: {
     field: "audios",
     aliases: ["audios", "reference_audios", "audio_urls", "input_audio", "reference_audio", "audio"],
     arrays: ["audios", "reference_audios", "audio_urls"],
     limit: 3,
-    mimes: ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/ogg", "audio/flac", "audio/aac", "audio/mp4", "audio/webm"],
+    mimes: ["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav"],
   },
   video: {
     field: "videos",
     aliases: ["videos", "reference_videos", "video_urls", "input_video", "reference_video", "video"],
     arrays: ["videos", "reference_videos", "video_urls"],
     limit: 3,
-    mimes: ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo"],
+    mimes: ["video/mp4", "video/quicktime"],
   },
 };
 /** 无 MIME 的上传由扩展名补齐；显式错误的 Content-Type 不凭扩展名覆盖。 */
@@ -33,19 +33,30 @@ const FILE_MIMES = {
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  bmp: "image/bmp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  heic: "image/heic",
+  heif: "image/heif",
   mp3: "audio/mpeg",
   wav: "audio/wav",
-  ogg: "audio/ogg",
-  flac: "audio/flac",
-  aac: "audio/aac",
-  m4a: "audio/mp4",
-  mp4: "video/mp4",
-  mov: "video/quicktime",
-  webm: "video/webm",
-  avi: "video/x-msvideo",
 };
-/** 严格限定公开参数和音视频扩展，防止隐藏计费数量或其他未适配参数被透传。 */
-const REQUEST_FIELDS = ["model", "prompt", "seconds", "duration", "ratio", "aspect_ratio", "client_request_id", "clientRequestId"].concat(
+/** Seedance 2.0 已确认布尔字段，显式 false 原样保留。 */
+const BOOLEAN_FIELDS = ["generate_audio", "watermark", "return_last_frame"];
+/** 官方参数与旧入口共用白名单，未适配高级任务不得透传。 */
+const REQUEST_FIELDS = [
+  "model",
+  "content",
+  "prompt",
+  "seconds",
+  "duration",
+  "resolution",
+  "ratio",
+  "aspect_ratio",
+  "client_request_id",
+  "clientRequestId",
+].concat(
+  BOOLEAN_FIELDS,
   Object.values(MEDIA_RULES).flatMap((rule) => rule.aliases)
 );
 
@@ -55,11 +66,11 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "1.0.1",
+  version: "2.0.0",
   author: { name: "lysimportant/forknewapi" },
   description: {
-    en: "Image2Pro text and reference-image video generation; optional audio/video references require upstream support",
-    zh: "Image2Pro 文本与参考图视频生成；可选音视频参考需上游支持",
+    en: "Image2Pro Seedance 2.0 text, frame, and multimodal reference video generation",
+    zh: "Image2Pro Seedance 2.0 文本、首尾帧与全模态参考视频生成",
   },
   baseUrl: "https://api.image2pro.top/v1",
   website: "https://image2pro.top/api-docs",
@@ -87,12 +98,14 @@ function apiBase(ctx) {
   return base.endsWith("/v1") ? base : base + "/v1";
 }
 
-/** 读取必填秒数；3600 是宿主安全上限，上游协议可能进一步限制合法时长。 */
+/** 读取有界秒数并兼容旧任务冻结的小数时长；新建请求另按 Seedance 范围校验。 */
 function requestedSeconds(request) {
   if (request.seconds === undefined && request.duration === undefined) throw new Error("seconds or duration is required for Image2Pro per-second billing");
   for (const field of ["seconds", "duration"]) {
     const value = request[field];
     if (value === undefined) continue;
+    if (value === -1 || value === "-1")
+      throw new Error("automatic duration is unavailable because Image2Pro has no verified output duration for per-second billing");
     if (
       (typeof value !== "number" && typeof value !== "string") ||
       (typeof value === "string" && !/^\d+(?:\.\d+)?$/.test(value.trim())) ||
@@ -118,9 +131,13 @@ function clientRequestId(request) {
   return value;
 }
 
-/** 将普通引用转换为字符串；占位符须属于本类上传，角色及附加时长不得静默丢弃。 */
+/** 校验媒体 URL 或图片/音频上传占位符；视频不支持 Base64 或本地上传。 */
 function mediaReference(value, type, files) {
   const rule = MEDIA_RULES[type];
+  if (type === "video") {
+    if (isHTTPURL(value)) return value;
+    throw new Error("Seedance video references require HTTP(S) URLs; data URLs and video uploads are unsupported");
+  }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     if (Object.prototype.hasOwnProperty.call(value, "__fileRef")) {
       const file = files.find((item) => item.ref === value.__fileRef);
@@ -135,9 +152,7 @@ function mediaReference(value, type, files) {
         throw new Error("Image2Pro " + type + " file reference is invalid");
       return { __fileRef: value.__fileRef, encoding: "dataUrl", mimeType: value.mimeType };
     }
-    if (Object.keys(value).some((key) => key !== "url" && key !== "role") || (value.role !== undefined && value.role !== "reference_" + type))
-      throw new Error("Image2Pro " + type + " references accept url and ordinary reference role only; frame roles and duration metadata are unsupported");
-    value = value.url;
+    throw new Error("Image2Pro " + type + " reference URL is invalid");
   }
   if (isHTTPURL(value)) return value;
   const data = typeof value === "string" ? /^data:([^;,]+);base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/.exec(value) : null;
@@ -145,17 +160,65 @@ function mediaReference(value, type, files) {
   throw new Error("Image2Pro " + type + " references must be HTTP(S) URLs or supported " + type + " data URLs");
 }
 
-/** 统一参考素材别名并投影上游字段；音视频按兼容扩展转发，图片保留文档合同。 */
+/** 校验官方 content 的角色与组合，保留顺序、重复引用和文本，不混用首尾帧与全模态参考。 */
+function normalizeContent(content, files) {
+  if (!Array.isArray(content) || content.length === 0) throw new Error("Seedance content must be a non-empty array");
+  const counts = { image: 0, video: 0, audio: 0, first_frame: 0, last_frame: 0, reference_image: 0 };
+  let textLength = 0;
+  let hasText = false;
+  const normalized = content.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Seedance content items must be objects");
+    if (item.type === "text") {
+      if (Object.keys(item).some((field) => !["type", "text"].includes(field)) || typeof item.text !== "string")
+        throw new Error("Seedance text content requires a text string and no extra fields");
+      if (item.text.trim()) hasText = true;
+      textLength += item.text.length;
+      if (textLength > 30000) throw new Error("Image2Pro prompt must not exceed 30000 characters");
+      if (/(?:^|\s)--(?:duration|dur|frames|resolution|rs|ratio|rt|seed|camera_fixed|cf|watermark|wm)\b/i.test(item.text))
+        throw new Error("inline Seedance parameter overrides are unsupported; use explicit request fields");
+      return { type: "text", text: item.text };
+    }
+    if (!["image_url", "video_url", "audio_url"].includes(item.type)) throw new Error("unsupported Seedance content type");
+    if (Object.keys(item).some((field) => !["type", item.type, "role"].includes(field))) throw new Error("unsupported Seedance media content field");
+    const reference = item[item.type];
+    if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).some((field) => field !== "url"))
+      throw new Error("Seedance media content requires a URL object without extra fields");
+    const type = item.type.slice(0, -4);
+    const role = item.role === undefined ? (type === "image" ? "first_frame" : "reference_" + type) : item.role;
+    if (type === "image" ? !["first_frame", "last_frame", "reference_image"].includes(role) : role !== "reference_" + type)
+      throw new Error("unsupported Seedance " + type + " role");
+    counts[type]++;
+    if (type === "image") counts[role]++;
+    if (counts[type] > MEDIA_RULES[type].limit) throw new Error("Seedance supports at most " + MEDIA_RULES[type].limit + " reference " + type + "s");
+    return { type: item.type, [item.type]: { url: mediaReference(reference.url, type, files) }, role };
+  });
+  if (counts.image + counts.video + counts.audio > 15) throw new Error("Seedance supports at most 15 total reference files");
+  if (counts.first_frame > 1 || counts.last_frame > 1 || (counts.last_frame && !counts.first_frame))
+    throw new Error("Seedance requires at most one first frame and one last frame; a last frame requires a first frame");
+  if ((counts.first_frame || counts.last_frame) && (counts.reference_image || counts.video || counts.audio))
+    throw new Error("Seedance frame input cannot be combined with multimodal references");
+  if (counts.audio && !counts.image && !counts.video) throw new Error("Seedance 2.0 audio references require at least one image or video");
+  if (!hasText && !counts.image && !counts.video) throw new Error("Seedance requires text or at least one image or video");
+  return normalized;
+}
+
+/** 旧别名与官方 content 归一为同一创建合同；新建按 4–15 整秒计费，缺失参数采用官方默认。 */
 function normalizeRequest(source, model, files = []) {
   if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro request body must be an object");
   if (!MODELS.includes(model)) throw new Error("unsupported Image2Pro model");
   for (const key of Object.keys(source)) if (!REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro field: " + key);
   const request = { model: source.model, duration: requestedSeconds(source) };
-  if (source.prompt !== undefined) {
-    if (typeof source.prompt !== "string" || source.prompt.length > 30000) throw new Error("Image2Pro prompt must be a string of at most 30000 characters");
-    if (source.prompt.trim()) request.prompt = source.prompt;
+  if (!Number.isInteger(request.duration) || request.duration < 4 || request.duration > 15)
+    throw new Error("Seedance 2.0 duration must be an integer from 4 to 15");
+  let content = [];
+  if (source.content !== undefined) {
+    if (source.prompt !== undefined || Object.values(MEDIA_RULES).some((rule) => rule.aliases.some((field) => source[field] !== undefined)))
+      throw new Error("Seedance content cannot be combined with prompt or reference aliases");
+    content = source.content;
+  } else if (source.prompt !== undefined) {
+    if (typeof source.prompt !== "string") throw new Error("Image2Pro prompt must be a string");
+    if (source.prompt.trim()) content.push({ type: "text", text: source.prompt });
   }
-  let referenceCount = 0;
   for (const [type, rule] of Object.entries(MEDIA_RULES)) {
     const fields = rule.aliases.filter((field) => source[field] !== undefined);
     if (fields.length > 1) throw new Error("Image2Pro reference " + type + " aliases are mutually exclusive");
@@ -166,33 +229,55 @@ function normalizeRequest(source, model, files = []) {
     if (type === "image" && !rule.arrays.includes(field) && Array.isArray(raw)) throw new Error(field + " must contain one image");
     const references = Array.isArray(raw) ? raw : [raw];
     if (references.length > rule.limit) throw new Error("Image2Pro supports at most " + rule.limit + " reference " + type + "s");
-    referenceCount += references.length;
-    if (references.length) request[rule.field] = references.map((reference) => mediaReference(reference, type, files));
+    for (const reference of references) {
+      let url = reference;
+      let role = "reference_" + type;
+      if (reference && typeof reference === "object" && !Array.isArray(reference) && !Object.prototype.hasOwnProperty.call(reference, "__fileRef")) {
+        if (Object.keys(reference).some((key) => !["url", "role"].includes(key))) throw new Error("unsupported Image2Pro reference field");
+        url = reference.url;
+        if (reference.role !== undefined) role = reference.role;
+      }
+      content.push({ type: type + "_url", [type + "_url"]: { url }, role });
+    }
   }
-  if (referenceCount > 15) throw new Error("Image2Pro supports at most 15 total reference files");
-  if (!request.prompt && !request.images) throw new Error("Image2Pro requires a prompt or at least one reference image");
+  request.content = normalizeContent(content, files);
   if (source.ratio !== undefined && source.aspect_ratio !== undefined && source.ratio !== source.aspect_ratio)
     throw new Error("ratio and aspect_ratio conflict");
-  const ratio = source.ratio === undefined ? source.aspect_ratio : source.ratio;
-  if (ratio !== undefined) {
-    if (typeof ratio !== "string" || !ratio.trim() || ratio.length > 64) throw new Error("Image2Pro ratio must be a non-empty string");
-    for (const character of ratio)
-      if (character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) throw new Error("Image2Pro ratio must not contain control characters");
-    request.ratio = ratio;
+  request.ratio = source.ratio === undefined ? (source.aspect_ratio === undefined ? "adaptive" : source.aspect_ratio) : source.ratio;
+  if (!["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"].includes(request.ratio)) throw new Error("unsupported Seedance 2.0 ratio");
+  request.resolution = source.resolution === undefined ? "720p" : source.resolution;
+  if (!["480p", "720p", "1080p", "4k"].includes(request.resolution)) throw new Error("unsupported Seedance 2.0 resolution");
+  for (const field of BOOLEAN_FIELDS) {
+    if (source[field] === undefined) continue;
+    if (typeof source[field] !== "boolean") throw new Error(field + " must be a boolean");
+    request[field] = source[field];
   }
   const key = clientRequestId(source);
   if (key !== undefined) request.client_request_id = key;
   return request;
 }
 
-/** 解码 multipart 文本及三类引用素材；重复字段逐一保留不透明引用，由宿主编码。 */
+/** 根据已校验的官方 content 分类宿主动作，不改变引用角色。 */
+function videoAction(content) {
+  if (content.some((item) => item.type === "video_url" || item.type === "audio_url")) return "reference_to_video";
+  return content.some((item) => item.type === "image_url") ? "image_to_video" : "text_to_video";
+}
+
+/** 解码 multipart 参数及图片/音频，视频文件因无已确认上传接口明确拒绝。 */
 function multipartRequest(body) {
   const request = {};
   for (const field of Object.keys(body.fields || {})) {
     if (!REQUEST_FIELDS.includes(field)) throw new Error("unsupported Image2Pro field: " + field);
     const values = body.fields[field];
     if (!Array.isArray(values) || !values.length) throw new Error("invalid multipart field: " + field);
-    if (Object.values(MEDIA_RULES).some((rule) => rule.arrays.includes(field))) {
+    if (field === "content" || BOOLEAN_FIELDS.includes(field)) {
+      if (values.length !== 1) throw new Error(field + " must be provided once");
+      try {
+        request[field] = JSON.parse(values[0]);
+      } catch {
+        throw new Error(field + " must contain valid JSON");
+      }
+    } else if (Object.values(MEDIA_RULES).some((rule) => rule.arrays.includes(field))) {
       if (values.length === 1 && /^\s*\[/.test(values[0])) {
         try {
           request[field] = JSON.parse(values[0]);
@@ -219,6 +304,7 @@ function multipartRequest(body) {
     const aliases = rule.aliases.filter((field) => request[field] !== undefined || fileFields.includes(field));
     if (aliases.length > 1) throw new Error("Image2Pro reference " + type + " aliases are mutually exclusive");
     if (!mediaFiles.length) continue;
+    if (type === "video") throw new Error("Seedance video references require HTTP(S) URLs; video uploads are unsupported");
     const field = aliases[0];
     if (type === "image" && !rule.arrays.includes(field) && (mediaFiles.length !== 1 || request[field] !== undefined))
       throw new Error(field + " must contain one image");
@@ -229,7 +315,7 @@ function multipartRequest(body) {
       if (!mimeType || mimeType === "application/octet-stream") {
         const extension = /\.([a-z]+)$/i.exec(file.filename || "");
         const suffix = extension ? extension[1].toLowerCase() : "";
-        mimeType = type === "audio" && ["mp4", "webm"].includes(suffix) ? "audio/" + suffix : FILE_MIMES[suffix] || "";
+        mimeType = FILE_MIMES[suffix] || "";
       }
       if (!rule.mimes.includes(mimeType)) throw new Error("Image2Pro upload MIME type must match a supported " + type + " format");
       references.push({ __fileRef: file.ref, encoding: "dataUrl", mimeType });
@@ -248,13 +334,14 @@ export function buildSubmitRequest(ctx) {
   const key = body.client_request_id === undefined ? ctx.publicTaskId : body.client_request_id;
   if (typeof key !== "string" || !/^[A-Za-z0-9_.-]{6,120}$/.test(key))
     throw new Error("a valid public task ID or client idempotency key is required for Image2Pro");
+  delete body.client_request_id;
   return {
     url: apiBase(ctx) + "/videos",
     method: "POST",
     headers: { Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json", "Idempotency-Key": key },
     body,
     noRetry: true,
-    action: body.audios || body.videos ? "reference_to_video" : body.images ? "image_to_video" : "text_to_video",
+    action: videoAction(body.content),
   };
 }
 
@@ -367,7 +454,7 @@ function responsesRequest(ctx) {
           text += item.text;
         } else if (["input_image", "image_url"].includes(item.type)) {
           if (Object.keys(item).some((key) => !["type", "image_url"].includes(key))) throw new Error("unsupported Image2Pro Responses image field");
-          images.push(mediaReference(item.image_url, "image", []));
+          images.push(item.image_url);
         } else throw new Error("Image2Pro Responses supports text and ordinary reference images only");
       }
     } else throw new Error("Image2Pro Responses message content must be text or an array");
@@ -398,7 +485,7 @@ export const protocols = {
       return {
         kind: "submit",
         model,
-        action: request.audios || request.videos ? "reference_to_video" : request.images ? "image_to_video" : "text_to_video",
+        action: videoAction(request.content),
         requestBody: request,
       };
     },
@@ -418,7 +505,7 @@ export const protocols = {
       return {
         kind: "submit",
         model: request.model,
-        action: request.audios || request.videos ? "reference_to_video" : request.images ? "image_to_video" : "text_to_video",
+        action: videoAction(request.content),
         requestBody: request,
       };
     },

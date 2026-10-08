@@ -2,23 +2,24 @@
 
 ## 目标与基线
 
-P1：按供应商公开视频 API 文档接入三个精确模型，支持文生视频、最多 9 张参考图、JSON URL/Data URL 和本地素材上传，按请求视频秒数计费。用户追加每次最多 3 个音频和 3 个视频引用：按 `audios` / `videos` 数组提供兼容扩展，其上游合同待验证。
+P1：按用户 2026-10-08 最终确认，仅适配 `Seedance2.0 0.9r`，移除两个含 Flash 的模型；URL 依据 Image2Pro 文档，参数按官方 Seedance 2.0 传送。支持文生、首帧、首尾帧及全模态参考，沿用请求秒数计费。
 
 - 基线：`main@a76c610e1`，工作区干净，上游 `fork/main`，远端 `https://github.com/lysimportant/forknewapi.git`。
 - 环境：Windows，Go `1.26.0`、Node `24.12.0`，`web/node_modules` 已存在；Bun 不在默认 PATH，优先复用仓库本地工具。
-- Moon 不支持这三个模型的精确 ID，且拒绝 multipart，新增独立 `image2pro`，保留 Moon 原合同。
+- Moon 不包含 `Seedance2.0 0.9r` 精确 ID，按 `usage.total_tokens` 结算且拒绝 multipart；Image2Pro 完成文档只承诺 `url`，当前按请求秒数计费并支持图片/音频上传转换，因此保留独立 `image2pro`，不借模型映射改变身份或收费。
 - 文档：<https://image2pro.top/api-docs>；已只读验证 `GET https://api.image2pro.top/v1/models` 返回三个目标模型。
-- 模型：`无限制-Flash-中配-Video`、`无限制-Flash-MAX-Video`、`Seedance2.0 0.9r`；目录中的其他模型不自动开放生成。
-- 文档只明确 `input_image` / `images` 图片 URL/Data URL，最多 9 张。用户要求追加 3 音频、3 视频后，使用 `audios` / `videos` 的 URL/Data URL 字符串数组做本地兼容适配并验证上传转换；这两个上游字段尚未公开，已向用户说明待验证，不宣称供应商确认支持。首尾帧语义仍未公开，不静默降级成普通图片。
+- 当前仅声明 `Seedance2.0 0.9r`；`无限制-Flash-中配-Video` 与 `无限制-Flash-MAX-Video` 不再适配或导入。撤回未交付的 Flash-MAX 4–12 秒特判；旧任务的只读查询和已冻结用量保留。
+- 用户已确认该接口接入 Seedance，body 按官网：`model/content/duration/resolution/ratio`，内容包含 `text/image_url/video_url/audio_url` 与明确角色；布尔 `generate_audio/watermark/return_last_frame` 保留显式 `false`。
+- 官方依据：<https://docs.volcengine.com/docs/82379/1520757?lang=zh>，已保存正文 `.local-tests/video-provider-docs/doubao-official.md`。最多 9 图、3 视频、3 音频、合计 15；首尾帧与全模态参考互斥、尾帧需首帧、不可纯音频。图片/音频可用 Data URL，视频仅 URL；未确认的 `seed/camera_fixed/output_format` 等参数不开放给 2.0。
 - 不提交真实付费生成，不修改管理员价格、供应商积分换算、数据库、依赖或生产配置。
 
-## 分工与恢复
+## 初轮分工与恢复
 
 - 主代理：供应商合同核对、集中回归、模拟 HTTP 验收、检查点和 Git 交付。
 - `moon_compatibility`：仅 `plugins/tasks/image2pro/plugin.js`。
 - `upload_discovery_audit`：宿主重复上传引用审计；确认方案后单独修复同名多图读成首图的边界。
 - 上次成功：最终源码构建的隔离网关完成全部 HTTP 验收；44 个 Go 测试包均有通过结果，全仓 vet、构建、插件 lint/format、完整 diff 和敏感信息扫描通过。
-- Git 交付目标：`fork/main`，中文 annotated Tag `v1.0.0-rc.37.custom.39`。实际提交与推送状态以 Git HEAD、Tag 指向和远端核验为准，部署需更新并重启后端。
+- 初轮交付为 `fork/main` 与中文 annotated Tag `v1.0.0-rc.37.custom.39`；本轮交付见文末。部署需更新并重启后端，源码验证不代表运行插件已更新。
 
 ## 兼容与回滚
 
@@ -26,7 +27,7 @@ P1：按供应商公开视频 API 文档接入三个精确模型，支持文生�
 
 回滚前先等待在途任务完成，禁用 `image2pro` 渠道或回退本次应用提交；保留价格、任务、日志和用户数据。上传修复需保持旧单文件引用格式可用。
 
-## 验收状态
+## 历史通用 body 验收状态（本轮新合同见文末）
 
 - [x] 读取项目规则、插件 API 和现有 Moon 实现，记录干净基线。
 - [x] 读取供应商公开视频文档及真实模型目录，不记录密钥。
@@ -38,15 +39,15 @@ P1：按供应商公开视频 API 文档接入三个精确模型，支持文生�
 
 ## 使用配置
 
-更新并重启后端后，启用内置 `Image2Pro` 任务插件，新增类型 61 渠道并绑定 `task_plugin_key=image2pro`，Base URL 使用 `https://api.image2pro.top/v1`。密钥只填渠道密钥栏；「获取模型」读取实时目录，仅允许导入上述三个已声明模型。
+更新并重启后端后，启用内置 `Image2Pro` 任务插件，类型 61 渠道绑定 `task_plugin_key=image2pro`，Base URL 使用 `https://api.image2pro.top/v1`。密钥只填渠道密钥栏；「获取模型」读取实时目录，仅允许导入 `Seedance2.0 0.9r`。不改现有渠道、价格或数据库 override；管理员应清理渠道旧 Flash 选择并确认有效插件为 2.0.0。
 
-管理员按各模型配置视频生成单价。任务表达式示例为 `u("seconds") * P`，`P` 替换为每秒美元单价；不使用供应商积分或按次报价。每次请求必须显式传 `seconds` 或 `duration`，取值大于 0、不超过宿主 3600 秒安全上限；供应商实际可用时长仍由协议决定。
+管理员按模型配置视频生成单价。任务表达式示例为 `u("seconds") * P`，`P` 替换为每秒美元单价；不使用供应商积分或按次报价。新建必须显式传 `seconds` 或 `duration`，取值 4–15 秒整数。由于 Image2Pro 查询文档未承诺实际时长，`-1` 自动时长先明确拒绝，避免猜测收费秒数；旧任务仍按原冻结秒数结算。
 
-JSON 使用 `images`、`audios`、`videos` 的 URL/Data URL 数组；普通 `{url, role}` 引用会转换为字符串，保留顺序、重复和签名参数。multipart 可以在同名 `images` / `audios` / `videos` 字段重复上传文件，宿主按独立引用编码成 Data URL 后发 JSON，不把文件占位对象直接发给供应商。音视频字段是兼容扩展，尚未验证真实供应商受理。
+JSON 首选官方 `content`；旧 `prompt/images/audios/videos` 入口兼容转换为同一结构，不能与显式 `content` 混用而覆盖或重复素材。图片/音频 multipart 使用独立文件引用转 Data URL；视频 multipart 和视频 Data URL 明确拒绝，需先获得可读 URL。保留角色、顺序、重复及签名参数，不静默丢素材。分辨率 `480p/720p/1080p/4k`，比例 `16:9/4:3/1:1/3:4/9:16/21:9/adaptive`。
 
-支持 OpenAI Video 的 `/v1/videos` 创建、查询和成片内容代理，以及 Responses 同步、流式、后台模式。上游生成失败沿用宿主退款；未知提交结果不自动重发。首尾帧角色和未知参数明确报错，不静默降级。
+支持 OpenAI Video 的 `/v1/videos` 创建、查询和成片内容代理，以及 Responses 同步、流式、后台模式。上游生成失败沿用宿主退款；未知提交结果不自动重发。未知参数、冲突别名与不合法角色组合明确报错，不静默降级。
 
-## 本地 HTTP 验收证据
+## 历史三模型本地 HTTP 验收证据
 
 最终源码与运行网关的内嵌插件逐字比较一致。Node 夹具使用 fresh SQLite、临时合成凭据，网关监听 `127.0.0.1:18435`，模拟供应商监听 `127.0.0.1:18436`，结束后均停止；没有向真实供应商提交任务。
 
@@ -70,3 +71,17 @@ JSON 使用 `images`、`audios`、`videos` 的 URL/Data URL 数组；普通 `{ur
 - `.local-tests/image2pro/new-api.exe plugin lint plugins/tasks/image2pro/plugin.js` 通过。
 - `node .local-tests/image2pro/http-smoke.mjs` 通过，报告 `success=true`。
 - 修改的 Go 文件已 gofmt；`git diff --check`、完整差异复核和任务文件敏感信息扫描通过。没有修改依赖、relaykit、数据库结构或前端 UI，因此不涉及三数据库迁移矩阵或独立 relaykit 构建。
+
+## 2026-10-08：Seedance 单模型收敛
+
+- 恢复基线为 `main @ 5c42d5a27`、上游 `fork/main`，三份旧 Flash-MAX 专项文件有未提交改动；Canvas 为 `main @ ff19f0d`、上游 `origin/main`。环境与依赖沿用现有版本。
+- 实施前核对两仓规则、插件 API v1、schema/类型声明、Moon、Image2Pro 与 Canvas 创建/冻结/查询合同。没有扩展宿主 API，schema/类型声明无需改变。
+- Image2Pro 升级至 2.0.0：白名单仅 `Seedance2.0 0.9r`，两个 Flash 的新创建和目录导入退出；查询钩子、已冻结秒数、上传与 noRetry 保留。不修改 Moon、现有价格或渠道，不删除在途任务。
+- 这是不兼容的模型范围收窄。更新前应停止提交 Flash，保留旧任务查询；回滚本轮宿主提交即可恢复原模型声明。数据库 override 可覆盖内嵌插件，部署时应确认有效版本及渠道旧选择，不能只凭源码证明线上生效。
+- 第一阶段仅收窄白名单的 44 包 Go test、vet/build/plugin lint/oxlint/oxfmt 已通过；用户随后明确参数按官网，以上不能代替最终 body 改动的回归。
+- 最终插件源码已冻结。`go test -mod=readonly ./... -count=1 -timeout=600s` 完整通过 44 个测试包，controller 用时 182.496 秒；`go vet -mod=readonly ./...`、宿主 build、插件 lint、oxlint/oxfmt 与 `git diff --check` 均通过。日志位于 `.local-tests/seed-official-20261008/`，不能混用旧 body 阶段结果。
+- 最新二进制 SHA256 为 `354f338951c0764d1f588845ca735fcf67dd1ae049509d17ee78d69410e68a59`。隔离 HTTP 夹具核对运行插件与当前源码逐字一致，`node .local-tests/seed-official-smoke-20261008/http-smoke.mjs` 退出码 0；报告位于 `.local-tests/seed-official-smoke-20261008/run-1791430801612-bae134/http-report.json`。
+- HTTP 覆盖官方首尾帧、三个显式 `false`、9 图/3 视频/3 音频、旧签名重复图、multipart 不同图片及 header-only 幂等键；14 个非法场景零上游 POST、零扣费。四个成功任务冻结 30 秒，按合成单价结算 150000 quota；未知 503 在 `RetryTimes=3` 下仅提交一次并退款。两个回环监听均已停止，无真实收费请求。
+- Responses 三种模式的官方 body 转换已有 JS 合同专项，未做本轮 HTTP 端到端验收；真实供应商受理、成片效果、生产部署和额外尾帧结果仍未验收。网关没有可信媒体元数据，远程参考素材的实际时长、大小和格式仍由上游检查；Canvas 对已冻结的参考音视频时长做独立请求前校验。
+- Canvas 最终无缓存 lint/typecheck/build、同源 Web 构建、逐包串行测试与 7 项 PC 浏览器冒烟通过；其中 Web 为 137 文件、2591 项。独立复核已确认冻结参考时长及公网 MIME 校验的遗漏解决；设施和真实服务测试跳过不算集成通过。
+- 交付引用：只提交本任务文件，中文附注 Tag `v2026.10.08-image2pro-seedance-official`，推 `fork/main` 并核验远端；不推 QuantumNous `origin`。实际提交以 Git 和远端核验为准。本轮不部署，数据库 override 与渠道旧 Flash 选择仍需管理员在更新时核对。
