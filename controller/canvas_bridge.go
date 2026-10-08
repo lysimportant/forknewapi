@@ -62,6 +62,29 @@ type canvasInputMedium struct {
 	Role string `json:"role"`
 }
 
+// canvasVideoInputProfile 保存已适配的公开别名和参考数量边界；total 同时受 Canvas 的 40 项上限约束。
+type canvasVideoInputProfile struct {
+	alias                         string
+	images, videos, audios, total int
+}
+
+// canvasYuanVideoInputs 只纳入 Yuan 插件已核对的精确上游 ID；模型目录新增名称不会自动开放媒体输入。
+var canvasYuanVideoInputs = map[string]canvasVideoInputProfile{
+	"seedance-2.5-guanfang-anmiao":                      {alias: "Yuan-Seedance-2.5-Official", images: 30, audios: 10, total: 40},
+	"yl_g7zy_seedance_v2_0_std":                         {alias: "Yuan-Seedance-2.0-LJ", images: 9, total: 9},
+	"yl_g7zy_seedance_v2_0_std_full":                    {alias: "Yuan-Seedance-2.0-LJ-Full", images: 9, videos: 3, audios: 3, total: 15},
+	"yl_g7zy_seedance_v2_5":                             {alias: "Yuan-Seedance-2.5-LJ", images: 30, total: 30},
+	"yl_g7zy_seedance_v2_5_full":                        {alias: "Yuan-Seedance-2.5-LJ-Full", images: 30, videos: 10, audios: 10, total: 40},
+	"yl_seedance-2-0_ba0687ff09f2":                      {alias: "Yuan-Seedance-2.0-HD", images: 9, total: 9},
+	"yl_seedance-2-5_6caffaca7390":                      {alias: "Yuan-Seedance-2.5-HD", images: 30, total: 30},
+	"yl_seedance-2-5_0fab2f1b1f10":                      {alias: "Yuan-Seedance-2.5-HD-Full", images: 30, videos: 10, audios: 10, total: 40},
+	"yl_seedance-2-5_750271498003":                      {alias: "Yuan-Seedance-2.5-HD-PerSecond", images: 30, videos: 10, audios: 10, total: 40},
+	"yl_api_hmstudio_seedance_v2_5_101010_7d58bbb217e6": {alias: "Yuan-Seedance-2.5-YS-Full", images: 10, videos: 10, audios: 10, total: 30},
+	"yl_api_hmstudio_seedance_v2_5_dc729300ff39":        {alias: "Yuan-Seedance-2.5-YS", images: 10, total: 10},
+	"yl_video-30_76dbb7993f8e":                          {alias: "Yuan-Seedance-2.5-YL1", images: 9, total: 9},
+	"yl_api_hmstudio_seedance_v2_0_514a65db713b":        {alias: "Yuan-Seedance-2.0-YS", images: 9, total: 9},
+}
+
 // canvasCandidate 保存授权范围内的一条路由；Channel 从数据库读取时排除渠道凭据。
 type canvasCandidate struct {
 	Group         string
@@ -407,28 +430,76 @@ func (candidate canvasCandidate) priced(name string) bool {
 	return billing_setting.GetBillingMode(name) == billing_setting.BillingModeTieredExpr && exists && strings.TrimSpace(expression) != ""
 }
 
-// canvasInputMediaTypes 返回所有可执行且已定价路由的能力交集；仅已适配的 Hailuo H3 协议开放媒体。
-// Canvas 当前只适配对外 MiniMax-H3；未知别名、插件、映射或混合路由保持仅文字。
-func canvasInputMediaTypes(name string, profile canvasProfile, candidates []canvasCandidate) []string {
-	textOnly := []string{"text"}
-	if profile.Contract != "newapi-video-v1" || name != "MiniMax-H3" {
-		return textOnly
+// canvasYuanModel 判断公开身份是否属于双边已适配的精确 ID 或固定别名，不代替实际渠道映射校验。
+func canvasYuanModel(name string) bool {
+	if _, known := canvasYuanVideoInputs[name]; known {
+		return true
+	}
+	for _, input := range canvasYuanVideoInputs {
+		if name == input.alias {
+			return true
+		}
+	}
+	return false
+}
+
+// canvasInputMediaProfile 返回所有可执行且已定价路由的参考能力交集；未知插件、映射或公开身份失败关闭。
+func canvasInputMediaProfile(name string, profile canvasProfile, candidates []canvasCandidate) (canvasVideoInputProfile, bool) {
+	var result canvasVideoInputProfile
+	if profile.Contract != "newapi-video-v1" || (name != "MiniMax-H3" && !canvasYuanModel(name)) {
+		return result, false
 	}
 	matched := false
 	for _, candidate := range candidates {
 		if !candidate.supports(name, profile) || !candidate.priced(name) {
 			continue
 		}
-		if candidate.Plugin == nil || candidate.Plugin.Meta.Key != "hailuo" ||
-			!slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
-			return textOnly
+		if candidate.Plugin == nil {
+			return canvasVideoInputProfile{}, false
 		}
-		matched = true
+		var input canvasVideoInputProfile
+		if name == "MiniMax-H3" {
+			if candidate.Plugin.Meta.Key != "hailuo" || !slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
+				return canvasVideoInputProfile{}, false
+			}
+			input = canvasVideoInputProfile{images: 9, videos: 3, audios: 3, total: 15}
+		} else {
+			var known bool
+			input, known = canvasYuanVideoInputs[candidate.UpstreamModel]
+			if candidate.Plugin.Meta.Key != "yuanliu" || !known {
+				return canvasVideoInputProfile{}, false
+			}
+		}
+		if matched {
+			result.images = min(result.images, input.images)
+			result.videos = min(result.videos, input.videos)
+			result.audios = min(result.audios, input.audios)
+			result.total = min(result.total, input.total)
+		} else {
+			result = input
+			matched = true
+		}
 	}
-	if !matched {
-		return textOnly
+	return result, matched
+}
+
+// canvasInputMediaTypes 仅发布实际候选共同支持的媒体类型；生成输入仍须通过对应插件解码校验。
+func canvasInputMediaTypes(name string, profile canvasProfile, candidates []canvasCandidate) []string {
+	types := []string{"text"}
+	input, supported := canvasInputMediaProfile(name, profile, candidates)
+	if !supported {
+		return types
 	}
-	return []string{"text", "image", "video", "audio"}
+	if input.images > 0 {
+		types = append(types, "image")
+	}
+	if input.videos > 0 {
+		types = append(types, "video")
+	}
+	if input.audios > 0 {
+		types = append(types, "audio")
+	}
+	return types
 }
 
 // GetCanvasCatalog 返回 Key 授权目录、明确调用合同和人民币换算信息；无钱包或上游请求副作用。
@@ -515,8 +586,13 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 	}
 	if raw, exists := fields["input_media"]; exists {
 		items, ok := raw.([]any)
-		if !ok || len(items) > 15 || request.Contract != "newapi-video-v1" {
-			return request, canvasProfile{}, errors.New("input_media 仅接受视频合同的媒体描述数组，最多 15 项")
+		maxMedia := 15
+		yuanModel := canvasYuanModel(request.Model)
+		if yuanModel {
+			maxMedia = 40
+		}
+		if !ok || len(items) > maxMedia || request.Contract != "newapi-video-v1" {
+			return request, canvasProfile{}, fmt.Errorf("input_media 仅接受视频合同的媒体描述数组，最多 %d 项", maxMedia)
 		}
 		counts := make(map[string]int)
 		roleTypes := map[string]string{
@@ -536,7 +612,7 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 			counts[mediaType]++
 			counts[role]++
 		}
-		if counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3 ||
+		if (!yuanModel && (counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3)) ||
 			counts["first_frame"] > 1 || counts["last_frame"] > 1 {
 			return request, canvasProfile{}, errors.New("媒体输入超过数量限制：图片 9 张、视频 3 段、音频 3 段，首尾帧各 1 张")
 		}
@@ -560,6 +636,9 @@ func canvasCanonicalBody(request canvasEstimateRequest, profile canvasProfile) (
 		"image": {"n", "size", "quality", "aspect_ratio", "style", "background", "output_format", "watermark"},
 		"video": {"seconds", "duration", "size", "resolution", "aspect_ratio", "quality", "seed", "generate_audio", "audio", "watermark", "negative_prompt"},
 		"audio": {"voice", "speed", "response_format", "instructions"},
+	}
+	if profile.MediaType == "video" && canvasYuanModel(request.Model) {
+		allowed["video"] = append(allowed["video"], "mode")
 	}
 	body := map[string]any{"model": request.Model}
 	for key, value := range request.Parameters {
@@ -667,7 +746,11 @@ func (candidate canvasCandidate) estimateQuota(c *gin.Context, groups modelListG
 			RouteRequestContext: route, Protocol: "openai_video", Operation: "create", Model: request.Model, UpstreamModel: candidate.UpstreamModel,
 		}.JSValue())
 		if err != nil {
-			return 0, &canvasEstimateFailure{http.StatusUnprocessableEntity, "plugin_parameters_rejected", "当前视频插件不接受这些参数或缺少输入，请检查时长、尺寸和生成输入"}
+			status := http.StatusUnprocessableEntity
+			if plugin.Meta.Key == "yuanliu" {
+				status = http.StatusBadRequest
+			}
+			return 0, &canvasEstimateFailure{status, "plugin_parameters_rejected", "当前视频插件不接受这些参数或缺少输入，请检查时长、尺寸和生成输入"}
 		}
 		resolved, ok := decoded.(map[string]any)
 		if !ok || resolved["kind"] != "submit" || resolved["model"] != request.Model {
@@ -777,12 +860,24 @@ func EstimateCanvasPrice(c *gin.Context) {
 		return
 	}
 	if len(request.InputMedia) != 0 {
-		inputTypes := canvasInputMediaTypes(request.Model, profile, candidates)
+		input, supported := canvasInputMediaProfile(request.Model, profile, candidates)
+		if !supported {
+			canvasBridgeError(c, http.StatusUnprocessableEntity, "media_input_unsupported", "当前模型的可执行渠道未统一支持这些媒体输入，请检查模型映射和插件")
+			return
+		}
+		counts := make(map[string]int)
 		for _, media := range request.InputMedia {
-			if !slices.Contains(inputTypes, media.Type) {
-				canvasBridgeError(c, http.StatusUnprocessableEntity, "media_input_unsupported", "当前模型的可执行渠道未统一支持这些媒体输入，请检查模型映射和插件")
-				return
-			}
+			counts[media.Type]++
+		}
+		if counts["image"] > input.images || counts["video"] > input.videos || counts["audio"] > input.audios || len(request.InputMedia) > input.total {
+			canvasBridgeError(c, http.StatusBadRequest, "invalid_estimate", fmt.Sprintf("媒体输入超过可执行渠道的共同限制：图片 %d 张、视频 %d 段、音频 %d 段，总计 %d 项", input.images, input.videos, input.audios, input.total))
+			return
+		}
+	}
+	if _, modeProvided := request.Parameters["mode"]; modeProvided {
+		if _, supported := canvasInputMediaProfile(request.Model, profile, candidates); !supported {
+			canvasBridgeError(c, http.StatusBadRequest, "invalid_estimate", "当前模型的可执行渠道未统一支持 Yuan 视频模式，请检查模型映射和插件")
+			return
 		}
 	}
 	estimatedQuota, selectedGroup := -1, ""

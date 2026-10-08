@@ -10,7 +10,7 @@
 
 ## 范围、兼容与回滚
 
-- 只改 New API，不修改 Canvas、现有渠道、管理员价格、数据库、依赖或生产配置；不执行真实付费生成。
+- 初次插件接入只改 New API；2026-10-08 后续画布调用修复同步调整 Canvas，范围见下方双边核对。不修改现有渠道、管理员价格、数据库、依赖或生产配置，不执行真实付费生成。
 - `modelAliases` 为 API v1 可选元信息，映射目标必须精确属于 `meta.models`。旧插件行为保留；旧宿主会拒绝此新增字段，插件需随宿主一起升级。
 - 内部目录与自动上游更新仍使用精确上游 ID；管理响应显示建议别名并返回 `model_mapping`，保存使用已有渠道字段，已有管理员映射优先。
 - 上游人民币报价不自动写成宿主美元价格。按次模型返回数量、按秒模型返回秒数和分辨率，管理员独立配置价格。
@@ -19,9 +19,10 @@
 
 ## Canvas 双边核对
 
-- 已读两仓 AGENTS 与对应合同。Canvas 当前 New API 账号使用 `newapi-video-v1`（`POST /v1/videos`），可通用文生与单首帧；新 Yuan 别名尚未登记精确生成合同，不声称已完成 Canvas 多模态。
-- Canvas 的精确模型合同、报价媒体声明与资源持久化边界需后续适配：New API Canvas bridge 默认仅 text、估算限制 9/3/3 合计 15，Canvas `resourceRefs` 最多 40；不能据此宣称插件的 30/10/10 共 50 参考已在 Canvas 可用。
-- 既有 Canvas 只读基线：domain 33/33、providers 160/160 合同专项通过。这是旧合同回归，不是新 Yuan 模型或生产验收。
+- 已读两仓 AGENTS 与对应合同。后续修复以 Canvas `main @ e77928544327d00d5f3ae2fdbfbc7fe89f7beb58`、New API `main @ 06e25caa06a347d85f990a1558e672a66f4ee50b` 为基线，补齐 13 个既有精确 ID 和固定别名的 `newapi-video-v1` 合同；仅开放文生和普通全能参考，不借用首尾帧、编辑或延长语义。
+- Canvas API 在 Run 受理前校验参数、模式及引用数量；API/Worker 按冻结版本签发本站 HTTPS 地址，Provider 序列化到 `metadata.content`，保持显式重复引用及公共任务 ID。已有任务仍只查询，不因旧参数或素材失效重发 POST。
+- New API Canvas bridge 按已定价可执行渠道的真实映射取媒体能力交集；数量遵守各型号和 Canvas 40 项总上限，非法 Yuan 解码返回 400。估价只有类型及角色占位，不读取素材、不调用供应商。
+- `Yuan-Seedance-2.5-Official` 保留历史合同，不代表仍在实时目录上架；LW 和其它未适配的新名称不自动开放。Canvas 检查点为 `G:/multimodal-canvas/docs/yuanliu-video-checkpoint.md`，本地验证不等于实际部署或真实供应商成片。
 
 ## 使用方式与模型映射
 
@@ -72,7 +73,16 @@
 - 合计 17 次模拟 POST，合成结算额度 255000；这些数量与单价仅属于测试，不是供应商报价或真实消费。
 - 专用网关及模拟上游已于 2026-10-08 15:04:12 清理，进程退出码 0；52106、52107、52108 无遗留监听。
 
-真实供应商生成权限、素材公网可达性、成片质量及 Canvas 多模态合同尚未验证。当前验证覆盖本地插件/宿主/前端合同，不构成生产部署或真实上游验收。
+以上初次插件验证不覆盖 Canvas。后续画布多模态本地回归见下节；真实供应商生成权限、素材公网可达性和成片质量仍未验证，不构成生产部署或真实上游验收。
+
+## 2026-10-08：画布视频与全能参考配套修复
+
+- 修改仅涉及 `controller/canvas_bridge.go` 及现有测试，插件请求和计费合同不变。13 个 ID/别名逐一验证声明能力、真实映射、边界数量、混合渠道和隐藏组别名歧义；非法参数和目录/估价全程零出站请求。
+- `go test -mod=readonly -json -count=1 ./...` 本轮 44 包通过、81 条件用例跳过，另有 38 个包没有测试；日志 `.local-tests/yuanliu/go-canvas-all.jsonl`。数据库矩阵跳过不计为通过，本轮没有 SQL、ORM、数据库模型或迁移变更；Canvas/Yuan 专项、Go vet/build、插件 lint 与 `git diff --check` 通过。
+- 最终隔离 HTTP 使用 `.local-tests/yuanliu/new-api-canvas.exe`，SHA256 为 `2523ba936c1ef44146b9e494d8af9aa420c1cbf6e34b44623e1bb600719134c8`。报告 `.local-tests/yuanliu/run-1791468938728-81d075/http-report.json`：13 别名完整创建/查询，19 非法请求零 POST，未知 503 只提交一次，同渠道内容鉴权和合成结算通过，17 次 POST 均为回环模拟。
+- Canvas 完整九包 6489 项及 runtime 8 项通过，其中 Web 2626 项、Domain 534、Provider 999、API 1333、Worker 890；API 108、Worker 28 个设施条件用例跳过，不计为通过。最终全仓 build/typecheck/lint 各 9 包通过、零缓存，API/Worker 运行产物打包成功。1440×900、1366×768 共 10 项 Yuan 浏览器场景通过，实际截图已检查；完整命令与边界见 Canvas 检查点。
+- 影响为两仓调用合同和素材水合路径，未改数据库或价格。部署须同时更新两端并核对有效插件、映射和公网 HTTPS 素材来源。回滚本轮应用提交并重建，保留在途公共任务、素材、渠道映射和价格，不重复生成。
+- 交付目标为 `fork/main` 与附注 Tag `v2026.10.08-yuanliu-canvas`；Canvas 为 `origin/main` 和同名 Tag。已有 8080 站点及生产服务未更新，真实供应商成片未验收。
 
 ## 检查点
 

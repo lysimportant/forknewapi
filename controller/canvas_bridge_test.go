@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -804,4 +806,307 @@ export function buildContentRequest(){throw new Error("must never query");}
 		assert.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
 		assert.Contains(t, response.Body.String(), `"code":"media_input_unsupported"`)
 	})
+}
+
+// canvasEstimateNoNetwork 拒绝所有出站请求并计数，确保目录和估算不会提交付费任务或获取参考媒体。
+type canvasEstimateNoNetwork struct{ requests atomic.Int64 }
+
+// RoundTrip 在网络发送前拒绝请求；计数用于目录、估算和插件解码的无副作用断言。
+func (transport *canvasEstimateNoNetwork) RoundTrip(*http.Request) (*http.Response, error) {
+	transport.requests.Add(1)
+	return nil, fmt.Errorf("Canvas estimate must not access the network")
+}
+
+// blockCanvasEstimateNetwork 临时替换通用出站客户端，测试结束后恢复原 transport。
+func blockCanvasEstimateNetwork(t *testing.T) *canvasEstimateNoNetwork {
+	t.Helper()
+	transport := &canvasEstimateNoNetwork{}
+	previousDefault := http.DefaultClient.Transport
+	http.DefaultClient.Transport = transport
+	t.Cleanup(func() { http.DefaultClient.Transport = previousDefault })
+	if client := service.GetHttpClient(); client != nil {
+		previous := client.Transport
+		client.Transport = transport
+		t.Cleanup(func() { client.Transport = previous })
+	}
+	return transport
+}
+
+// canvasReferenceInputs 构造仅包含类型与普通参考角色的估算输入，不传入实际 URL。
+func canvasReferenceInputs(images, videos, audios int) []canvasInputMedium {
+	media := make([]canvasInputMedium, 0, images+videos+audios)
+	for _, input := range []struct {
+		kind  string
+		count int
+	}{{"image", images}, {"video", videos}, {"audio", audios}} {
+		for range input.count {
+			media = append(media, canvasInputMedium{Type: input.kind, Role: "reference_" + input.kind})
+		}
+	}
+	return media
+}
+
+// TestCanvasBridgeYuanReferenceInputs 验证十三个源流 ID 和别名的目录、参考边界及真实插件校验，全程不发送生成请求。
+func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
+	db := setupCanvasBridgeDB(t, "sqlite")
+	transport := blockCanvasEstimateNetwork(t)
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("yuanliu")
+	require.True(t, found)
+	modes, expressions := make(map[string]string), make(map[string]string)
+	mapping := make(map[string]string)
+	names := make([]string, 0, len(plugin.Meta.Models)*2)
+	for _, upstream := range plugin.Meta.Models {
+		input, known := canvasYuanVideoInputs[upstream]
+		require.True(t, known, upstream)
+		require.Equal(t, upstream, plugin.Meta.ModelAliases[input.alias])
+		mapping[input.alias] = upstream
+		schema, _ := plugin.Meta.UsageForModel(upstream)
+		quantity := "count"
+		if _, perSecond := schema["seconds"]; perSecond {
+			quantity = "seconds"
+		}
+		for _, name := range []string{upstream, input.alias} {
+			names = append(names, name)
+			modes[name], expressions[name] = "tiered_expr", fmt.Sprintf(`u(%q) * 0.2`, quantity)
+		}
+	}
+	encodedMapping, err := common.Marshal(mapping)
+	require.NoError(t, err)
+	channel := canvasFixtureChannel(t, db, "default", names...)
+	require.NoError(t, db.Model(channel).Updates(map[string]any{
+		"type": constant.ChannelTypeTaskPlugin, "setting": `{"task_plugin_key":"yuanliu"}`, "model_mapping": string(encodedMapping),
+	}).Error)
+	model.InitChannelCache()
+	withTieredBillingConfig(t, modes, expressions)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+		c.Next()
+	})
+	router.GET("/v1/canvas/catalog", GetCanvasCatalog)
+	router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
+	response := canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var catalog struct {
+		Models []canvasCatalogModel `json:"models"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+	require.Len(t, catalog.Models, len(names))
+	byID := make(map[string]canvasCatalogModel, len(names))
+	for _, item := range catalog.Models {
+		byID[item.ID] = item
+	}
+	for _, upstream := range plugin.Meta.Models {
+		t.Run(upstream, func(t *testing.T) {
+			input := canvasYuanVideoInputs[upstream]
+			seconds := 10
+			if upstream == "yl_video-30_76dbb7993f8e" {
+				seconds = 30
+			}
+			types := []string{"text", "image"}
+			if input.videos > 0 {
+				types = append(types, "video")
+			}
+			if input.audios > 0 {
+				types = append(types, "audio")
+			}
+			mentionTypes := make([]any, len(types))
+			for i := range types {
+				mentionTypes[i] = types[i]
+			}
+			schema, _ := plugin.Meta.UsageForModel(upstream)
+			quota := 100000
+			if _, perSecond := schema["seconds"]; perSecond {
+				quota *= seconds
+			}
+			for _, name := range []string{upstream, input.alias} {
+				item, exists := byID[name]
+				require.True(t, exists, name)
+				assert.True(t, item.Available, name)
+				assert.Equal(t, "newapi-video-v1", item.Contract, name)
+				assert.Equal(t, types, item.InputMediaTypes, name)
+				assert.Equal(t, mentionTypes, item.Capabilities["mentionMediaTypes"], name)
+				media := canvasReferenceInputs(input.images, input.videos, min(input.audios, input.total-input.images-input.videos))
+				response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+					Model: name, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
+					Parameters: map[string]any{"seconds": seconds, "resolution": "720p", "mode": "omni_reference"}, InputMedia: media,
+				})
+				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				var estimate canvasEstimatePayload
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &estimate))
+				assert.Equal(t, fmt.Sprint(quota), estimate.EstimatedQuota, name)
+				assert.True(t, estimate.EstimateOnly)
+			}
+			for _, bound := range []struct {
+				kind  string
+				limit int
+			}{{"image", input.images}, {"video", input.videos}, {"audio", input.audios}} {
+				for _, count := range []int{bound.limit, bound.limit + 1} {
+					media := make([]canvasInputMedium, count)
+					urls := make([]string, count)
+					for i := range count {
+						media[i] = canvasInputMedium{Type: bound.kind, Role: "reference_" + bound.kind}
+						urls[i] = fmt.Sprintf("https://canvas-estimate.invalid/%d", i)
+					}
+					body := map[string]any{"model": upstream, "seconds": seconds, "prompt": "Animate the supplied references", bound.kind + "s": urls}
+					_, decodeErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+						"model": upstream, "upstreamModel": upstream, "body": map[string]any{"kind": "json", "value": body},
+					})
+					status := http.StatusOK
+					if count > bound.limit {
+						status = http.StatusBadRequest
+						require.Error(t, decodeErr, "%s count=%d", bound.kind, count)
+					} else {
+						require.NoError(t, decodeErr, "%s count=%d", bound.kind, count)
+					}
+					response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+						Model: upstream, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
+						Parameters: map[string]any{"seconds": seconds}, InputMedia: media,
+					})
+					assert.Equal(t, status, response.Code, "%s count=%d: %s", bound.kind, count, response.Body.String())
+				}
+			}
+		})
+	}
+	for _, test := range []struct {
+		name       string
+		parameters map[string]any
+		media      any
+	}{
+		{"total-41", map[string]any{"seconds": 10}, canvasReferenceInputs(30, 6, 5)},
+		{"first-frame", map[string]any{"seconds": 10}, []canvasInputMedium{{Type: "image", Role: "first_frame"}}},
+		{"last-frame", map[string]any{"seconds": 10}, []canvasInputMedium{{Type: "image", Role: "last_frame"}}},
+		{"mismatched-role", map[string]any{"seconds": 10}, []canvasInputMedium{{Type: "video", Role: "reference_image"}}},
+		{"url-forbidden", map[string]any{"seconds": 10}, []any{map[string]any{"type": "image", "role": "reference_image", "url": "https://private-reference.invalid/image.png"}}},
+		{"unknown-mode", map[string]any{"seconds": 10, "mode": "video_edit"}, canvasReferenceInputs(1, 0, 0)},
+		{"text-mode-with-reference", map[string]any{"seconds": 10, "mode": "text_to_video"}, canvasReferenceInputs(1, 0, 0)},
+		{"reference-mode-without-reference", map[string]any{"seconds": 10, "mode": "omni_reference"}, []canvasInputMedium{}},
+		{"image-mode-with-video", map[string]any{"seconds": 10, "mode": "image_to_video"}, canvasReferenceInputs(1, 1, 0)},
+		{"duration-below-model-minimum", map[string]any{"seconds": 4}, canvasReferenceInputs(1, 0, 0)},
+		{"duration-above-model-maximum", map[string]any{"seconds": 31}, canvasReferenceInputs(1, 0, 0)},
+		{"fractional-duration", map[string]any{"seconds": 5.5}, canvasReferenceInputs(1, 0, 0)},
+		{"resolution-rejected", map[string]any{"seconds": 10, "resolution": "1080p"}, canvasReferenceInputs(1, 0, 0)},
+		{"size-alias-rejected", map[string]any{"seconds": 10, "size": "1024x1024"}, canvasReferenceInputs(1, 0, 0)},
+		{"aspect-ratio-rejected", map[string]any{"seconds": 10, "aspect_ratio": "adaptive"}, canvasReferenceInputs(1, 0, 0)},
+		{"unsupported-scalar", map[string]any{"seconds": 10, "seed": 1}, canvasReferenceInputs(1, 0, 0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", map[string]any{
+				"model": "Yuan-Seedance-2.5-LJ-Full", "contract": "newapi-video-v1", "input_text": "Animate the supplied references",
+				"parameters": test.parameters, "input_media": test.media,
+			})
+			assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			assert.NotContains(t, response.Body.String(), "private-reference.invalid")
+		})
+	}
+	assert.Zero(t, transport.requests.Load(), "catalog, estimate and decoder must never send an outbound request")
+}
+
+// TestCanvasBridgeYuanRouteIntersection 验证媒体能力来自已定价可执行渠道的实际映射，并保留未知身份和别名冲突的失败关闭语义。
+func TestCanvasBridgeYuanRouteIntersection(t *testing.T) {
+	const full = "yl_seedance-2-5_0fab2f1b1f10"
+	const ysFull = "yl_api_hmstudio_seedance_v2_5_101010_7d58bbb217e6"
+	for _, test := range []struct {
+		name, public              string
+		upstreams                 []string
+		otherPlugin               string
+		hiddenConflict            bool
+		types                     []string
+		images, videos, audios    int
+		available, mediaSupported bool
+	}{
+		{"mapped-image-only", full, []string{"yl_g7zy_seedance_v2_5"}, "", false, []string{"text", "image"}, 30, 0, 0, true, true},
+		{"intersection-counts", full, []string{full, ysFull}, "", false, []string{"text", "image", "video", "audio"}, 10, 10, 10, true, true},
+		{"intersection-types", full, []string{full, "yl_g7zy_seedance_v2_0_std"}, "", false, []string{"text", "image"}, 9, 0, 0, true, true},
+		{"unpriced-route-ignored", full, []string{full, full}, "canvas-yuan-unpriced", false, []string{"text", "image", "video", "audio"}, 30, 5, 5, true, true},
+		{"unknown-mapping", full, []string{"unadapted-upstream"}, "", false, nil, 1, 0, 0, false, false},
+		{"unknown-public-alias", "Yuan-Seedance-2.5-HD-Full-v2", []string{full}, "", false, []string{"text"}, 1, 0, 0, true, false},
+		{"mixed-plugins", full, []string{full, full}, "canvas-yuan-mixed", false, []string{"text"}, 1, 0, 0, true, false},
+		{"ambiguous-alias-in-hidden-group", "Yuan-Seedance-2.5-HD-Full", []string{full, ysFull}, "", true, nil, 1, 0, 0, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupCanvasBridgeDB(t, "sqlite")
+			transport := blockCanvasEstimateNetwork(t)
+			if test.otherPlugin != "" {
+				quantity := "count"
+				if test.otherPlugin == "canvas-yuan-unpriced" {
+					quantity = "seconds"
+				}
+				source := fmt.Sprintf(`
+export const meta = {apiVersion:1,key:%q,name:"Canvas reference fixture",version:"1.0.0",author:{name:"Test"},models:[%q],fetchMode:"per_task",protocols:["openai_video"],usageSchema:{%s:{type:"number",unit:"count"}}};
+export const protocols = {openai_video:{decodeRequest(ctx){return {kind:"submit",model:ctx.model,action:"text_to_video",requestBody:ctx.body.value};},render(){return {};}}};
+export function extractUsage(){return {%s:1};}
+export function buildSubmitRequest(){throw new Error("must never submit");}
+export function parseSubmitResponse(){throw new Error("must never submit");}
+export function buildQueryRequest(){throw new Error("must never query");}
+export function parseTaskResult(){throw new Error("must never query");}
+export function listArtifacts(){throw new Error("must never query");}
+export function buildContentRequest(){throw new Error("must never query");}
+`, test.otherPlugin, full, quantity, quantity)
+				_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(test.otherPlugin)) })
+			}
+			for i, upstream := range test.upstreams {
+				group, pluginKey := "default", "yuanliu"
+				if i > 0 && test.hiddenConflict {
+					group = "secret"
+				}
+				if i > 0 && test.otherPlugin != "" {
+					pluginKey = test.otherPlugin
+				}
+				channel := canvasFixtureChannel(t, db, group, test.public)
+				values := map[string]any{"type": constant.ChannelTypeTaskPlugin, "setting": fmt.Sprintf(`{"task_plugin_key":%q}`, pluginKey)}
+				if test.public != upstream {
+					encoded, err := common.Marshal(map[string]string{test.public: upstream})
+					require.NoError(t, err)
+					values["model_mapping"] = string(encoded)
+				}
+				require.NoError(t, db.Model(channel).Updates(values).Error)
+			}
+			model.InitChannelCache()
+			withTieredBillingConfig(t, map[string]string{test.public: "tiered_expr"}, map[string]string{test.public: `u("count") * 0.2`})
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+				common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+				c.Next()
+			})
+			router.GET("/v1/canvas/catalog", GetCanvasCatalog)
+			router.POST("/v1/canvas/estimate", EstimateCanvasPrice)
+			response := canvasBridgeRequest(t, router, http.MethodGet, "/v1/canvas/catalog", "", nil)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var catalog struct {
+				Models []canvasCatalogModel `json:"models"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+			require.Len(t, catalog.Models, 1)
+			assert.Equal(t, test.available, catalog.Models[0].Available)
+			assert.Equal(t, test.types, catalog.Models[0].InputMediaTypes)
+			request := canvasEstimateRequest{
+				Model: test.public, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
+				Parameters: map[string]any{"seconds": 10}, InputMedia: canvasReferenceInputs(test.images, test.videos, test.audios),
+			}
+			response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", request)
+			if test.mediaSupported {
+				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				if test.otherPlugin == "" {
+					for _, media := range []canvasInputMedium{{Type: "image", Role: "reference_image"}, {Type: "video", Role: "reference_video"}, {Type: "audio", Role: "reference_audio"}} {
+						request.InputMedia = append(canvasReferenceInputs(test.images, test.videos, test.audios), media)
+						response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", request)
+						assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+					}
+				}
+			} else {
+				assert.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+				assert.Contains(t, response.Body.String(), `"code":"media_input_unsupported"`)
+				request.Parameters["mode"] = "omni_reference"
+				request.InputMedia = nil
+				response = canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", request)
+				assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			}
+			assert.Zero(t, transport.requests.Load())
+		})
+	}
 }
