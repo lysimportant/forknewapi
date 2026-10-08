@@ -1,14 +1,30 @@
 # Image2Pro 视频插件检查点
 
-## 目标与基线
+## 2026-10-08：Flash-MAX H3 别名恢复（本地验收完成）
 
-P1：按用户 2026-10-08 最终确认，仅适配 `Seedance2.0 0.9r`，移除两个含 Flash 的模型；URL 依据 Image2Pro 文档，参数按官方 Seedance 2.0 传送。支持文生、首帧、首尾帧及全模态参考，沿用请求秒数计费。
+- P1：用户确认 `无限制-Flash-MAX-Video` 为 `MiniMax-H3` 别名，名称中的 MAX 不表示官方 `MiniMax-H3-Max`。恢复新建和模型导入，输出仅 `720p`、4–12 整秒。Seedance 官方参数保持独立，中配 Flash 继续停用。
+- 基线为 `main @ deeba7e94`、上游 `fork/main`；Canvas 为 `main @ beb3bfa93`、上游 `origin/main`。两仓工作区干净，Go 1.26.0、Node 24.12.0、pnpm 11.19.0，依赖不变。
+- 实施前双边核对官方 H3 v2、插件 API v1/schema/类型及 Canvas 模型目录、模式、冻结参数和恢复路径。请求正文采用 H3 `content`，URL 沿用 Image2Pro `/v1/videos`；不能将官方其它输出档位或 Seedance 参数移植到别名。
+- 不修改价格、渠道、数据库或凭据，不调用真实付费接口或部署。回滚本轮两仓提交并重建可撤回 MAX 新建能力；在途任务、公共 ID 和原冻结秒数结算保留。
+- 官方正文已只读核对，插件最终源码与运行二进制已冻结；完整 Go 回归及隔离 HTTP 验收结果见下文，Canvas 最终完整逐包回归及无缓存构建、类型、格式检查均通过。日志位于 `.local-tests/flash-h3-20261008/`。最终交付目标仍为 `fork/main`，不推 QuantumNous `origin`。
+- H3 非空 `text` 必需、每项最多 7000 字符；帧与参考互斥，参考图/视频/音频上限分别 9/3/3。文生使用六个固定比例，首尾帧只用 `adaptive`，参考含纯音频加文字可用 `adaptive`；尾帧仍须伴随首帧。不开放 Seedance 三个布尔值、`aigc_watermark`、Seed、回调和供应商文件 ID。
+- H3 图/音/视频支持 Data URL；内联视频只用 MP4，multipart 在本地转换为 JSON。单文件上限图 30 MB、视频 50 MB、音频 15 MB，最终 JSON 正文上限 64 MB；不能用原始文件大小代替 Base64 膨胀后的正文大小。没有可信远程媒体元数据时不猜测大小、尺寸、编码或时长。
+- 插件 2.1.0 源码已冻结，Image2Pro/Moon/Hailuo H3/第三方 H3 专项通过，包含有效 Full-HD 图片在两模型/两协议的默认 Sobek 期限、UTF-8/宿主 HTML 和行分隔符转义、multipart Base64 膨胀。H3 行内样式文字原样保留，本地不把它解释成参数；Seedance 原覆盖标记拒绝保留。`go test ./... -count=1` 完整 44 包通过，controller 用时 220.028 秒；宿主 build、vet、插件 lint、目标 oxlint/oxfmt 与差异检查通过。
+- 新版二进制 SHA256：`2604934e3d5d5d67ebd1856026b4d06102242a59ce3c5245bf8f9e8355b81430`。隔离 HTTP 与运行内嵌源码逐字核对，31 个非法请求零 POST/零扣费，11 个合法任务冻结 76 秒并结算 380000 quota（合成每秒 0.01 USD），未知 503 在 `RetryTimes=3` 时仅一次 POST；GET/HEAD 成片读取无供应商凭据，两回环监听已停止。
+- HTTP 报告位于 `.local-tests/flash-h3-20261008/run-1791435764284-6550eb/http-report.json`。首次夹具因并行构建负载触发默认 CPU 阈值 503，零 POST；新 fresh SQLite 测试实例仅关闭 CPU 阈值后完整复跑，生产配置未改。真实供应商受理、成片、媒体编码和生产部署仍未验收。
+- 目标文件格式通过；全插件格式检查仍报告三份未改文件 `alibaba/plugin.js`、`grok-video/README.md`、`minimax-h3-video/README.md`，已核对与 HEAD 无差异，不扩大本轮格式范围。全插件 oxlint 退出码 0，八条 warning 均在未改文件。
+- Canvas 最终 Web 137 个文件、2618 项通过；PC 12 场景通过，包括原始无 `videoMode` 的文字 `content` 连线、固定 v3 txt 预览和刷新后单次 Mock 提交，控制台及未知业务网络错误为 0。API 108、Worker 28 个设施/真实请求等用例跳过，不计外部或生产验收。
+- 本轮双仓使用中文附注 Tag `v2026.10.08-image2pro-flashmax-h3`，配套交付为 Canvas `origin/main`、New API `fork/main`。没有更新本机容器或目标生产实例；上线需确认运行插件为 2.1.0，以及数据库 override 和渠道中的模型选择。
+
+## 上一阶段 Seedance 收敛目标与基线
+
+上一阶段 P1：仅适配 `Seedance2.0 0.9r`，移除两个含 Flash 的模型；URL 依据 Image2Pro 文档，参数按官方 Seedance 2.0 传送。最新 MAX 恢复范围见本文件开头。
 
 - 基线：`main@a76c610e1`，工作区干净，上游 `fork/main`，远端 `https://github.com/lysimportant/forknewapi.git`。
 - 环境：Windows，Go `1.26.0`、Node `24.12.0`，`web/node_modules` 已存在；Bun 不在默认 PATH，优先复用仓库本地工具。
 - Moon 不包含 `Seedance2.0 0.9r` 精确 ID，按 `usage.total_tokens` 结算且拒绝 multipart；Image2Pro 完成文档只承诺 `url`，当前按请求秒数计费并支持图片/音频上传转换，因此保留独立 `image2pro`，不借模型映射改变身份或收费。
 - 文档：<https://image2pro.top/api-docs>；已只读验证 `GET https://api.image2pro.top/v1/models` 返回三个目标模型。
-- 当前仅声明 `Seedance2.0 0.9r`；`无限制-Flash-中配-Video` 与 `无限制-Flash-MAX-Video` 不再适配或导入。撤回未交付的 Flash-MAX 4–12 秒特判；旧任务的只读查询和已冻结用量保留。
+- 上一阶段仅声明 `Seedance2.0 0.9r`，两个 Flash 不再适配或导入；撤回当时未交付的 Flash-MAX 4–12 秒特判。旧任务的只读查询和已冻结用量保留，最新范围见开头。
 - 用户已确认该接口接入 Seedance，body 按官网：`model/content/duration/resolution/ratio`，内容包含 `text/image_url/video_url/audio_url` 与明确角色；布尔 `generate_audio/watermark/return_last_frame` 保留显式 `false`。
 - 官方依据：<https://docs.volcengine.com/docs/82379/1520757?lang=zh>，已保存正文 `.local-tests/video-provider-docs/doubao-official.md`。最多 9 图、3 视频、3 音频、合计 15；首尾帧与全模态参考互斥、尾帧需首帧、不可纯音频。图片/音频可用 Data URL，视频仅 URL；未确认的 `seed/camera_fixed/output_format` 等参数不开放给 2.0。
 - 不提交真实付费生成，不修改管理员价格、供应商积分换算、数据库、依赖或生产配置。
@@ -39,11 +55,23 @@ P1：按用户 2026-10-08 最终确认，仅适配 `Seedance2.0 0.9r`，移除�
 
 ## 使用配置
 
-更新并重启后端后，启用内置 `Image2Pro` 任务插件，类型 61 渠道绑定 `task_plugin_key=image2pro`，Base URL 使用 `https://api.image2pro.top/v1`。密钥只填渠道密钥栏；「获取模型」读取实时目录，仅允许导入 `Seedance2.0 0.9r`。不改现有渠道、价格或数据库 override；管理员应清理渠道旧 Flash 选择并确认有效插件为 2.0.0。
+更新并重启后端后，启用内置 `Image2Pro` 任务插件，类型 61 渠道绑定 `task_plugin_key=image2pro`，Base URL 使用 `https://api.image2pro.top/v1`。密钥只填渠道密钥栏；「获取模型」读取实时目录，仅允许导入 `Seedance2.0 0.9r` 与 `无限制-Flash-MAX-Video`。不改现有渠道、价格或数据库 override；管理员应清理渠道旧中配 Flash 选择并确认有效插件为 2.1.0。
 
-管理员按模型配置视频生成单价。任务表达式示例为 `u("seconds") * P`，`P` 替换为每秒美元单价；不使用供应商积分或按次报价。新建必须显式传 `seconds` 或 `duration`，取值 4–15 秒整数。由于 Image2Pro 查询文档未承诺实际时长，`-1` 自动时长先明确拒绝，避免猜测收费秒数；旧任务仍按原冻结秒数结算。
+管理员按模型配置视频生成单价。任务表达式示例为 `u("seconds") * P`，`P` 替换为每秒美元单价；不使用供应商积分或按次报价。新建必须显式传 `seconds` 或 `duration`：Seedance 为 4–15 整秒，Flash-MAX 为 4–12 整秒。由于 Image2Pro 查询文档未承诺实际时长，`-1` 自动时长明确拒绝；旧任务仍按原冻结秒数结算。
 
-JSON 首选官方 `content`；旧 `prompt/images/audios/videos` 入口兼容转换为同一结构，不能与显式 `content` 混用而覆盖或重复素材。图片/音频 multipart 使用独立文件引用转 Data URL；视频 multipart 和视频 Data URL 明确拒绝，需先获得可读 URL。保留角色、顺序、重复及签名参数，不静默丢素材。分辨率 `480p/720p/1080p/4k`，比例 `16:9/4:3/1:1/3:4/9:16/21:9/adaptive`。
+JSON 首选官方 `content`；旧 `prompt/images/audios/videos` 入口兼容转换为同一结构，不能与显式 `content` 混用而覆盖或重复素材。上传使用独立文件引用转 Data URL，保留角色、顺序、重复及签名参数。具体限制按精确模型区分：
+
+| 参数          | Seedance2.0 0.9r                                       | 无限制-Flash-MAX-Video（H3 别名）   |
+| ------------- | ------------------------------------------------------ | ----------------------------------- |
+| 秒数          | 4–15 整秒                                              | 4–12 整秒                           |
+| 分辨率        | 480p/720p/1080p/4k                                     | 仅 720p                             |
+| 提示词        | 最多 30000 字符，视觉参考可无文本                      | 必须非空，每项最多 7000 字符        |
+| 布尔字段      | generate_audio/watermark/return_last_frame，保留 false | 不开放这三个字段                    |
+| 纯音频参考    | 不允许                                                 | 允许音频加文字                      |
+| 视频内联/上传 | 不允许，需可读 URL                                     | MP4 可用 Data URL 或本地上传转 JSON |
+| 首尾帧比例    | 原合同不变                                             | 仅 adaptive，固定比例明确报错       |
+
+两个型号共用六个固定比例及 `adaptive` 枚举，但 H3 文生不能使用 `adaptive`；H3 参考可使用固定比例或 `adaptive`。H3 单文件限制按字节实施为图 31457280、视频 52428800、音频 15728640，最终 UTF-8 JSON 正文最多 67108864 bytes（64 MiB）。
 
 支持 OpenAI Video 的 `/v1/videos` 创建、查询和成片内容代理，以及 Responses 同步、流式、后台模式。上游生成失败沿用宿主退款；未知提交结果不自动重发。未知参数、冲突别名与不合法角色组合明确报错，不静默降级。
 

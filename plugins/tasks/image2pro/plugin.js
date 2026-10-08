@@ -1,5 +1,7 @@
-/** Image2Pro 仅适配此精确 Seedance 模型，目录中的其他模型不开放生成。 */
-const MODELS = ["Seedance2.0 0.9r"];
+/** 用户确认的 MiniMax H3 精确别名；MAX 字样不表示官方 H3-Max。 */
+const H3_MODEL = "无限制-Flash-MAX-Video";
+/** 仅适配这两个精确模型，目录中的其他模型不开放生成。 */
+const MODELS = ["Seedance2.0 0.9r", H3_MODEL];
 /** 旧参考图入口继续接受，创建时统一转换为官方 content。 */
 const IMAGE_FIELDS = ["input_image", "images", "input_reference", "image", "reference_images", "image_urls"];
 /** Seedance 2.0 引用素材数量和内联格式；视频只允许公网 URL。 */
@@ -26,6 +28,12 @@ const MEDIA_RULES = {
     mimes: ["video/mp4", "video/quicktime"],
   },
 };
+/** H3 官方内联格式及单文件字节上限；Image2Pro 输出仍固定为 720p。 */
+const H3_MEDIA_RULES = {
+  image: { ...MEDIA_RULES.image, mimes: ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"], maxBytes: 30 * 1024 * 1024 },
+  audio: { ...MEDIA_RULES.audio, maxBytes: 15 * 1024 * 1024 },
+  video: { ...MEDIA_RULES.video, mimes: ["video/mp4"], maxBytes: 50 * 1024 * 1024 },
+};
 /** 无 MIME 的上传由扩展名补齐；显式错误的 Content-Type 不凭扩展名覆盖。 */
 const FILE_MIMES = {
   png: "image/png",
@@ -40,6 +48,7 @@ const FILE_MIMES = {
   heif: "image/heif",
   mp3: "audio/mpeg",
   wav: "audio/wav",
+  mp4: "video/mp4",
 };
 /** Seedance 2.0 已确认布尔字段，显式 false 原样保留。 */
 const BOOLEAN_FIELDS = ["generate_audio", "watermark", "return_last_frame"];
@@ -66,11 +75,11 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.0.0",
+  version: "2.1.0",
   author: { name: "lysimportant/forknewapi" },
   description: {
-    en: "Image2Pro Seedance 2.0 text, frame, and multimodal reference video generation",
-    zh: "Image2Pro Seedance 2.0 文本、首尾帧与全模态参考视频生成",
+    en: "Image2Pro Seedance 2.0 and MiniMax H3 text, frame, and multimodal reference video generation",
+    zh: "Image2Pro Seedance 2.0 与 MiniMax H3 文本、首尾帧与全模态参考视频生成",
   },
   baseUrl: "https://api.image2pro.top/v1",
   website: "https://image2pro.top/api-docs",
@@ -98,7 +107,7 @@ function apiBase(ctx) {
   return base.endsWith("/v1") ? base : base + "/v1";
 }
 
-/** 读取有界秒数并兼容旧任务冻结的小数时长；新建请求另按 Seedance 范围校验。 */
+/** 读取有界秒数并兼容旧任务冻结的小数时长；新建请求另按精确模型范围校验。 */
 function requestedSeconds(request) {
   if (request.seconds === undefined && request.duration === undefined) throw new Error("seconds or duration is required for Image2Pro per-second billing");
   for (const field of ["seconds", "duration"]) {
@@ -131,10 +140,11 @@ function clientRequestId(request) {
   return value;
 }
 
-/** 校验媒体 URL 或图片/音频上传占位符；视频不支持 Base64 或本地上传。 */
-function mediaReference(value, type, files) {
-  const rule = MEDIA_RULES[type];
-  if (type === "video") {
+/** 校验媒体与上传占位符；H3 按官方格式和字节限额内联，Seedance 视频仍只接受 URL。 */
+function mediaReference(value, type, files, model) {
+  const h3 = model === H3_MODEL;
+  const rule = (h3 ? H3_MEDIA_RULES : MEDIA_RULES)[type];
+  if (type === "video" && !h3) {
     if (isHTTPURL(value)) return value;
     throw new Error("Seedance video references require HTTP(S) URLs; data URLs and video uploads are unsupported");
   }
@@ -145,75 +155,87 @@ function mediaReference(value, type, files) {
         !file ||
         !rule.aliases.includes(file.field) ||
         files.filter((item) => item.ref === value.__fileRef).length !== 1 ||
-        Object.keys(value).some((key) => !["__fileRef", "encoding", "mimeType"].includes(key)) ||
+        Object.keys(value).some((key) => !(h3 ? ["__fileRef", "encoding", "mimeType", "maxBytes"] : ["__fileRef", "encoding", "mimeType"]).includes(key)) ||
         value.encoding !== "dataUrl" ||
-        !rule.mimes.includes(value.mimeType)
+        !rule.mimes.includes(value.mimeType) ||
+        (h3 &&
+          (!Number.isInteger(file.size) || file.size <= 0 || file.size > rule.maxBytes || (value.maxBytes !== undefined && value.maxBytes !== rule.maxBytes)))
       )
         throw new Error("Image2Pro " + type + " file reference is invalid");
-      return { __fileRef: value.__fileRef, encoding: "dataUrl", mimeType: value.mimeType };
+      return { __fileRef: value.__fileRef, encoding: "dataUrl", mimeType: value.mimeType, ...(h3 ? { maxBytes: rule.maxBytes } : {}) };
     }
     throw new Error("Image2Pro " + type + " reference URL is invalid");
   }
   if (isHTTPURL(value)) return value;
   const data = typeof value === "string" ? /^data:([^;,]+);base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/.exec(value) : null;
-  if (data && data[2] && rule.mimes.includes(data[1])) return value;
+  if (data && data[2] && rule.mimes.includes(data[1])) {
+    const bytes = (data[2].length / 4) * 3 - (data[2].endsWith("==") ? 2 : data[2].endsWith("=") ? 1 : 0);
+    if (h3 && bytes > rule.maxBytes) throw new Error("MiniMax H3 " + type + " reference exceeds the file size limit");
+    return value;
+  }
   throw new Error("Image2Pro " + type + " references must be HTTP(S) URLs or supported " + type + " data URLs");
 }
 
 /** 校验官方 content 的角色与组合，保留顺序、重复引用和文本，不混用首尾帧与全模态参考。 */
-function normalizeContent(content, files) {
-  if (!Array.isArray(content) || content.length === 0) throw new Error("Seedance content must be a non-empty array");
+function normalizeContent(content, files, model) {
+  const h3 = model === H3_MODEL;
+  const name = h3 ? "MiniMax H3" : "Seedance";
+  if (!Array.isArray(content) || content.length === 0) throw new Error(name + " content must be a non-empty array");
   const counts = { image: 0, video: 0, audio: 0, first_frame: 0, last_frame: 0, reference_image: 0 };
   let textLength = 0;
   let hasText = false;
   const normalized = content.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Seedance content items must be objects");
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(name + " content items must be objects");
     if (item.type === "text") {
       if (Object.keys(item).some((field) => !["type", "text"].includes(field)) || typeof item.text !== "string")
-        throw new Error("Seedance text content requires a text string and no extra fields");
+        throw new Error(name + " text content requires a text string and no extra fields");
       if (item.text.trim()) hasText = true;
       textLength += item.text.length;
-      if (textLength > 30000) throw new Error("Image2Pro prompt must not exceed 30000 characters");
-      if (/(?:^|\s)--(?:duration|dur|frames|resolution|rs|ratio|rt|seed|camera_fixed|cf|watermark|wm)\b/i.test(item.text))
-        throw new Error("inline Seedance parameter overrides are unsupported; use explicit request fields");
+      if (h3 ? item.text.length > 7000 : textLength > 30000)
+        throw new Error(h3 ? "MiniMax H3 text must not exceed 7000 characters" : "Image2Pro prompt must not exceed 30000 characters");
+      if (!h3 && /(?:^|\s)--(?:duration|dur|frames|resolution|rs|ratio|rt|seed|camera_fixed|cf|watermark|wm)\b/i.test(item.text))
+        throw new Error("inline " + name + " parameter overrides are unsupported; use explicit request fields");
       return { type: "text", text: item.text };
     }
-    if (!["image_url", "video_url", "audio_url"].includes(item.type)) throw new Error("unsupported Seedance content type");
-    if (Object.keys(item).some((field) => !["type", item.type, "role"].includes(field))) throw new Error("unsupported Seedance media content field");
+    if (!["image_url", "video_url", "audio_url"].includes(item.type)) throw new Error("unsupported " + name + " content type");
+    if (Object.keys(item).some((field) => !["type", item.type, "role"].includes(field))) throw new Error("unsupported " + name + " media content field");
     const reference = item[item.type];
     if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).some((field) => field !== "url"))
-      throw new Error("Seedance media content requires a URL object without extra fields");
+      throw new Error(name + " media content requires a URL object without extra fields");
     const type = item.type.slice(0, -4);
     const role = item.role === undefined ? (type === "image" ? "first_frame" : "reference_" + type) : item.role;
     if (type === "image" ? !["first_frame", "last_frame", "reference_image"].includes(role) : role !== "reference_" + type)
-      throw new Error("unsupported Seedance " + type + " role");
+      throw new Error("unsupported " + name + " " + type + " role");
     counts[type]++;
     if (type === "image") counts[role]++;
-    if (counts[type] > MEDIA_RULES[type].limit) throw new Error("Seedance supports at most " + MEDIA_RULES[type].limit + " reference " + type + "s");
-    return { type: item.type, [item.type]: { url: mediaReference(reference.url, type, files) }, role };
+    if (counts[type] > MEDIA_RULES[type].limit) throw new Error(name + " supports at most " + MEDIA_RULES[type].limit + " reference " + type + "s");
+    return { type: item.type, [item.type]: { url: mediaReference(reference.url, type, files, model) }, role };
   });
-  if (counts.image + counts.video + counts.audio > 15) throw new Error("Seedance supports at most 15 total reference files");
+  if (counts.image + counts.video + counts.audio > 15) throw new Error(name + " supports at most 15 total reference files");
   if (counts.first_frame > 1 || counts.last_frame > 1 || (counts.last_frame && !counts.first_frame))
-    throw new Error("Seedance requires at most one first frame and one last frame; a last frame requires a first frame");
+    throw new Error(name + " requires at most one first frame and one last frame; a last frame requires a first frame");
   if ((counts.first_frame || counts.last_frame) && (counts.reference_image || counts.video || counts.audio))
-    throw new Error("Seedance frame input cannot be combined with multimodal references");
-  if (counts.audio && !counts.image && !counts.video) throw new Error("Seedance 2.0 audio references require at least one image or video");
+    throw new Error(name + " frame input cannot be combined with multimodal references");
+  if (h3 && !hasText) throw new Error("MiniMax H3 requires a non-empty text item");
+  if (!h3 && counts.audio && !counts.image && !counts.video) throw new Error("Seedance 2.0 audio references require at least one image or video");
   if (!hasText && !counts.image && !counts.video) throw new Error("Seedance requires text or at least one image or video");
   return normalized;
 }
 
-/** 旧别名与官方 content 归一为同一创建合同；新建按 4–15 整秒计费，缺失参数采用官方默认。 */
+/** 旧入口归一为官方 content；H3 为 4–12 整秒/720p，Seedance 保留既有范围与开关。 */
 function normalizeRequest(source, model, files = []) {
   if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro request body must be an object");
   if (!MODELS.includes(model)) throw new Error("unsupported Image2Pro model");
+  const h3 = model === H3_MODEL;
   for (const key of Object.keys(source)) if (!REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro field: " + key);
+  if (h3 && BOOLEAN_FIELDS.some((field) => source[field] !== undefined)) throw new Error("MiniMax H3 does not support Seedance generation flags");
   const request = { model: source.model, duration: requestedSeconds(source) };
-  if (!Number.isInteger(request.duration) || request.duration < 4 || request.duration > 15)
-    throw new Error("Seedance 2.0 duration must be an integer from 4 to 15");
+  if (!Number.isInteger(request.duration) || request.duration < 4 || request.duration > (h3 ? 12 : 15))
+    throw new Error(h3 ? "MiniMax H3 duration must be an integer from 4 to 12" : "Seedance 2.0 duration must be an integer from 4 to 15");
   let content = [];
   if (source.content !== undefined) {
     if (source.prompt !== undefined || Object.values(MEDIA_RULES).some((rule) => rule.aliases.some((field) => source[field] !== undefined)))
-      throw new Error("Seedance content cannot be combined with prompt or reference aliases");
+      throw new Error("Image2Pro content cannot be combined with prompt or reference aliases");
     content = source.content;
   } else if (source.prompt !== undefined) {
     if (typeof source.prompt !== "string") throw new Error("Image2Pro prompt must be a string");
@@ -240,12 +262,24 @@ function normalizeRequest(source, model, files = []) {
       content.push({ type: type + "_url", [type + "_url"]: { url }, role });
     }
   }
-  request.content = normalizeContent(content, files);
+  request.content = normalizeContent(content, files, model);
   if (source.ratio !== undefined && source.aspect_ratio !== undefined && source.ratio !== source.aspect_ratio)
     throw new Error("ratio and aspect_ratio conflict");
-  request.ratio = source.ratio === undefined ? (source.aspect_ratio === undefined ? "adaptive" : source.aspect_ratio) : source.ratio;
-  if (!["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"].includes(request.ratio)) throw new Error("unsupported Seedance 2.0 ratio");
+  const hasFrame = request.content.some((item) => ["first_frame", "last_frame"].includes(item.role));
+  const hasReference = request.content.some((item) => ["reference_image", "reference_video", "reference_audio"].includes(item.role));
+  request.ratio =
+    source.ratio === undefined
+      ? source.aspect_ratio === undefined
+        ? h3 && !hasFrame && !hasReference
+          ? "16:9"
+          : "adaptive"
+        : source.aspect_ratio
+      : source.ratio;
+  if (!["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"].includes(request.ratio)) throw new Error("unsupported Image2Pro ratio");
+  if (h3 && hasFrame && request.ratio !== "adaptive") throw new Error("MiniMax H3 frame input requires ratio adaptive");
+  if (h3 && !hasFrame && !hasReference && request.ratio === "adaptive") throw new Error("MiniMax H3 text-to-video requires a fixed ratio");
   request.resolution = source.resolution === undefined ? "720p" : source.resolution;
+  if (h3 && request.resolution !== "720p") throw new Error("MiniMax H3 Image2Pro output resolution must be 720p");
   if (!["480p", "720p", "1080p", "4k"].includes(request.resolution)) throw new Error("unsupported Seedance 2.0 resolution");
   for (const field of BOOLEAN_FIELDS) {
     if (source[field] === undefined) continue;
@@ -263,8 +297,9 @@ function videoAction(content) {
   return content.some((item) => item.type === "image_url") ? "image_to_video" : "text_to_video";
 }
 
-/** 解码 multipart 参数及图片/音频，视频文件因无已确认上传接口明确拒绝。 */
-function multipartRequest(body) {
+/** 解码 multipart 并以内联占位符保留素材；H3 支持 MP4，Seedance 视频文件仍拒绝。 */
+function multipartRequest(body, model) {
+  const h3 = model === H3_MODEL;
   const request = {};
   for (const field of Object.keys(body.fields || {})) {
     if (!REQUEST_FIELDS.includes(field)) throw new Error("unsupported Image2Pro field: " + field);
@@ -299,31 +334,67 @@ function multipartRequest(body) {
     seen.push(file.ref);
     if (!fileFields.includes(file.field)) fileFields.push(file.field);
   }
-  for (const [type, rule] of Object.entries(MEDIA_RULES)) {
+  for (const [type, rule] of Object.entries(h3 ? H3_MEDIA_RULES : MEDIA_RULES)) {
     const mediaFiles = files.filter((file) => rule.aliases.includes(file.field));
     const aliases = rule.aliases.filter((field) => request[field] !== undefined || fileFields.includes(field));
     if (aliases.length > 1) throw new Error("Image2Pro reference " + type + " aliases are mutually exclusive");
     if (!mediaFiles.length) continue;
-    if (type === "video") throw new Error("Seedance video references require HTTP(S) URLs; video uploads are unsupported");
+    if (type === "video" && !h3) throw new Error("Seedance video references require HTTP(S) URLs; video uploads are unsupported");
     const field = aliases[0];
     if (type === "image" && !rule.arrays.includes(field) && (mediaFiles.length !== 1 || request[field] !== undefined))
       throw new Error(field + " must contain one image");
     const references = request[field] === undefined ? [] : Array.isArray(request[field]) ? request[field] : [request[field]];
     for (const file of mediaFiles) {
       if (!Number.isInteger(file.size) || file.size <= 0) throw new Error("Image2Pro uploaded reference files must not be empty");
+      if (h3 && file.size > rule.maxBytes) throw new Error("MiniMax H3 " + type + " reference exceeds the file size limit");
       let mimeType = typeof file.mimeType === "string" ? file.mimeType.toLowerCase().split(";")[0].trim() : "";
       if (!mimeType || mimeType === "application/octet-stream") {
-        const extension = /\.([a-z]+)$/i.exec(file.filename || "");
+        const extension = /\.([a-z0-9]+)$/i.exec(file.filename || "");
         const suffix = extension ? extension[1].toLowerCase() : "";
         mimeType = FILE_MIMES[suffix] || "";
       }
       if (!rule.mimes.includes(mimeType)) throw new Error("Image2Pro upload MIME type must match a supported " + type + " format");
-      references.push({ __fileRef: file.ref, encoding: "dataUrl", mimeType });
+      references.push({ __fileRef: file.ref, encoding: "dataUrl", mimeType, ...(h3 ? { maxBytes: rule.maxBytes } : {}) });
     }
     delete request[field];
     request[rule.field] = references;
   }
   return request;
+}
+
+/**
+ * 校验 H3 最终 JSON 的 UTF-8 大小，包括宿主 JSON 转义和文件替换后的 Base64 膨胀。
+ * @param {object} body 已校验、移除幂等字段并写入精确上游模型的最终创建体。
+ * @param {Array<object>} files 宿主文件引用；使用原始 size 计算内联体积，不读取文件字节。
+ * @returns {void} 合法正文不修改参数。
+ * @throws {Error} 内联后的正文超过 67108864 字节时拒绝提交。
+ */
+function validateH3BodySize(body, files) {
+  const maximum = 64 * 1024 * 1024;
+  const json = JSON.stringify(body);
+  let bytes = json.length;
+  if (bytes > maximum) throw new Error("MiniMax H3 request body must not exceed 64 MB");
+  const unicode = /[\u0080-\uffff]/g;
+  let match;
+  while ((match = unicode.exec(json))) {
+    const code = match[0].charCodeAt(0);
+    const next = json.charCodeAt(match.index + 1);
+    if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      bytes += 2;
+      unicode.lastIndex++;
+    } else bytes += code < 0x800 ? 1 : 2;
+  }
+  // common.Marshal 使用 Go 标准 JSON codec，会额外转义 HTML 字符和行分隔符。
+  const escaped = /[<>&\u2028\u2029]/g;
+  while ((match = escaped.exec(json))) bytes += match[0].charCodeAt(0) < 128 ? 5 : 3;
+  for (const item of body.content) {
+    if (item.type === "text") continue;
+    const placeholder = item[item.type].url;
+    if (!placeholder || typeof placeholder !== "object") continue;
+    const file = files.find((entry) => entry.ref === placeholder.__fileRef);
+    bytes += 2 + ("data:" + placeholder.mimeType + ";base64,").length + 4 * Math.ceil(file.size / 3) - JSON.stringify(placeholder).length;
+  }
+  if (bytes > maximum) throw new Error("MiniMax H3 request body must not exceed 64 MB");
 }
 
 /** 构造单次 JSON 提交，上传占位符由宿主替换；幂等键与禁止重试避免未知结果重复扣费。 */
@@ -335,6 +406,7 @@ export function buildSubmitRequest(ctx) {
   if (typeof key !== "string" || !/^[A-Za-z0-9_.-]{6,120}$/.test(key))
     throw new Error("a valid public task ID or client idempotency key is required for Image2Pro");
   delete body.client_request_id;
+  if (model === H3_MODEL) validateH3BodySize(body, ctx.files || []);
   return {
     url: apiBase(ctx) + "/videos",
     method: "POST",
@@ -477,7 +549,7 @@ export const protocols = {
       const body = ctx.body;
       let source;
       if (body && body.kind === "json") source = body.value;
-      else if (body && body.kind === "multipart") source = multipartRequest(body);
+      else if (body && body.kind === "multipart") source = multipartRequest(body, ctx.upstreamModel || ctx.model);
       else throw new Error("Image2Pro requires a JSON or multipart body");
       const model = ctx.model || (source && source.model);
       const request = normalizeRequest(source, ctx.upstreamModel || model, body.kind === "multipart" ? body.files || [] : []);

@@ -23,7 +23,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
 	const seedanceModel = "Seedance2.0 0.9r"
-	models := []string{seedanceModel}
+	models := []string{seedanceModel, "无限制-Flash-MAX-Video"}
 	assert.Equal(t, models, plugin.Meta.Models)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
@@ -70,7 +70,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 						sent := descriptor["body"].(map[string]any)
 						sentJSON, marshalErr := common.Marshal(sent)
 						require.NoError(t, marshalErr)
-						assert.JSONEq(t, `{"model":"Seedance2.0 0.9r","duration":5,"resolution":"720p","ratio":"16:9","content":[{"type":"text","text":"An ocean at dawn"}]}`, string(sentJSON))
+						assert.JSONEq(t, `{"model":"`+model+`","duration":5,"resolution":"720p","ratio":"16:9","content":[{"type":"text","text":"An ocean at dawn"}]}`, string(sentJSON))
 					}
 					usage, usageErr := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
 						"model": "my-video", "upstreamModel": model, "requestBody": request, "usagePurpose": "facts",
@@ -230,7 +230,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		assert.NotContains(t, descriptor["body"].(map[string]any), "clientRequestId")
 	})
 
-	for _, model := range []string{"无限制-Flash-中配-Video", "无限制-Flash-MAX-Video"} {
+	for _, model := range []string{"无限制-Flash-中配-Video"} {
 		t.Run("Flash 拒绝创建但保留旧任务恢复_"+model, func(t *testing.T) {
 			for _, protocol := range []string{"openai_video", "openai_responses"} {
 				for _, clientModel := range []string{model, "my-video"} {
@@ -281,7 +281,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		})
 	}
 
-	t.Run("只路由声明的 Seedance 精确模型", func(t *testing.T) {
+	t.Run("只路由声明的精确模型", func(t *testing.T) {
 		for _, model := range models {
 			for _, endpoint := range []string{"/v1/videos", "/v1/responses"} {
 				binding, found := registry.Generation().LookupEndpoint("POST", endpoint, model)
@@ -289,7 +289,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 				assert.Same(t, plugin, binding.Plugin)
 			}
 		}
-		for _, model := range []string{"Seedance2.0", "无限制-Flash-中配-Video", "无限制-Flash-MAX-Video"} {
+		for _, model := range []string{"Seedance2.0", "无限制-Flash-中配-Video", "MiniMax-H3", "MiniMax-H3-Max"} {
 			for _, endpoint := range []string{"/v1/videos", "/v1/responses"} {
 				_, found := registry.Generation().LookupEndpoint("POST", endpoint, model)
 				assert.False(t, found, "目录中的其他模型不能自动开放生成")
@@ -339,47 +339,59 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		assert.Equal(t, 1080, config.Height)
 		dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes.Bytes())
 
-		// 注册保持 Options{}；两个协议都使用真实 Sobek 默认期限，不设置机器相关的毫秒阈值。
-		for _, protocol := range []string{"openai_video", "openai_responses"} {
-			t.Run(protocol, func(t *testing.T) {
-				body := map[string]any{"model": seedanceModel, "seconds": 5}
-				if protocol == "openai_video" {
-					body["images"] = []string{dataURL}
-				} else {
-					body["input"] = []any{map[string]any{"role": "user", "content": []any{
-						map[string]any{"type": "input_image", "image_url": dataURL},
-					}}}
-				}
-				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{protocol, "decodeRequest"}, map[string]any{
-					"model": seedanceModel, "body": map[string]any{"kind": "json", "value": body},
-				})
-				require.NoError(t, callErr)
-				encoded, marshalErr := common.Marshal(value)
-				require.NoError(t, marshalErr)
-				var intent map[string]any
-				require.NoError(t, common.Unmarshal(encoded, &intent))
-				assert.Equal(t, "image_to_video", intent["action"])
-				request := intent["requestBody"].(map[string]any)
-				content := request["content"].([]any)
-				require.Len(t, content, 1)
-				assert.True(t, content[0].(map[string]any)["image_url"].(map[string]any)["url"] == dataURL, "解码必须完整保留 Data URL")
+		// 注册保持 Options{}；两个模型及协议均使用真实 Sobek 默认期限，不设置机器相关的毫秒阈值。
+		for _, model := range models {
+			for _, protocol := range []string{"openai_video", "openai_responses"} {
+				t.Run(model+"_"+protocol, func(t *testing.T) {
+					body := map[string]any{"model": model, "seconds": 5}
+					imageIndex := 0
+					if model != seedanceModel {
+						imageIndex = 1
+						if protocol == "openai_video" {
+							body["prompt"] = "An ocean at dawn"
+						}
+					}
+					if protocol == "openai_video" {
+						body["images"] = []string{dataURL}
+					} else {
+						input := []any{}
+						if model != seedanceModel {
+							input = append(input, map[string]any{"type": "input_text", "text": "An ocean at dawn"})
+						}
+						input = append(input, map[string]any{"type": "input_image", "image_url": dataURL})
+						body["input"] = []any{map[string]any{"role": "user", "content": input}}
+					}
+					value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{protocol, "decodeRequest"}, map[string]any{
+						"model": model, "body": map[string]any{"kind": "json", "value": body},
+					})
+					require.NoError(t, callErr)
+					encoded, marshalErr := common.Marshal(value)
+					require.NoError(t, marshalErr)
+					var intent map[string]any
+					require.NoError(t, common.Unmarshal(encoded, &intent))
+					assert.Equal(t, "image_to_video", intent["action"])
+					request := intent["requestBody"].(map[string]any)
+					content := request["content"].([]any)
+					require.Len(t, content, imageIndex+1)
+					assert.True(t, content[imageIndex].(map[string]any)["image_url"].(map[string]any)["url"] == dataURL, "解码必须完整保留 Data URL")
 
-				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
-					"model": seedanceModel, "upstreamModel": seedanceModel, "requestBody": request,
-					"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1", "publicTaskId": "task_full_hd_fixture",
+					value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+						"model": model, "upstreamModel": model, "requestBody": request,
+						"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1", "publicTaskId": "task_full_hd_fixture",
+					})
+					require.NoError(t, callErr)
+					encoded, marshalErr = common.Marshal(value)
+					require.NoError(t, marshalErr)
+					var descriptor map[string]any
+					require.NoError(t, common.Unmarshal(encoded, &descriptor))
+					assert.Equal(t, "https://upstream.example/v1/videos", descriptor["url"])
+					assert.Equal(t, true, descriptor["noRetry"])
+					sent := descriptor["body"].(map[string]any)
+					content = sent["content"].([]any)
+					require.Len(t, content, imageIndex+1)
+					assert.True(t, content[imageIndex].(map[string]any)["image_url"].(map[string]any)["url"] == dataURL, "提交构造不得裁切或替换 Data URL")
 				})
-				require.NoError(t, callErr)
-				encoded, marshalErr = common.Marshal(value)
-				require.NoError(t, marshalErr)
-				var descriptor map[string]any
-				require.NoError(t, common.Unmarshal(encoded, &descriptor))
-				assert.Equal(t, "https://upstream.example/v1/videos", descriptor["url"])
-				assert.Equal(t, true, descriptor["noRetry"])
-				sent := descriptor["body"].(map[string]any)
-				content = sent["content"].([]any)
-				require.Len(t, content, 1)
-				assert.True(t, content[0].(map[string]any)["image_url"].(map[string]any)["url"] == dataURL, "提交构造不得裁切或替换 Data URL")
-			})
+			}
 		}
 	})
 
@@ -597,5 +609,255 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		}
 		_, callErr := plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{}, map[string]any{"statusCode": 200, "body": map[string]any{"id": "invalid/task"}})
 		require.Error(t, callErr)
+	})
+}
+
+// TestImage2ProH3VideoContracts 验证精确 H3 别名的官方输入、网关输出边界和旧任务恢复，不发送上游请求。
+func TestImage2ProH3VideoContracts(t *testing.T) {
+	source, err := plugins.Source("image2pro")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	const model = "无限制-Flash-MAX-Video"
+	text := map[string]any{"type": "text", "text": "A singer follows the reference voice"}
+	imageURL := "https://cdn.example/ref.png?signature=a%2Bb"
+	for _, spec := range []struct {
+		name, ratio, action string
+		content             []any
+	}{
+		{"纯文本默认固定比例", "16:9", "text_to_video", []any{text}},
+		{"H3参数样式文本保持字面值", "16:9", "text_to_video", []any{map[string]any{"type": "text", "text": "Display --duration 12 and --seed 42 as captions"}}},
+		{"首帧默认自适应", "adaptive", "image_to_video", []any{text, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "first_frame"}}},
+		{"首尾帧保留顺序", "adaptive", "image_to_video", []any{text,
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "first_frame"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "last_frame"}}},
+		{"纯音频参考默认自适应", "adaptive", "reference_to_video", []any{text, map[string]any{"type": "audio_url", "audio_url": map[string]any{"url": "data:audio/wav;base64,YXVkaW8="}, "role": "reference_audio"}}},
+		{"全模态跨媒体顺序与重复保留", "adaptive", "reference_to_video", []any{text,
+			map[string]any{"type": "video_url", "video_url": map[string]any{"url": "data:video/mp4;base64,dmlkZW8="}, "role": "reference_video"},
+			map[string]any{"type": "audio_url", "audio_url": map[string]any{"url": "https://cdn.example/voice.mp3"}, "role": "reference_audio"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "reference_image"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "reference_image"}}},
+	} {
+		t.Run(spec.name, func(t *testing.T) {
+			for _, duration := range []int{4, 12} {
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": "my-h3", "upstreamModel": model, "body": map[string]any{"kind": "json", "value": map[string]any{
+						"model": "my-h3", "duration": duration, "content": spec.content, "client_request_id": "h3-stable-0001",
+					}},
+				})
+				require.NoError(t, callErr)
+				encoded, marshalErr := common.Marshal(value)
+				require.NoError(t, marshalErr)
+				var intent map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &intent))
+				assert.Equal(t, "my-h3", intent["model"])
+				assert.Equal(t, spec.action, intent["action"])
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"model": "my-h3", "upstreamModel": model, "requestBody": intent["requestBody"],
+					"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1", "publicTaskId": "task_h3_fixture",
+				})
+				require.NoError(t, callErr)
+				encoded, marshalErr = common.Marshal(value)
+				require.NoError(t, marshalErr)
+				var descriptor map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &descriptor))
+				assert.Equal(t, "https://upstream.example/v1/videos", descriptor["url"])
+				assert.Equal(t, true, descriptor["noRetry"])
+				assert.Equal(t, "h3-stable-0001", descriptor["headers"].(map[string]any)["Idempotency-Key"])
+				sent := descriptor["body"].(map[string]any)
+				assert.Equal(t, model, sent["model"])
+				assert.Equal(t, "720p", sent["resolution"])
+				assert.Equal(t, float64(duration), sent["duration"])
+				assert.Equal(t, spec.ratio, sent["ratio"])
+				assert.Equal(t, spec.content, sent["content"])
+				assert.NotContains(t, sent, "client_request_id")
+				assert.NotContains(t, sent, "clientRequestId")
+			}
+		})
+	}
+
+	t.Run("multipart按MIME和单文件上限内联", func(t *testing.T) {
+		files := []any{
+			map[string]any{"ref": "request_file:images", "field": "images", "filename": "ref.heic", "mimeType": "image/heic", "size": 6},
+			map[string]any{"ref": "request_file:videos", "field": "videos", "filename": "ref.mp4", "mimeType": "application/octet-stream", "size": 9},
+			map[string]any{"ref": "request_file:audios", "field": "audios", "filename": "voice.wav", "mimeType": "audio/wav", "size": 12},
+		}
+		value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+			"model": model, "body": map[string]any{"kind": "multipart", "fields": map[string]any{
+				"model": []string{model}, "duration": []string{"5"}, "prompt": []string{"A singer follows the reference voice"},
+			}, "files": files},
+		})
+		require.NoError(t, callErr)
+		encoded, marshalErr := common.Marshal(value)
+		require.NoError(t, marshalErr)
+		var intent map[string]any
+		require.NoError(t, common.Unmarshal(encoded, &intent))
+		value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+			"model": model, "requestBody": intent["requestBody"], "files": files, "apiKey": "synthetic-fixture",
+			"baseUrl": "https://upstream.example", "publicTaskId": "task_h3_multipart",
+		})
+		require.NoError(t, callErr)
+		encoded, marshalErr = common.Marshal(value)
+		require.NoError(t, marshalErr)
+		var descriptor map[string]any
+		require.NoError(t, common.Unmarshal(encoded, &descriptor))
+		content := descriptor["body"].(map[string]any)["content"].([]any)
+		for index, spec := range []struct {
+			kind, ref, mime string
+			maximum         int
+		}{
+			{"image_url", "request_file:images", "image/heic", 30 * 1024 * 1024},
+			{"audio_url", "request_file:audios", "audio/wav", 15 * 1024 * 1024},
+			{"video_url", "request_file:videos", "video/mp4", 50 * 1024 * 1024},
+		} {
+			placeholder := content[index+1].(map[string]any)[spec.kind].(map[string]any)["url"].(map[string]any)
+			assert.Equal(t, spec.ref, placeholder["__fileRef"])
+			assert.Equal(t, spec.mime, placeholder["mimeType"])
+			assert.Equal(t, float64(spec.maximum), placeholder["maxBytes"])
+		}
+	})
+
+	for _, spec := range []struct {
+		name, field, mime string
+		size              int
+	}{
+		{"图片单文件超限", "images", "image/png", 30*1024*1024 + 1},
+		{"视频单文件超限", "videos", "video/mp4", 50*1024*1024 + 1},
+		{"音频单文件超限", "audios", "audio/wav", 15*1024*1024 + 1},
+		{"GIF不可继承Seedance格式", "images", "image/gif", 5},
+		{"MOV不可内联", "videos", "video/quicktime", 5},
+	} {
+		t.Run(spec.name, func(t *testing.T) {
+			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model, "body": map[string]any{"kind": "multipart", "fields": map[string]any{"duration": []string{"5"}, "prompt": []string{"ocean"}}, "files": []any{
+					map[string]any{"ref": "request_file:" + spec.field, "field": spec.field, "filename": "ref.bin", "mimeType": spec.mime, "size": spec.size},
+				}},
+			})
+			require.Error(t, callErr)
+		})
+	}
+
+	t.Run("Base64膨胀计入64MB最终请求而非只算文件字节", func(t *testing.T) {
+		for _, size := range []int{48*1024*1024 - 4096, 48 * 1024 * 1024} {
+			files := []any{map[string]any{"ref": "request_file:videos", "field": "videos", "mimeType": "video/mp4", "size": size}}
+			_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+				"model": model, "requestBody": map[string]any{"duration": 5, "prompt": "海边🎵", "videos": []any{
+					map[string]any{"__fileRef": "request_file:videos", "encoding": "dataUrl", "mimeType": "video/mp4"},
+				}}, "files": files, "apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example", "publicTaskId": "task_h3_body_limit",
+			})
+			if size < 48*1024*1024 {
+				require.NoError(t, callErr)
+			} else {
+				require.ErrorContains(t, callErr, "64 MB")
+			}
+		}
+	})
+
+	t.Run("UTF8与宿主JSON转义计入最终正文", func(t *testing.T) {
+		stub, marshalErr := common.Marshal(map[string]any{
+			"model": model, "duration": 5, "resolution": "720p", "ratio": "adaptive", "content": []any{
+				map[string]any{"type": "text", "text": "aaaa"},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": "data:video/mp4;base64,"}, "role": "reference_video"},
+			},
+		})
+		require.NoError(t, marshalErr)
+		// 让 ASCII 正文距上限不足四字节；Unicode 或宿主转义的额外字节会跨过正文上限。
+		size := ((64*1024*1024 - len(stub)) / 4) * 3
+		files := []any{map[string]any{"ref": "request_file:videos", "field": "videos", "mimeType": "video/mp4", "size": size}}
+		for _, prompt := range []string{"aaaa", "海边🎵", "<>&", "a\u2028\u2029"} {
+			_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+				"model": model, "requestBody": map[string]any{"duration": 5, "prompt": prompt, "videos": []any{
+					map[string]any{"__fileRef": "request_file:videos", "encoding": "dataUrl", "mimeType": "video/mp4"},
+				}}, "files": files, "apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example", "publicTaskId": "task_h3_utf8_limit",
+			})
+			if prompt == "aaaa" {
+				require.NoError(t, callErr)
+			} else {
+				require.ErrorContains(t, callErr, "64 MB")
+			}
+		}
+	})
+
+	t.Run("九图三视频三音频上限与纯音频固定比例", func(t *testing.T) {
+		content := []any{text}
+		for _, spec := range []struct {
+			kind, role, url string
+			count           int
+		}{
+			{"image_url", "reference_image", "https://cdn.example/ref.heic", 9},
+			{"video_url", "reference_video", "https://cdn.example/ref.mov", 3},
+			{"audio_url", "reference_audio", "https://cdn.example/ref.mp3", 3},
+		} {
+			for range spec.count {
+				content = append(content, map[string]any{"type": spec.kind, spec.kind: map[string]any{"url": spec.url}, "role": spec.role})
+			}
+		}
+		for _, references := range [][]any{content, {text, map[string]any{"type": "audio_url", "audio_url": map[string]any{"url": "https://cdn.example/ref.mp3"}, "role": "reference_audio"}}} {
+			value, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+				"model": model, "requestBody": map[string]any{"duration": 5, "ratio": "1:1", "content": references},
+				"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example", "publicTaskId": "task_h3_reference_limits",
+			})
+			require.NoError(t, callErr)
+			encoded, marshalErr := common.Marshal(value)
+			require.NoError(t, marshalErr)
+			var descriptor map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &descriptor))
+			assert.Equal(t, "1:1", descriptor["body"].(map[string]any)["ratio"])
+			assert.Equal(t, references, descriptor["body"].(map[string]any)["content"])
+		}
+	})
+
+	for _, spec := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"小于四秒", map[string]any{"prompt": "ocean", "duration": 3}},
+		{"大于十二秒", map[string]any{"prompt": "ocean", "duration": 13}},
+		{"小数秒", map[string]any{"prompt": "ocean", "duration": 5.5}},
+		{"2K不可替代720p", map[string]any{"prompt": "ocean", "duration": 5, "resolution": "2K"}},
+		{"768P不可替代720p", map[string]any{"prompt": "ocean", "duration": 5, "resolution": "768P"}},
+		{"文生不可自适应", map[string]any{"prompt": "ocean", "duration": 5, "ratio": "adaptive"}},
+		{"帧不可固定比例", map[string]any{"duration": 5, "ratio": "16:9", "content": []any{text, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "first_frame"}}}},
+		{"首帧必须提示词", map[string]any{"duration": 5, "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "first_frame"}}}},
+		{"每条文本不超过7000字符", map[string]any{"duration": 5, "prompt": strings.Repeat("a", 7001)}},
+		{"尾帧仍需首帧", map[string]any{"duration": 5, "content": []any{text, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}, "role": "last_frame"}}}},
+		{"GIFDataURL不可继承", map[string]any{"duration": 5, "prompt": "ocean", "images": []string{"data:image/gif;base64,aW1hZ2U="}}},
+		{"MOVDataURL不可内联", map[string]any{"duration": 5, "prompt": "ocean", "videos": []string{"data:video/quicktime;base64,dmlkZW8="}}},
+		{"不可继承Seedance音频开关", map[string]any{"duration": 5, "prompt": "ocean", "generate_audio": false}},
+		{"不可继承Seedance水印开关", map[string]any{"duration": 5, "prompt": "ocean", "watermark": false}},
+		{"不可继承Seedance尾帧开关", map[string]any{"duration": 5, "prompt": "ocean", "return_last_frame": false}},
+		{"水印未适配", map[string]any{"duration": 5, "prompt": "ocean", "aigc_watermark": false}},
+		{"回调未适配", map[string]any{"duration": 5, "prompt": "ocean", "callback_url": "https://callback.example"}},
+	} {
+		t.Run(spec.name, func(t *testing.T) {
+			_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model, "body": map[string]any{"kind": "json", "value": spec.body},
+			})
+			require.Error(t, callErr)
+			_, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+				"model": model, "requestBody": spec.body, "apiKey": "synthetic-fixture",
+				"baseUrl": "https://upstream.example", "publicTaskId": "task_h3_invalid",
+			})
+			require.Error(t, callErr)
+		})
+	}
+
+	t.Run("恢复旧MAX任务时不套用新的整秒上限", func(t *testing.T) {
+		task := map[string]any{"model": "my-h3", "upstreamModel": model, "taskId": "a1b2c3d4e5f6789012345678", "state": map[string]any{"seconds": 12.5}, "apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1"}
+		value, callErr := plugin.Engine.Call(t.Context(), "buildQueryRequest", task)
+		require.NoError(t, callErr)
+		encoded, marshalErr := common.Marshal(value)
+		require.NoError(t, marshalErr)
+		assert.JSONEq(t, `{"url":"https://upstream.example/v1/videos/a1b2c3d4e5f6789012345678","method":"GET","headers":{"Authorization":"Bearer synthetic-fixture"}}`, string(encoded))
+		value, callErr = plugin.Engine.Call(t.Context(), "parseTaskResult", task, map[string]any{"status": "completed", "url": "https://cdn.example/result.mp4"})
+		require.NoError(t, callErr)
+		encoded, marshalErr = common.Marshal(value)
+		require.NoError(t, marshalErr)
+		assert.JSONEq(t, `{"status":"SUCCESS","progress":"100%","url":"https://cdn.example/result.mp4"}`, string(encoded))
+		value, callErr = plugin.Engine.Call(t.Context(), "extractUsageOnComplete", task, map[string]any{"status": "SUCCESS"}, map[string]any{"duration": 99})
+		require.NoError(t, callErr)
+		encoded, marshalErr = common.Marshal(value)
+		require.NoError(t, marshalErr)
+		assert.JSONEq(t, `{"seconds":12.5}`, string(encoded))
 	})
 }
