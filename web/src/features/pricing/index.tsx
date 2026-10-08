@@ -35,6 +35,8 @@ import {
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
+import { useYuanliuAvailability } from './hooks/use-yuanliu-availability'
+import { isYuanliuModel } from './lib/yuanliu-model'
 
 export function Pricing() {
   const { t } = useTranslation()
@@ -53,6 +55,11 @@ export function Pricing() {
     priceRate,
     usdExchangeRate,
   } = usePricingData()
+  const yuanliuQuery = useYuanliuAvailability()
+  const yuanliuAvailability = yuanliuQuery.data?.data?.models ?? {}
+  const hasYuanliuModels = (models ?? []).some((model) =>
+    isYuanliuModel(model, yuanliuAvailability)
+  )
 
   const {
     searchInput,
@@ -131,6 +138,8 @@ export function Pricing() {
           tokenUnit={tokenUnit}
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
+          yuanliuAvailability={yuanliuAvailability}
+          isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
         />
       )
     }
@@ -144,6 +153,8 @@ export function Pricing() {
         showRechargePrice={showRechargePrice}
         selectedGroup={groupFilter}
         onModelClick={handleModelClick}
+        yuanliuAvailability={yuanliuAvailability}
+        isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
       />
     )
   }
@@ -254,6 +265,11 @@ export function Pricing() {
                 hasActiveFilters={hasActiveFilters}
                 activeFilterCount={activeFilterCount}
                 onClearFilters={clearFilters}
+                hasYuanliuModels={hasYuanliuModels}
+                isReloadingYuanliuAvailability={yuanliuQuery.isFetching}
+                onReloadYuanliuAvailability={() => {
+                  void yuanliuQuery.refetch()
+                }}
               />
 
               {renderPricingContent()}
@@ -280,6 +296,8 @@ export function Pricing() {
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}
               showRechargePrice={showRechargePrice}
+              yuanliuAvailability={yuanliuAvailability}
+              isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
             />
           )}
         </PageTransition>

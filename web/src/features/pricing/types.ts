@@ -132,6 +132,22 @@ export type PricingData = {
   auto_groups: string[]
 }
 
+/** 源流目录对当前可见模型的供给状态；checked_at 为成功查询上游时的 UTC 时间。 */
+export type YuanliuAvailability = {
+  status: 'available' | 'sold_out' | 'disabled' | 'unknown'
+  checked_at: string | null
+}
+
+/** 以公开模型名索引的源流供给状态。 */
+export type YuanliuAvailabilityMap = Record<string, YuanliuAvailability>
+
+/** 源流供给查询结果，以公开模型名为键，不包含渠道或凭据信息。 */
+export type YuanliuAvailabilityResponse = {
+  success: boolean
+  message?: string
+  data: { models: YuanliuAvailabilityMap }
+}
+
 export type TokenUnit = 'M' | 'K'
 export type PriceType =
   | 'input'

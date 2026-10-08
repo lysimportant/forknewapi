@@ -2,14 +2,17 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -121,6 +124,314 @@ func TestFetchTaskPluginModelAliases(t *testing.T) {
 	assert.Equal(t, "custom", reloaded.Models)
 	require.NotNil(t, reloaded.ModelMapping)
 	assert.Equal(t, existingMapping, *reloaded.ModelMapping)
+}
+
+// TestFetchYuanliuModelNamesDistinguishesMissingModelsFromInvalidCatalog 验证完整目录缺少目标模型时仍可确定状态。
+func TestFetchYuanliuModelNamesDistinguishesMissingModelsFromInvalidCatalog(t *testing.T) {
+	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
+	require.True(t, ok)
+	require.NotEmpty(t, plugin.Meta.Models)
+	upstreamID := plugin.Meta.Models[0]
+	for _, test := range []struct {
+		name       string
+		statusCode int
+		body       string
+		wantNames  map[string]string
+		wantError  bool
+	}{
+		{name: "listed and named", body: fmt.Sprintf(`{"data":[{"id":%q,"name":"今日售罄"}]}`, upstreamID), wantNames: map[string]string{upstreamID: "今日售罄"}},
+		{name: "unadapted IDs only", body: `{"data":[{"id":"not-adapted","name":"Available"}]}`, wantNames: map[string]string{}},
+		{name: "empty catalog", body: `{"data":[]}`, wantError: true},
+		{name: "missing data", body: `{}`, wantError: true},
+		{name: "duplicate ID", body: fmt.Sprintf(`{"data":[{"id":%q},{"id":%q}]}`, upstreamID, upstreamID), wantError: true},
+		{name: "upstream failure", statusCode: http.StatusBadGateway, body: `{"secret":"upstream-private"}`, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/openapi/v1/models", r.URL.Path)
+				assert.Equal(t, "Bearer fixture-private-key", r.Header.Get("Authorization"))
+				if test.statusCode != 0 {
+					w.WriteHeader(test.statusCode)
+				}
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			baseURL := server.URL + "/openapi/v1"
+			setting := `{"task_plugin_key":"yuanliu"}`
+			channel := &model.Channel{Key: "fixture-private-key", BaseURL: &baseURL, Setting: &setting}
+			names, err := fetchYuanliuModelNames(channel)
+			if test.wantError {
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "fixture-private-key")
+				assert.NotContains(t, err.Error(), "upstream-private")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.wantNames, names)
+		})
+	}
+}
+
+// TestAggregateYuanliuAvailability 验证多渠道优先级和不确定结果的时间戳合同。
+func TestAggregateYuanliuAvailability(t *testing.T) {
+	checkedAt := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	available := yuanliuCatalogSnapshot{names: map[string]string{"target": "Available"}, checkedAt: checkedAt}
+	soldOut := yuanliuCatalogSnapshot{names: map[string]string{"target": "今日售罄"}, checkedAt: checkedAt}
+	missing := yuanliuCatalogSnapshot{names: map[string]string{"other": "Available"}, checkedAt: checkedAt}
+	unnamed := yuanliuCatalogSnapshot{names: map[string]string{"target": " "}, checkedAt: checkedAt}
+	multiKeySoldOut := soldOut
+	multiKeySoldOut.multipleEnabledKeys = true
+	multiKeyMissing := missing
+	multiKeyMissing.multipleEnabledKeys = true
+	multiKeyAvailable := available
+	multiKeyAvailable.multipleEnabledKeys = true
+	for _, test := range []struct {
+		name      string
+		snapshots map[int]yuanliuCatalogSnapshot
+		want      string
+		checked   bool
+	}{
+		{name: "available wins over sold out and failure", snapshots: map[int]yuanliuCatalogSnapshot{1: soldOut, 2: available, 3: {}}, want: "available", checked: true},
+		{name: "sold out", snapshots: map[int]yuanliuCatalogSnapshot{1: soldOut}, want: "sold_out", checked: true},
+		{name: "missing target", snapshots: map[int]yuanliuCatalogSnapshot{1: missing}, want: "disabled", checked: true},
+		{name: "blank name", snapshots: map[int]yuanliuCatalogSnapshot{1: unnamed}, want: "unknown"},
+		{name: "multiple keys sampled sold out", snapshots: map[int]yuanliuCatalogSnapshot{1: multiKeySoldOut}, want: "unknown"},
+		{name: "multiple keys sampled missing", snapshots: map[int]yuanliuCatalogSnapshot{1: multiKeyMissing}, want: "unknown"},
+		{name: "multiple keys sampled available", snapshots: map[int]yuanliuCatalogSnapshot{1: multiKeyAvailable}, want: "available", checked: true},
+		{name: "failed channel prevents sold out conclusion", snapshots: map[int]yuanliuCatalogSnapshot{1: soldOut, 3: {}}, want: "unknown"},
+		{name: "failed channel prevents disabled conclusion", snapshots: map[int]yuanliuCatalogSnapshot{1: missing, 3: {}}, want: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			targets := make(map[int]string, len(test.snapshots))
+			for id := range test.snapshots {
+				targets[id] = "target"
+			}
+			got := aggregateYuanliuAvailability(targets, test.snapshots)
+			assert.Equal(t, test.want, got.Status)
+			if test.checked {
+				require.NotNil(t, got.CheckedAt)
+				assert.Equal(t, checkedAt.Format(time.RFC3339), *got.CheckedAt)
+			} else {
+				assert.Nil(t, got.CheckedAt)
+			}
+		})
+	}
+}
+
+// TestYuanliuCatalogCache 合并并发刷新，并在配置变化或失败缓存到期后重新读取目录。
+func TestYuanliuCatalogCache(t *testing.T) {
+	cache := yuanliuCatalogCache{entries: make(map[int]yuanliuCatalogSnapshot)}
+	channel := &model.Channel{Id: 9201, Key: "first-key"}
+	plugin := jsplugin.Meta{Version: "1.0.0"}
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fetch := func(*model.Channel) (map[string]string, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return map[string]string{"target": "Available"}, nil
+	}
+	var wait sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		wait.Go(func() {
+			<-start
+			result := cache.get(context.Background(), channel, plugin, fetch)
+			assert.Equal(t, "Available", result.names["target"])
+		})
+	}
+	close(start)
+	<-entered
+	close(release)
+	wait.Wait()
+	assert.Equal(t, int32(1), calls.Load())
+
+	changed := *channel
+	changed.Key = "second-key"
+	result := cache.get(context.Background(), &changed, plugin, fetch)
+	assert.Equal(t, "Available", result.names["target"])
+	assert.Equal(t, int32(2), calls.Load())
+	changed.ChannelInfo.MultiKeyPollingIndex = 1
+	_ = cache.get(context.Background(), &changed, plugin, fetch)
+	assert.Equal(t, int32(2), calls.Load())
+
+	changed.Key = "failed-key"
+	failingFetch := func(*model.Channel) (map[string]string, error) {
+		calls.Add(1)
+		return nil, errors.New("secret upstream failure")
+	}
+	result = cache.get(context.Background(), &changed, plugin, failingFetch)
+	assert.True(t, result.checkedAt.IsZero())
+	_ = cache.get(context.Background(), &changed, plugin, failingFetch)
+	assert.Equal(t, int32(3), calls.Load())
+	cache.Lock()
+	expired := cache.entries[channel.Id]
+	expired.expiresAt = time.Now().Add(-time.Second)
+	cache.entries[channel.Id] = expired
+	cache.Unlock()
+	result = cache.get(context.Background(), &changed, plugin, fetch)
+	assert.False(t, result.checkedAt.IsZero())
+	assert.Equal(t, int32(4), calls.Load())
+
+	changed.Key = "pending-key"
+	enteredPending := make(chan struct{})
+	releasePending := make(chan struct{})
+	var pendingCalls atomic.Int32
+	pendingFetch := func(*model.Channel) (map[string]string, error) {
+		pendingCalls.Add(1)
+		close(enteredPending)
+		<-releasePending
+		return map[string]string{"target": "Available"}, nil
+	}
+	requestCtx, cancel := context.WithCancel(context.Background())
+	timedOut := make(chan yuanliuCatalogSnapshot, 1)
+	go func() { timedOut <- cache.get(requestCtx, &changed, plugin, pendingFetch) }()
+	<-enteredPending
+	cancel()
+	first := <-timedOut
+	assert.Equal(t, "unknown", aggregateYuanliuAvailability(map[int]string{channel.Id: "target"}, map[int]yuanliuCatalogSnapshot{channel.Id: first}).Status)
+	refreshed := make(chan yuanliuCatalogSnapshot, 1)
+	go func() { refreshed <- cache.get(context.Background(), &changed, plugin, pendingFetch) }()
+	close(releasePending)
+	second := <-refreshed
+	assert.Equal(t, "available", aggregateYuanliuAvailability(map[int]string{channel.Id: "target"}, map[int]yuanliuCatalogSnapshot{channel.Id: second}).Status)
+	assert.Equal(t, int32(1), pendingCalls.Load())
+
+	multiKeyChannel := &model.Channel{Id: channel.Id + 1, Key: "first-key\nsecond-key", ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
+	multiKeySnapshot := cache.get(context.Background(), multiKeyChannel, plugin, fetch)
+	assert.True(t, multiKeySnapshot.multipleEnabledKeys)
+	multiKeyChannel.ChannelInfo.MultiKeyStatusList = map[int]int{1: common.ChannelStatusManuallyDisabled}
+	singleKeySnapshot := cache.get(context.Background(), multiKeyChannel, plugin, fetch)
+	assert.False(t, singleKeySnapshot.multipleEnabledKeys)
+}
+
+// TestGetYuanliuAvailabilityKeepsVisibleMappedModels 验证定价页只公开可见且可路由的模型状态。
+func TestGetYuanliuAvailabilityKeepsVisibleMappedModels(t *testing.T) {
+	db, userIDs := setupGroupVisibilityControllerTest(t)
+	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(plugin.Meta.Models), 8)
+	ids := plugin.Meta.Models
+
+	primaryBody, err := common.Marshal(map[string]any{"data": []map[string]string{
+		{"id": ids[0], "name": "可用"},
+		{"id": ids[1], "name": "今日售罄"},
+		{"id": ids[3], "name": ""},
+		{"id": ids[4], "name": "可用"},
+		{"id": ids[5], "name": "告罄"},
+		{"id": ids[6], "name": "告罄"},
+	}})
+	require.NoError(t, err)
+	var primaryCalls, availableCalls, failedCalls, secretCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		assert.Equal(t, "/openapi/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer primary-private-key", r.Header.Get("Authorization"))
+		_, _ = w.Write(primaryBody)
+	}))
+	defer primary.Close()
+	available := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		availableCalls.Add(1)
+		assert.Equal(t, "Bearer available-private-key", r.Header.Get("Authorization"))
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":%q,"name":"可用"}]}`, ids[1])
+	}))
+	defer available.Close()
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failedCalls.Add(1)
+		assert.Equal(t, "Bearer failed-private-key", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"secret":"upstream-private"}`))
+	}))
+	defer failed.Close()
+	secret := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secretCalls.Add(1)
+		assert.Equal(t, "Bearer secret-private-key", r.Header.Get("Authorization"))
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":%q,"name":"可用"}]}`, ids[7])
+	}))
+	defer secret.Close()
+
+	setting := `{"task_plugin_key":"yuanliu"}`
+	primaryBaseURL := primary.URL + "/openapi/v1"
+	availableBaseURL := available.URL + "/openapi/v1"
+	failedBaseURL := failed.URL + "/openapi/v1"
+	secretBaseURL := secret.URL + "/openapi/v1"
+	primaryMapping, err := common.Marshal(map[string]string{
+		"Yuan-active": ids[0], "Yuan-sold-plus-active": ids[1], "Yuan-disabled": ids[2],
+		"Yuan-name-missing": ids[3], "Yuan-chain": "Yuan-bridge", "Yuan-bridge": ids[4],
+		"Yuan-indeterminate": ids[5], "Yuan-sold-only": ids[6],
+	})
+	require.NoError(t, err)
+	availableMapping, err := common.Marshal(map[string]string{"Yuan-sold-plus-active": ids[1]})
+	require.NoError(t, err)
+	failedMapping, err := common.Marshal(map[string]string{"Yuan-indeterminate": ids[5]})
+	require.NoError(t, err)
+	secretMapping, err := common.Marshal(map[string]string{"Yuan-secret": ids[7]})
+	require.NoError(t, err)
+	primaryMappingString := string(primaryMapping)
+	availableMappingString := string(availableMapping)
+	failedMappingString := string(failedMapping)
+	secretMappingString := string(secretMapping)
+	channels := []model.Channel{
+		{Id: 9301, Type: constant.ChannelTypeTaskPlugin, Key: "primary-private-key", Status: common.ChannelStatusEnabled, Name: "primary", Group: "default", Models: "Yuan-active,Yuan-sold-plus-active,Yuan-disabled,Yuan-name-missing,Yuan-chain,Yuan-indeterminate,Yuan-sold-only,Yuan-unmapped", BaseURL: &primaryBaseURL, Setting: &setting, ModelMapping: &primaryMappingString},
+		{Id: 9302, Type: constant.ChannelTypeTaskPlugin, Key: "available-private-key", Status: common.ChannelStatusEnabled, Name: "available", Group: "default", Models: "Yuan-sold-plus-active", BaseURL: &availableBaseURL, Setting: &setting, ModelMapping: &availableMappingString},
+		{Id: 9303, Type: constant.ChannelTypeTaskPlugin, Key: "failed-private-key", Status: common.ChannelStatusEnabled, Name: "failed", Group: "default", Models: "Yuan-indeterminate", BaseURL: &failedBaseURL, Setting: &setting, ModelMapping: &failedMappingString},
+		{Id: 9304, Type: constant.ChannelTypeTaskPlugin, Key: "secret-private-key", Status: common.ChannelStatusEnabled, Name: "secret", Group: groupVisibilitySecretGroup, Models: "Yuan-secret", BaseURL: &secretBaseURL, Setting: &setting, ModelMapping: &secretMappingString},
+	}
+	require.NoError(t, db.Create(&channels).Error)
+	var abilities []model.Ability
+	for _, name := range strings.Split(channels[0].Models, ",") {
+		abilities = append(abilities, model.Ability{Group: "default", Model: name, ChannelId: channels[0].Id, Enabled: true})
+	}
+	abilities = append(abilities,
+		model.Ability{Group: "default", Model: "Yuan-sold-plus-active", ChannelId: channels[1].Id, Enabled: true},
+		model.Ability{Group: "default", Model: "Yuan-indeterminate", ChannelId: channels[2].Id, Enabled: true},
+		model.Ability{Group: groupVisibilitySecretGroup, Model: "Yuan-secret", ChannelId: channels[3].Id, Enabled: true},
+	)
+	require.NoError(t, db.Create(&abilities).Error)
+	model.InvalidatePricingCache()
+
+	type availabilityResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Models map[string]yuanliuAvailability `json:"models"`
+		} `json:"data"`
+	}
+	commonRecorder := groupVisibilityRequest(t, "/api/pricing/yuanliu-availability", common.RoleCommonUser, userIDs[common.RoleCommonUser], GetYuanliuAvailability)
+	var commonResponse availabilityResponse
+	require.NoError(t, common.Unmarshal(commonRecorder.Body.Bytes(), &commonResponse))
+	require.True(t, commonResponse.Success)
+	statuses := make(map[string]string, len(commonResponse.Data.Models))
+	for name, item := range commonResponse.Data.Models {
+		statuses[name] = item.Status
+	}
+	assert.Equal(t, map[string]string{
+		"Yuan-active": "available", "Yuan-sold-plus-active": "available", "Yuan-disabled": "disabled",
+		"Yuan-name-missing": "unknown", "Yuan-chain": "available", "Yuan-indeterminate": "unknown",
+		"Yuan-sold-only": "sold_out",
+	}, statuses)
+	assert.Nil(t, commonResponse.Data.Models["Yuan-name-missing"].CheckedAt)
+	assert.Nil(t, commonResponse.Data.Models["Yuan-indeterminate"].CheckedAt)
+	for _, name := range []string{"Yuan-active", "Yuan-disabled", "Yuan-sold-only"} {
+		require.NotNil(t, commonResponse.Data.Models[name].CheckedAt)
+		_, err := time.Parse(time.RFC3339, *commonResponse.Data.Models[name].CheckedAt)
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, int32(0), secretCalls.Load())
+	for _, value := range []string{"primary-private-key", "available-private-key", "failed-private-key", "upstream-private", primary.URL} {
+		assert.NotContains(t, commonRecorder.Body.String(), value)
+	}
+
+	adminRecorder := groupVisibilityRequest(t, "/api/pricing/yuanliu-availability", common.RoleAdminUser, userIDs[common.RoleAdminUser], GetYuanliuAvailability)
+	var adminResponse availabilityResponse
+	require.NoError(t, common.Unmarshal(adminRecorder.Body.Bytes(), &adminResponse))
+	require.True(t, adminResponse.Success)
+	assert.Equal(t, "available", adminResponse.Data.Models["Yuan-secret"].Status)
+	assert.Equal(t, int32(1), primaryCalls.Load())
+	assert.Equal(t, int32(1), availableCalls.Load())
+	assert.Equal(t, int32(1), failedCalls.Load())
+	assert.Equal(t, int32(1), secretCalls.Load())
 }
 
 func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *testing.T) {

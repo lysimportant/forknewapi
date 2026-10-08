@@ -28,7 +28,7 @@ import {
 } from '@/components/data-table'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingModel, TokenUnit, YuanliuAvailabilityMap } from '../types'
 import { usePricingColumns } from './pricing-columns'
 
 export interface PricingTableProps {
@@ -40,6 +40,8 @@ export interface PricingTableProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   onModelClick?: (modelName: string) => void
+  yuanliuAvailability?: YuanliuAvailabilityMap
+  isYuanliuAvailabilityUnavailable?: boolean
 }
 
 export function PricingTable(props: PricingTableProps) {
@@ -52,6 +54,8 @@ export function PricingTable(props: PricingTableProps) {
     tokenUnit = DEFAULT_TOKEN_UNIT,
     showRechargePrice = false,
     selectedGroup,
+    yuanliuAvailability,
+    isYuanliuAvailabilityUnavailable,
     onModelClick,
   } = props
 
@@ -66,6 +70,8 @@ export function PricingTable(props: PricingTableProps) {
     usdExchangeRate,
     showRechargePrice,
     selectedGroup,
+    yuanliuAvailability,
+    isYuanliuAvailabilityUnavailable,
   })
 
   const { table } = useDataTable({

@@ -55,6 +55,9 @@ function toolbarProps(): PricingToolbarProps {
     hasActiveFilters: false,
     activeFilterCount: 0,
     onClearFilters: vi.fn(),
+    hasYuanliuModels: false,
+    isReloadingYuanliuAvailability: false,
+    onReloadYuanliuAvailability: vi.fn(),
   }
 }
 
@@ -88,6 +91,33 @@ describe('pricing controls', () => {
       'aria-pressed',
       'false'
     )
+  })
+
+  it('offers a gateway status reload only when Yuanliu models are present', async () => {
+    const props = toolbarProps()
+    const user = userEvent.setup()
+    const { rerender } = render(<PricingToolbar {...props} />)
+    expect(
+      screen.queryByRole('button', {
+        name: 'Reload Yuanliu status from gateway',
+      })
+    ).toBeNull()
+
+    rerender(<PricingToolbar {...props} hasYuanliuModels />)
+    const reload = screen.getByRole('button', {
+      name: 'Reload Yuanliu status from gateway',
+    })
+    await user.click(reload)
+    expect(props.onReloadYuanliuAvailability).toHaveBeenCalledOnce()
+
+    rerender(
+      <PricingToolbar
+        {...props}
+        hasYuanliuModels
+        isReloadingYuanliuAvailability
+      />
+    )
+    expect(reload).toBeDisabled()
   })
 
   it('switches to table view with the keyboard and exposes the selected view', async () => {

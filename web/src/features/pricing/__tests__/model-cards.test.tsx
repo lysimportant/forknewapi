@@ -21,11 +21,13 @@ import {
   act,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createJSONStorage } from 'zustand/middleware'
 
@@ -38,7 +40,15 @@ import {
 import { CachedPriceCell } from '../components/cached-price-cell'
 import { ModelCard } from '../components/model-card'
 import { ModelCardGrid } from '../components/model-card-grid'
+import { ModelDetailsContent } from '../components/model-details'
+import { PricingTable } from '../components/pricing-table'
+import { useYuanliuAvailability } from '../hooks/use-yuanliu-availability'
 import type { PricingModel } from '../types'
+
+vi.mock('../components/model-details-charts', () => ({
+  LatencyTrendChart: () => null,
+  UptimeTrendChart: () => null,
+}))
 
 function pricingModel(overrides: Partial<PricingModel> = {}): PricingModel {
   return {
@@ -119,6 +129,213 @@ describe('model cards', () => {
     rerender(<ModelCard model={model} onClick={vi.fn()} tokenUnit='M' />)
     expect(screen.getByText('$0.01')).toBeVisible()
     expect(screen.queryByText('/ 1M')).not.toBeInTheDocument()
+  })
+  it('shows an unknown catalog status for a known Yuanliu alias when the catalog has no result', () => {
+    render(
+      <ModelCard
+        model={pricingModel({ model_name: 'Yuan-Seedance-2.5-HD' })}
+        onClick={vi.fn()}
+        yuanliuAvailability={{}}
+      />
+    )
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Unknown')
+    ).toBeVisible()
+  })
+
+  it('shows the catalog state for an exact upstream ID and does not label a similar non-Yuanliu name', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-09T12:00:00.000Z'))
+    const { rerender } = render(
+      <ModelCard
+        model={pricingModel({ model_name: 'yl_g7zy_seedance_v2_5' })}
+        onClick={vi.fn()}
+        yuanliuAvailability={{
+          yl_g7zy_seedance_v2_5: {
+            status: 'available',
+            checked_at: '2026-10-09T11:59:00.000Z',
+          },
+        }}
+      />
+    )
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Listed in catalog')
+    ).toBeVisible()
+
+    rerender(
+      <ModelCard
+        model={pricingModel({ model_name: 'Yuan-Seedance-2.5-HD-Other' })}
+        onClick={vi.fn()}
+        yuanliuAvailability={{}}
+      />
+    )
+    expect(screen.queryByLabelText(/Yuanliu catalog status/)).toBeNull()
+  })
+
+  it('formats a fresh catalog check in the Chinese interface locale', async () => {
+    const previousLanguage = i18next.language
+    await act(() => i18next.changeLanguage('zhCN'))
+    try {
+      const checkedAt = new Date().toISOString()
+      render(
+        <ModelCard
+          model={pricingModel({ model_name: 'Yuan-Seedance-2.5-HD' })}
+          onClick={vi.fn()}
+          yuanliuAvailability={{
+            'Yuan-Seedance-2.5-HD': {
+              status: 'available',
+              checked_at: checkedAt,
+            },
+          }}
+        />
+      )
+      const badge = screen.getByLabelText(
+        'Yuanliu catalog status: Listed in catalog'
+      )
+      expect(badge).toBeVisible()
+      const title = new DOMParser().parseFromString(badge.title, 'text/html')
+        .body.textContent
+      expect(title).toContain(new Date(checkedAt).toLocaleString('zh-CN'))
+    } finally {
+      await act(() => i18next.changeLanguage(previousLanguage))
+    }
+  })
+
+  it('shows sold-out and unlisted catalog states in the pricing table', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-09T12:00:00.000Z'))
+    render(
+      <PricingTable
+        models={[
+          pricingModel({ id: 1, model_name: 'Yuan-Seedance-2.0-LJ' }),
+          pricingModel({ id: 2, model_name: 'Yuan-Seedance-2.5-YS' }),
+        ]}
+        yuanliuAvailability={{
+          'Yuan-Seedance-2.0-LJ': {
+            status: 'sold_out',
+            checked_at: '2026-10-09T11:59:00.000Z',
+          },
+          'Yuan-Seedance-2.5-YS': {
+            status: 'disabled',
+            checked_at: '2026-10-09T11:59:00.000Z',
+          },
+        }}
+      />
+    )
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Sold out')
+    ).toBeVisible()
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Unlisted in catalog')
+    ).toBeVisible()
+  })
+
+  it('shows unknown in all pricing views after a cached catalog request fails', async () => {
+    const model = pricingModel({ model_name: 'Yuan-Seedance-2.5-LJ' })
+    const availability = {
+      [model.model_name]: {
+        status: 'available' as const,
+        checked_at: new Date().toISOString(),
+      },
+    }
+    const request = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({
+        data: { success: true, data: { models: availability } },
+      })
+      .mockRejectedValueOnce(new Error('catalog unavailable'))
+    const { result } = renderHook(() => useYuanliuAvailability(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      ),
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.data.models[model.model_name]).toEqual(
+      availability[model.model_name]
+    )
+    await act(async () => {
+      await result.current.refetch()
+    })
+    expect(request).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.data?.data.models[model.model_name]).toEqual(
+      availability[model.model_name]
+    )
+
+    queryClient.setQueryData(['perf-metrics', model.model_name], {
+      success: true,
+      data: { groups: [] },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelCard
+          model={model}
+          onClick={vi.fn()}
+          yuanliuAvailability={availability}
+          isYuanliuAvailabilityUnavailable={result.current.isError}
+        />
+        <PricingTable
+          models={[model]}
+          yuanliuAvailability={availability}
+          isYuanliuAvailabilityUnavailable={result.current.isError}
+        />
+        <ModelDetailsContent
+          model={model}
+          groupRatio={{}}
+          usableGroup={{}}
+          endpointMap={{}}
+          autoGroups={[]}
+          priceRate={1}
+          usdExchangeRate={1}
+          tokenUnit='M'
+          yuanliuAvailability={availability}
+          isYuanliuAvailabilityUnavailable={result.current.isError}
+        />
+      </QueryClientProvider>
+    )
+    expect(
+      screen.getAllByLabelText('Yuanliu catalog status: Unknown')
+    ).toHaveLength(3)
+    expect(
+      screen.queryByLabelText('Yuanliu catalog status: Listed in catalog')
+    ).not.toBeInTheDocument()
+  })
+
+  it('replaces a cached catalog status with unknown after it expires', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-09T12:00:00.000Z'))
+    const model = pricingModel({ model_name: 'Yuan-Seedance-2.5-LJ' })
+    const availability = {
+      'Yuan-Seedance-2.5-LJ': {
+        status: 'available' as const,
+        checked_at: '2026-10-09T11:59:00.000Z',
+      },
+    }
+    const { rerender } = render(
+      <ModelCard
+        model={model}
+        onClick={vi.fn()}
+        yuanliuAvailability={availability}
+      />
+    )
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Listed in catalog')
+    ).toBeVisible()
+
+    vi.setSystemTime(new Date('2026-10-09T12:04:01.000Z'))
+    rerender(
+      <ModelCard
+        model={model}
+        onClick={vi.fn()}
+        yuanliuAvailability={availability}
+      />
+    )
+    expect(
+      screen.getByLabelText('Yuanliu catalog status: Unknown')
+    ).toBeVisible()
   })
   it('updates the current time tier at a minute boundary and after returning to the page', () => {
     vi.useFakeTimers()

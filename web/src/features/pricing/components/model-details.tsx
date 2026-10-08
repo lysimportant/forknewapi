@@ -64,6 +64,7 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useBillingTime } from '../hooks/use-billing-time'
 import { usePricingData } from '../hooks/use-pricing-data'
+import { useYuanliuAvailability } from '../hooks/use-yuanliu-availability'
 import type { ParsedTaskTier } from '../lib/billing-expr'
 import { formatBillingCondition } from '../lib/billing-expression/condition-display'
 import {
@@ -98,11 +99,13 @@ import type {
   PriceType,
   PricingModel,
   TokenUnit,
+  YuanliuAvailabilityMap,
 } from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
+import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -614,7 +617,11 @@ function ModelBackendDetailsSection(props: { model: PricingModel }) {
 // Model header (always visible above the detail sections)
 // ----------------------------------------------------------------------------
 
-function ModelHeader(props: { model: PricingModel }) {
+function ModelHeader(props: {
+  model: PricingModel
+  yuanliuAvailability: YuanliuAvailabilityMap
+  isYuanliuAvailabilityUnavailable: boolean
+}) {
   const { t } = useTranslation()
   const model = props.model
   const modelIconKey = model.icon || model.vendor_icon
@@ -644,6 +651,13 @@ function ModelHeader(props: { model: PricingModel }) {
         <span className='text-muted-foreground/30'>·</span>
         <ModelBillingModeBadge model={model} />
       </div>
+      <YuanliuAvailabilityBadge
+        model={model}
+        availability={props.yuanliuAvailability}
+        isUnavailable={props.isYuanliuAvailabilityUnavailable}
+        showCheckedAt
+        className='mt-2'
+      />
       {description && (
         <p className='text-muted-foreground mt-2 text-sm leading-relaxed'>
           {description}
@@ -1478,6 +1492,8 @@ export interface ModelDetailsContentProps {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  yuanliuAvailability?: YuanliuAvailabilityMap
+  isYuanliuAvailabilityUnavailable?: boolean
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
@@ -1500,7 +1516,13 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
 
   return (
     <div className='@container/details space-y-4'>
-      <ModelHeader model={props.model} />
+      <ModelHeader
+        model={props.model}
+        yuanliuAvailability={props.yuanliuAvailability ?? {}}
+        isYuanliuAvailabilityUnavailable={
+          props.isYuanliuAvailabilityUnavailable ?? false
+        }
+      />
 
       <Tabs defaultValue='overview' className='gap-4'>
         <TabsList className='bg-muted/60 grid w-full grid-cols-3 gap-1 rounded-lg p-1 group-data-horizontal/tabs:h-auto'>
@@ -1623,6 +1645,7 @@ export function ModelDetails() {
     priceRate,
     usdExchangeRate,
   } = usePricingData()
+  const yuanliuQuery = useYuanliuAvailability()
 
   const tokenUnit: TokenUnit =
     search.tokenUnit === 'K' ? 'K' : DEFAULT_TOKEN_UNIT
@@ -1701,6 +1724,8 @@ export function ModelDetails() {
           usdExchangeRate={usdExchangeRate ?? 1}
           tokenUnit={tokenUnit}
           showRechargePrice={search.rechargePrice ?? false}
+          yuanliuAvailability={yuanliuQuery.data?.data?.models ?? {}}
+          isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
           endpointMap={
             (endpointMap as Record<
               string,

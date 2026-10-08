@@ -16,22 +16,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { api } from '@/lib/api'
+import { useQuery } from '@tanstack/react-query'
 
-import type { PricingData, YuanliuAvailabilityResponse } from './types'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
-// ----------------------------------------------------------------------------
-// Pricing APIs
-// ----------------------------------------------------------------------------
+import { getYuanliuAvailability } from '../api'
 
-// Get model pricing data
-export async function getPricing(): Promise<PricingData> {
-  const res = await api.get('/api/pricing')
-  return res.data
-}
-
-/** 查询当前用户可见的源流模型供给状态；结果可能来自网关短期缓存。 */
-export async function getYuanliuAvailability(): Promise<YuanliuAvailabilityResponse> {
-  const res = await api.get('/api/pricing/yuanliu-availability')
-  return res.data
+/** 定期读取网关发布的源流状态；请求失败由界面显示 unknown，不重复弹出错误提示。 */
+export function useYuanliuAvailability() {
+  return useQuery({
+    queryKey: ['pricing', 'yuanliu-availability'],
+    queryFn: async () => requireServerSuccess(await getYuanliuAvailability()),
+    refetchInterval: 60 * 1000,
+    refetchOnWindowFocus: 'always',
+    retry: false,
+    meta: { errorToast: false },
+  })
 }

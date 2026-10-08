@@ -29,16 +29,20 @@ import { StatusBadge } from '@/components/status-badge'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
-import type { PricingModel } from '../types'
+import type { PricingModel, YuanliuAvailabilityMap } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
+import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
 
 // ----------------------------------------------------------------------------
 // Pricing Table Columns
 // ----------------------------------------------------------------------------
 
-export type PricingColumnsOptions = ModelPriceCellOptions
+export type PricingColumnsOptions = ModelPriceCellOptions & {
+  yuanliuAvailability?: YuanliuAvailabilityMap
+  isYuanliuAvailabilityUnavailable?: boolean
+}
 
 export function usePricingColumns(
   options: PricingColumnsOptions = {}
@@ -59,11 +63,19 @@ export function usePricingColumns(
         const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 14) : null
 
         return (
-          <div className='flex max-w-full min-w-0 items-center gap-2'>
+          <div className='flex max-w-full min-w-0 items-start gap-2'>
             {modelIcon}
-            <span className='truncate font-mono text-sm font-medium'>
-              {model.model_name}
-            </span>
+            <div className='min-w-0'>
+              <span className='block truncate font-mono text-sm font-medium'>
+                {model.model_name}
+              </span>
+              <YuanliuAvailabilityBadge
+                model={model}
+                availability={options.yuanliuAvailability ?? {}}
+                isUnavailable={options.isYuanliuAvailabilityUnavailable}
+                className='mt-1'
+              />
+            </div>
           </div>
         )
       },

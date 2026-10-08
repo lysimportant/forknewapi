@@ -40,9 +40,15 @@ import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskPriceLabel, taskUsageUnitLabel } from '../lib/task-price-display'
-import type { PricingModel, PriceType, TokenUnit } from '../types'
+import type {
+  PricingModel,
+  PriceType,
+  TokenUnit,
+  YuanliuAvailabilityMap,
+} from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
+import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
 
 export interface ModelCardProps {
   model: PricingModel
@@ -53,6 +59,8 @@ export interface ModelCardProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   perf?: ModelPerfBadgeData
+  yuanliuAvailability?: YuanliuAvailabilityMap
+  isYuanliuAvailabilityUnavailable?: boolean
 }
 
 export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
@@ -281,6 +289,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               {props.model.vendor_name}
             </p>
           )}
+          <YuanliuAvailabilityBadge
+            model={props.model}
+            availability={props.yuanliuAvailability ?? {}}
+            isUnavailable={props.isYuanliuAvailabilityUnavailable}
+            className='mt-1'
+          />
         </div>
         <CopyButton
           value={props.model.model_name}

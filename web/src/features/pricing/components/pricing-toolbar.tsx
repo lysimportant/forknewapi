@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ArrowUpDown, Check, Filter } from 'lucide-react'
+import { ArrowUpDown, Check, Filter, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -43,6 +43,11 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 import { getSortLabels, type SortOption, type ViewMode } from '../constants'
@@ -78,6 +83,9 @@ export interface PricingToolbarProps {
   hasActiveFilters: boolean
   activeFilterCount: number
   onClearFilters: () => void
+  hasYuanliuModels: boolean
+  isReloadingYuanliuAvailability: boolean
+  onReloadYuanliuAvailability: () => void
 }
 
 export function PricingToolbar(props: PricingToolbarProps) {
@@ -120,6 +128,33 @@ export function PricingToolbar(props: PricingToolbarProps) {
         </div>
 
         <div className='flex min-w-0 flex-wrap items-center gap-2'>
+          {props.hasYuanliuModels && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='icon-sm'
+                    aria-label={t('Reload Yuanliu status from gateway')}
+                    disabled={props.isReloadingYuanliuAvailability}
+                    onClick={props.onReloadYuanliuAvailability}
+                  />
+                }
+              >
+                <RefreshCw
+                  aria-hidden
+                  className={cn(
+                    'size-4',
+                    props.isReloadingYuanliuAvailability && 'animate-spin'
+                  )}
+                />
+              </TooltipTrigger>
+              <TooltipContent>
+                {t('Reload Yuanliu status from gateway')}
+              </TooltipContent>
+            </Tooltip>
+          )}
           <ToggleGroup
             value={[props.showRechargePrice ? 'recharge' : 'standard']}
             onValueChange={(values) => {
