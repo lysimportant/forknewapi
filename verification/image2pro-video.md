@@ -1,5 +1,16 @@
 # Image2Pro 视频插件检查点
 
+## 2026-10-10：按 ImagePro 公开视频合同修正创建请求
+
+- P1：修复 `Seedance2.0 0.9r`、`无限制-Flash-MAX-Video` 创建请求被供应商以“请提供 prompt 或 input_image”拒绝的问题。恢复后的实际基线为 `main @ f64836751`、上游 `fork/main`；源流、Canvas bridge、定价页及 `AGENTS.md` 改动已存在于该基线提交，不纳入本任务差异。
+- 供应商当前公开 `GET https://api.image2pro.top/models` 显示真实 ID 分别为 `Seedance2.0`、`Flash视频-MAX`，展示名分别为 `Seedance2.0 0.9r`、`无限制-Flash-MAX-Video`；后者协议为 `agnes`，不是此前假定的 MiniMax H3。`GET https://api.image2pro.top/v1/models` 无凭据返回 401，未读取或记录生产密钥。
+- `POST /v1/videos` 公开文档要求顶层 `prompt`，单图使用 `input_image`，多图使用 `images`。插件 2.2.0 保留 Canvas 及既有渠道的展示名和内部 `content` 输入兼容，最终外发改为真实 ID 与公开字段，不再发送 `content`、`resolution` 或 Seedance 扩展开关。Canvas 默认的 `resolution: "720p"` 仅作为兼容占位接受；其它值明确拒绝，避免静默丢失用户选择。
+- 公开目录同时声明 Seedance 为 4–15 整秒、Flash-MAX 为 4–12 整秒，Flash-MAX 最多 5 张参考图。公开创建文档未声明音频、视频或首尾帧角色字段；插件在供应商 POST 前明确拒绝这些输入，避免静默丢素材或再次生成无效请求。旧任务查询、冻结秒数结算、任务 ID、幂等头和 `noRetry` 保持兼容。
+- 为兼容既有渠道，插件同时声明两个展示名和两个真实 ID，最终分别映射到 `Seedance2.0`、`Flash视频-MAX`。四个精确名称在 New API 中仍是独立模型及计费键；上线时需复核渠道选择、`model_mapping` 和插件计费表达式，不能假定展示名价格自动继承给真实 ID。
+- 本轮不修改数据库、价格、渠道、凭据、Canvas 或生产部署，也不发起真实生成 POST。上线前应确认数据库中的插件 override 已更新为 2.2.0，并复核渠道模型选择；回滚时先停止新提交、等待在途任务完成，再回退本次插件提交，保留任务、账单和日志数据。
+- 最终 `go test -p=1 -mod=readonly ./... -count=1 -timeout=600s` 全部通过，其中 controller 用时 184.963 秒；并行复跑曾在 `pkg/jsplugin/TestEngineInterruptsLongRunningHook` 的 5ms 初始化阈值出现一次负载波动，失败用例和整个包独立复跑均通过。`go vet -mod=readonly ./...`、`go build -mod=readonly ./...`、插件宿主 lint、目标 oxlint/oxfmt 和插件专项测试均通过。Canvas `@multimodal-canvas/providers` 的 Image2Pro 43 项序列化回归通过，证明 Canvas 仍发送内部 `content`，转换发生在 New API 插件边界。
+- 所有供应商检查均为公开 GET，未读取或记录生产密钥，未发送真实生成 POST。源码与本地模拟不能替代供应商真实受理和成片验收；如获授权进行真实验收，只允许带稳定幂等键提交一次，未知结果不得重发 POST。
+
 ## 2026-10-08：Flash-MAX H3 别名恢复（本地验收完成）
 
 - P1：用户确认 `无限制-Flash-MAX-Video` 为 `MiniMax-H3` 别名，名称中的 MAX 不表示官方 `MiniMax-H3-Max`。恢复新建和模型导入，输出仅 `720p`、4–12 整秒。Seedance 官方参数保持独立，中配 Flash 继续停用。
