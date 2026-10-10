@@ -228,8 +228,7 @@ it('未配置正文时展示平台能力、画布入口和站点支持联系方�
   expect(
     screen.getByRole('heading', { name: 'Questions and support' })
   ).toBeVisible()
-  expect(screen.getByText('hkcustom0928')).toBeVisible()
-  expect(screen.getByText('811481586')).toBeVisible()
+  expect(screen.getAllByText('518229879')).toHaveLength(2)
   expect(
     screen.getByText(
       'Availability and pricing follow the current model catalog, channel configuration, and upstream permissions.'
@@ -301,14 +300,15 @@ it('原有运营正文使用优化版式展示，管理员账号和 QQ 群号可
 
   await screen.findByRole('heading', { name: 'Unified API access' })
   expect(screen.queryByText(originalContent)).not.toBeInTheDocument()
-  expect(screen.getAllByText('hkcustom0928')).toHaveLength(1)
-  expect(screen.getAllByText('811481586')).toHaveLength(1)
+  expect(screen.getAllByText('518229879')).toHaveLength(2)
+  expect(screen.queryByText('hkcustom0928')).not.toBeInTheDocument()
+  expect(screen.queryByText('811481586')).not.toBeInTheDocument()
   await user.click(
     screen.getByRole('button', { name: 'Copy administrator account' })
   )
-  expect(await navigator.clipboard.readText()).toBe('hkcustom0928')
+  expect(await navigator.clipboard.readText()).toBe('518229879')
   await user.click(screen.getByRole('button', { name: 'Copy QQ group number' }))
-  expect(await navigator.clipboard.readText()).toBe('811481586')
+  expect(await navigator.clipboard.readText()).toBe('518229879')
   expectProjectAttribution()
 
   view.unmount()

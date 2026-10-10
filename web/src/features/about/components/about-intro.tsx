@@ -26,7 +26,7 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { DEFAULT_LOGO } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
-/** 站点原有运营说明；匹配此正文时直接使用整理后的版式，避免重复展示。 */
+/** 仅用于识别并隐藏旧运营正文，避免重复展示已过期的联系方式。 */
 export const ORIGINAL_ABOUT_CONTENT =
   '充值可以找管理：hkcustom0928 不会接入Codex ChatGPT的也可以找管理远程帮忙; 有问题请联系管理员； Q扣群：811481586'
 
@@ -168,11 +168,11 @@ export function AboutIntro() {
                 {t('Administrator')}
               </p>
               <p className='mt-1 font-mono text-xl font-medium break-all'>
-                hkcustom0928
+                518229879
               </p>
             </div>
             <CopyButton
-              value='hkcustom0928'
+              value='518229879'
               variant='outline'
               className='size-10'
               tooltip={t('Copy administrator account')}
@@ -185,11 +185,11 @@ export function AboutIntro() {
                 {t('QQ group')}
               </p>
               <p className='mt-1 font-mono text-xl font-medium break-all'>
-                811481586
+                518229879
               </p>
             </div>
             <CopyButton
-              value='811481586'
+              value='518229879'
               variant='outline'
               className='size-10'
               tooltip={t('Copy QQ group number')}

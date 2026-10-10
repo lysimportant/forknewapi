@@ -776,3 +776,16 @@ P1。基线为干净的 `main@204549194`。精确名称“神秘分组”的价�
 - [ ] 服务器更新：拉取 `fork/main` 并重建前端和内嵌资源的 Go 产物，或重建镜像及容器；本轮不执行生产部署。
 
 安全审查参考 OWASP [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)、[Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html) Cheat Sheets 和 ASVS 5.0.0 V8（8.1.1/8.1.2、8.2.2/8.2.3、8.3.1/8.3.2）；仅验证本次分组可见性边界。检查点位于 `.local-tests/secret-group/`，交付目标为 `fork/main` 与 annotated Tag `v1.0.0-rc.37.custom.37`。
+
+## 23. 2026-10-10 更新站点联系方式
+
+P2。基线为干净的 `main@721161420`，跟踪 `fork/main`。Node 24.12.0、npm 11.6.2、Go 1.26.0，前端本地依赖已存在；Bun 不在 PATH，使用 npm 执行等价项目脚本。
+
+将关于页管理员账号、QQ 群号及两个复制按钮统一更新为 `518229879`，复用现有 `CopyButton` 和翻译。保留原始正文匹配，防止已保存的旧运营说明重复显示旧联系方式；不修改数据库、自定义正文或项目版权归属。
+
+- [x] `npm run test -- src/features/about/__tests__/page.test.tsx --maxWorkers=1` 15/15 通过，覆盖默认正文、旧正文兼容、显示与复制值；日志 `.local-tests/contact-update/about-tests.log`。
+- [x] `npm run typecheck`、改动文件 oxlint/oxfmt、`npm run build` 通过。
+- [x] 生产构建在隔离预览中验证英文默认正文、中文旧正文两种页面，管理员和 QQ 群均显示并复制 `518229879`，旧号码未显示；1440×1000 截图已检查，控制台错误与警告为空。报告 `.local-tests/contact-update/browser-report.json`，专用预览已退出。
+- [x] 差异与敏感内容检查通过，本轮仅涉及关于页、现有回归和本记录，无 API、数据库、依赖或翻译键变更。
+
+作为局部展示变更提交并推送至 `fork/main`，最终提交与同步状态以 Git 引用核验。本轮不部署生产，服务器需重新构建并部署前端及内嵌资源；回滚重新部署前一构建即可。
