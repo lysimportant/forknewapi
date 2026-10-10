@@ -846,12 +846,17 @@ func canvasReferenceInputs(images, videos, audios int) []canvasInputMedium {
 	return media
 }
 
-// TestCanvasBridgeYuanReferenceInputs 验证十三个源流 ID 和别名的目录、参考边界及真实插件校验，全程不发送生成请求。
+// TestCanvasBridgeYuanReferenceInputs 验证源流精确 ID 和别名的目录、参考边界及真实插件校验，全程不发送生成请求。
 func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
+	const lwModel, lwAlias = "yl_lwaigc_mf_sd2_5_v2", "Yuan-Seedance-2.5-LW"
 	db := setupCanvasBridgeDB(t, "sqlite")
 	transport := blockCanvasEstimateNetwork(t)
 	plugin, found := jsplugin.DefaultRegistry.Generation().Get("yuanliu")
 	require.True(t, found)
+	require.Contains(t, plugin.Meta.Models, lwModel)
+	require.Equal(t, lwModel, plugin.Meta.ModelAliases[lwAlias])
+	lwSchema, _ := plugin.Meta.UsageForModel(lwModel)
+	require.Contains(t, lwSchema, "seconds")
 	modes, expressions := make(map[string]string), make(map[string]string)
 	mapping := make(map[string]string)
 	names := make([]string, 0, len(plugin.Meta.Models)*2)
@@ -950,6 +955,10 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 						urls[i] = fmt.Sprintf("https://canvas-estimate.invalid/%d", i)
 					}
 					body := map[string]any{"model": upstream, "seconds": seconds, "prompt": "Animate the supplied references", bound.kind + "s": urls}
+					if upstream == lwModel && bound.kind == "audio" && count > 0 {
+						media = append(canvasReferenceInputs(1, 0, 0), media...)
+						body["images"] = []string{"https://canvas-estimate.invalid/image.png"}
+					}
 					_, decodeErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
 						"model": upstream, "upstreamModel": upstream, "body": map[string]any{"kind": "json", "value": body},
 					})
@@ -969,6 +978,64 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 			}
 		})
 	}
+	t.Run("LW-metadata-content", func(t *testing.T) {
+		const prompt = "@Image2 moves to @Audio1"
+		for _, name := range []string{lwModel, lwAlias} {
+			assert.Equal(t, []string{"text", "image", "audio"}, byID[name].InputMediaTypes, name)
+			response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+				Model: name, Contract: "newapi-video-v1", InputText: prompt,
+				Parameters: map[string]any{"seconds": 30, "resolution": "720p", "aspect_ratio": "1:1"}, InputMedia: canvasReferenceInputs(30, 0, 10),
+			})
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var estimate canvasEstimatePayload
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &estimate))
+			assert.Equal(t, "3000000", estimate.EstimatedQuota, name)
+			body := map[string]any{
+				"model": name, "prompt": prompt, "duration": 4, "resolution": "720p", "aspect_ratio": "9:16",
+				"metadata": map[string]any{
+					"omni_reference_task_type": "reference",
+					"content": []any{
+						map[string]any{"type": "text", "text": prompt},
+						map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://canvas-estimate.invalid/first.png"}},
+						map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "https://canvas-estimate.invalid/audio.mp3"}},
+						map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://canvas-estimate.invalid/second.png"}},
+					},
+				},
+			}
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": name, "upstreamModel": lwModel, "body": map[string]any{"kind": "json", "value": body},
+			})
+			require.NoError(t, err, name)
+			encoded, err := common.Marshal(decoded)
+			require.NoError(t, err)
+			var command struct {
+				Model       string         `json:"model"`
+				Action      string         `json:"action"`
+				RequestBody map[string]any `json:"requestBody"`
+			}
+			require.NoError(t, common.Unmarshal(encoded, &command))
+			assert.Equal(t, name, command.Model)
+			assert.Equal(t, "reference_to_video", command.Action)
+			assert.Equal(t, prompt, command.RequestBody["prompt"])
+			assert.Equal(t, float64(4), command.RequestBody["duration"])
+			assert.Equal(t, "720p", command.RequestBody["resolution"])
+			assert.Equal(t, "9:16", command.RequestBody["aspect_ratio"])
+			assert.Equal(t, []any{"https://canvas-estimate.invalid/first.png", "https://canvas-estimate.invalid/second.png"}, command.RequestBody["images"])
+			assert.Equal(t, []any{"https://canvas-estimate.invalid/audio.mp3"}, command.RequestBody["audios"])
+			assert.Empty(t, command.RequestBody["videos"])
+			for _, media := range [][]canvasInputMedium{
+				canvasReferenceInputs(0, 0, 1),
+				{{Type: "image", Role: "first_frame"}},
+				{{Type: "image", Role: "last_frame"}},
+			} {
+				response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+					Model: name, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
+					Parameters: map[string]any{"seconds": 4}, InputMedia: media,
+				})
+				assert.Equal(t, http.StatusBadRequest, response.Code, "%s: %s", name, response.Body.String())
+			}
+		}
+	})
 	for _, test := range []struct {
 		name       string
 		parameters map[string]any

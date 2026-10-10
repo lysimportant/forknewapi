@@ -130,18 +130,25 @@ describe('model cards', () => {
     expect(screen.getByText('$0.01')).toBeVisible()
     expect(screen.queryByText('/ 1M')).not.toBeInTheDocument()
   })
-  it('shows an unknown catalog status for a known Yuanliu alias when the catalog has no result', () => {
-    render(
-      <ModelCard
-        model={pricingModel({ model_name: 'Yuan-Seedance-2.5-HD' })}
-        onClick={vi.fn()}
-        yuanliuAvailability={{}}
-      />
-    )
-    expect(
-      screen.getByLabelText('Yuanliu catalog status: Unknown')
-    ).toBeVisible()
-  })
+  it.each([
+    'Yuan-Seedance-2.5-HD',
+    'Yuan-Seedance-2.5-LW',
+    'yl_lwaigc_mf_sd2_5_v2',
+  ])(
+    'shows unknown status for %s when the catalog has no result',
+    (modelName) => {
+      render(
+        <ModelCard
+          model={pricingModel({ model_name: modelName })}
+          onClick={vi.fn()}
+          yuanliuAvailability={{}}
+        />
+      )
+      expect(
+        screen.getByLabelText('Yuanliu catalog status: Unknown')
+      ).toBeVisible()
+    }
+  )
 
   it('shows the catalog state for an exact upstream ID and does not label a similar non-Yuanliu name', () => {
     vi.useFakeTimers()

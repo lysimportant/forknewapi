@@ -33,6 +33,7 @@ const YUANLIU_UPSTREAM_MODELS = new Set([
   'yl_api_hmstudio_seedance_v2_5_dc729300ff39',
   'yl_video-30_76dbb7993f8e',
   'yl_api_hmstudio_seedance_v2_0_514a65db713b',
+  'yl_lwaigc_mf_sd2_5_v2',
 ])
 
 /** 站内展示的源流模型名称，不用前缀匹配推断未适配型号。 */
@@ -50,6 +51,7 @@ const YUANLIU_MODEL_ALIASES = new Set([
   'Yuan-Seedance-2.5-YS',
   'Yuan-Seedance-2.5-YL1',
   'Yuan-Seedance-2.0-YS',
+  'Yuan-Seedance-2.5-LW',
 ])
 
 /** 根据公开名称、目录键或插件计费标识判断模型是否属于源流；目录请求失败时仍能识别已知型号。 */

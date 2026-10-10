@@ -33,10 +33,10 @@ func yuanliuHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string,
 	return value
 }
 
-// TestYuanliuModelContracts 核对十三个真实模型、别名路由、计费单位及目录快照边界。
+// TestYuanliuModelContracts 核对已适配模型、别名路由、计费单位及目录快照边界。
 func TestYuanliuModelContracts(t *testing.T) {
 	plugin := loadYuanliuPlugin(t)
-	assert.Equal(t, "1.0.0", plugin.Meta.Version)
+	assert.Equal(t, "1.1.0", plugin.Meta.Version)
 	assert.Equal(t, "https://test.yuanliuai.tsyzai.com/openapi/v1", plugin.Meta.BaseURL)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
@@ -66,6 +66,7 @@ func TestYuanliuModelContracts(t *testing.T) {
 		{"yl_api_hmstudio_seedance_v2_5_dc729300ff39", "Yuan-Seedance-2.5-YS", 4, 30, 10, 0, 0, 16000, false, "720p", ""},
 		{"yl_video-30_76dbb7993f8e", "Yuan-Seedance-2.5-YL1", 30, 30, 9, 0, 0, 8000, false, "720p", ""},
 		{"yl_api_hmstudio_seedance_v2_0_514a65db713b", "Yuan-Seedance-2.0-YS", 4, 15, 9, 0, 0, 16000, false, "720p", ""},
+		{"yl_lwaigc_mf_sd2_5_v2", "Yuan-Seedance-2.5-LW", 4, 30, 30, 0, 10, 16000, true, "720p", ""},
 	}
 	wantIDs := make([]string, 0, len(models))
 	for _, model := range models {
@@ -153,13 +154,22 @@ func TestYuanliuModelContracts(t *testing.T) {
 					mediaURLs[i] = "https://cdn.example/reference"
 				}
 				request := map[string]any{"prompt": "ocean", "duration": model.min, media.field: mediaURLs}
+				if model.id == "yl_lwaigc_mf_sd2_5_v2" && media.field == "audios" {
+					request["images"] = []string{"https://cdn.example/image.png"}
+				}
 				assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": model.id, "requestBody": request}))
 				request[media.field] = append(mediaURLs, "https://cdn.example/extra")
 				_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": model.id, "requestBody": request})
 				require.ErrorContains(t, err, "too many reference "+media.field)
 			}
 			for _, ratio := range []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"} {
-				assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": model.id, "requestBody": map[string]any{"prompt": "ocean", "duration": model.min, "aspect_ratio": ratio}}))
+				ctx := map[string]any{"upstreamModel": model.id, "requestBody": map[string]any{"prompt": "ocean", "duration": model.min, "aspect_ratio": ratio}}
+				if model.id == "yl_lwaigc_mf_sd2_5_v2" && ratio != "16:9" && ratio != "9:16" && ratio != "1:1" {
+					_, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+					require.ErrorContains(t, err, "aspect_ratio")
+				} else {
+					assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", ctx))
+				}
 			}
 			if model.id == "seedance-2.5-guanfang-anmiao" {
 				for _, resolution := range []string{"480p", "720p", "1080p"} {
@@ -264,6 +274,13 @@ func TestYuanliuReferenceContracts(t *testing.T) {
 		{"普通模型不支持视频", "yl_g7zy_seedance_v2_0_std", map[string]any{"videos": []string{"https://cdn.example/video.mp4"}}},
 		{"普通模型不支持音频", "yl_g7zy_seedance_v2_5", map[string]any{"audios": []string{"https://cdn.example/audio.mp3"}}},
 		{"官方模型不支持视频", "seedance-2.5-guanfang-anmiao", map[string]any{"videos": []string{"https://cdn.example/video.mp4"}}},
+		{"LW音频必须配图", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"audios": []string{"https://cdn.example/audio.mp3"}}},
+		{"LW嵌套音频必须配图", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "audio_url", "audio_url": map[string]any{"url": "https://cdn.example/audio.mp3"}, "role": "reference_audio"}}}}},
+		{"LW固定720p", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"resolution": "1080p"}},
+		{"LW不支持自适应", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"ratio": "adaptive"}},
+		{"LW首帧字段不能降级", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"image": "https://cdn.example/image.png"}},
+		{"LW普通参考不能夹带帧角色", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/image.png", "role": "first_frame"}}}},
+		{"LW普通参考URL不能绕过", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"reference_images": []any{map[string]any{"url": "data:image/png;base64,aW1hZ2U="}}}},
 		{"未知模型", "seedance-unknown", map[string]any{}},
 		{"未知顶层字段", model, map[string]any{"generate_audio": false}},
 		{"嵌套计费绕过", model, map[string]any{"metadata": map[string]any{"duration": 99999999}}},
@@ -311,6 +328,56 @@ func TestYuanliuReferenceContracts(t *testing.T) {
 	}
 	_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{"model": model, "body": map[string]any{"kind": "multipart", "files": []any{map[string]any{"ref": "request_file:input_reference"}}}})
 	require.ErrorContains(t, err, "file uploads are unsupported")
+}
+
+// TestYuanliuCanvasGenericReferences 验证未登记新型号的画布通用请求，保留普通图音参考和显式重复顺序。
+func TestYuanliuCanvasGenericReferences(t *testing.T) {
+	plugin := loadYuanliuPlugin(t)
+	const upstream = "yl_lwaigc_mf_sd2_5_v2"
+	for _, model := range []string{upstream, "Yuan-Seedance-2.5-LW"} {
+		t.Run(model, func(t *testing.T) {
+			body := map[string]any{
+				"model": model, "prompt": "Animate @Image2 with @Audio1", "duration": 4, "seconds": "4", "resolution": "720p", "aspect_ratio": "9:16",
+				"reference_images": []any{
+					map[string]any{"url": "https://cdn.example/second.png"},
+					map[string]any{"url": "https://cdn.example/first.png"},
+					map[string]any{"url": "https://cdn.example/first.png"},
+				},
+				"metadata": map[string]any{"content": []any{
+					map[string]any{"type": "audio_url", "role": "audioTrack", "audio_url": map[string]any{"url": "https://cdn.example/audio.mp3"}},
+					map[string]any{"type": "audio_url", "role": "content", "audio_url": map[string]any{"url": "https://cdn.example/audio.mp3"}},
+				}},
+			}
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model, "upstreamModel": upstream, "body": map[string]any{"kind": "json", "value": body},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(decoded)
+			require.NoError(t, err)
+			var command struct {
+				Model       string         `json:"model"`
+				Action      string         `json:"action"`
+				RequestBody map[string]any `json:"requestBody"`
+			}
+			require.NoError(t, common.Unmarshal(encoded, &command))
+			assert.Equal(t, model, command.Model)
+			assert.Equal(t, "reference_to_video", command.Action)
+			request := yuanliuHookObject(t, plugin, "buildSubmitRequest", map[string]any{
+				"model": model, "upstreamModel": upstream, "publicTaskId": "generic-canvas-task", "requestBody": command.RequestBody,
+				"baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+			})
+			payload := request["body"].(map[string]any)
+			assert.Equal(t, upstream, payload["model"])
+			assert.Equal(t, "Animate @Image2 with @Audio1", payload["prompt"])
+			assert.Equal(t, []any{"https://cdn.example/second.png", "https://cdn.example/first.png", "https://cdn.example/first.png"}, payload["images"])
+			assert.Equal(t, []any{"https://cdn.example/audio.mp3", "https://cdn.example/audio.mp3"}, payload["audios"])
+			assert.NotContains(t, payload, "reference_images")
+			assert.NotContains(t, payload, "metadata")
+			assert.Equal(t, map[string]any{"seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+				"upstreamModel": upstream, "requestBody": command.RequestBody,
+			}))
+		})
+	}
 }
 
 // TestYuanliuTaskLifecycle 验证任务状态、幂等终态、冻结用量恢复和不泄露密钥的同渠道下载。

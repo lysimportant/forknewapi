@@ -1,7 +1,7 @@
 /** 源流开放 API 已核对的固定画幅；自适应名称按各渠道目录保留。 */
 const FIXED_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"];
 
-/** 2026-10-08 模型目录快照；冲突能力采用字段与说明的保守交集，不复制人民币报价。 */
+/** 已核对的模型目录合同；LW 于 2026-10-10 补入，其余保留 2026-10-08 快照，不复制人民币报价。 */
 const MODEL_SPECS = {
   "seedance-2.5-guanfang-anmiao": {
     alias: "Yuan-Seedance-2.5-Official",
@@ -162,6 +162,19 @@ const MODEL_SPECS = {
     prompt: 16000,
     billing: "per_call",
   },
+  yl_lwaigc_mf_sd2_5_v2: {
+    alias: "Yuan-Seedance-2.5-LW",
+    min: 4,
+    max: 30,
+    resolutions: ["720p"],
+    ratios: ["16:9", "9:16", "1:1"],
+    images: 30,
+    videos: 0,
+    audios: 10,
+    audioRequiresImage: true,
+    prompt: 16000,
+    billing: "per_second",
+  },
 };
 
 /** 按次模型每次请求只生成一个视频；单价由管理员以宿主货币配置。 */
@@ -180,7 +193,7 @@ export const meta = {
   key: "yuanliu",
   name: "Yuanliu Video",
   icon: "text:源流",
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "Yuanliu" },
   description: {
     en: "Yuanliu Seedance video generation with public URL references",
@@ -230,6 +243,7 @@ const REQUEST_FIELDS = [
   "aspect_ratio",
   "ratio",
   "images",
+  "reference_images",
   "videos",
   "audios",
   "input_reference",
@@ -323,6 +337,15 @@ function normalizeRequest(source, model) {
     if (!Array.isArray(source[type])) throw new Error(type + " must be a URL array");
     for (const reference of source[type]) request[type].push(referenceURL(reference));
   }
+  // Canvas 未单独登记的新型号使用 reference_images；只接收普通参考，不推断首尾帧。
+  if (source.reference_images !== undefined) {
+    if (!Array.isArray(source.reference_images)) throw new Error("reference_images must be a URL object array");
+    for (const reference of source.reference_images) {
+      if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1 || !("url" in reference))
+        throw new Error("reference_images requires URL objects without frame roles");
+      request.images.push(referenceURL(reference.url));
+    }
+  }
   if (source.input_reference !== undefined) {
     let reference = source.input_reference;
     if (reference && typeof reference === "object" && !Array.isArray(reference)) {
@@ -347,7 +370,10 @@ function normalizeRequest(source, model) {
       }
       if (!["image_url", "video_url", "audio_url"].includes(item.type)) throw new Error("unsupported metadata.content type");
       const type = item.type.slice(0, -4);
-      if (Object.keys(item).some((field) => !["type", "role", item.type].includes(field)) || (item.role !== undefined && item.role !== "reference_" + type))
+      if (
+        Object.keys(item).some((field) => !["type", "role", item.type].includes(field)) ||
+        (item.role !== undefined && item.role !== "reference_" + type && item.role !== "content" && !(type === "audio" && item.role === "audioTrack"))
+      )
         throw new Error("Yuanliu supports ordinary reference roles, not first or last frames");
       const reference = item[item.type];
       if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1)
@@ -360,6 +386,8 @@ function normalizeRequest(source, model) {
     throw new Error("prompt is required and must fit the model limit");
   for (const type of ["images", "videos", "audios"])
     if (request[type].length > spec[type]) throw new Error("too many reference " + type + " for Yuanliu model");
+  if (spec.audioRequiresImage && request.audios.length && !request.images.length)
+    throw new Error("Yuanliu LW audio references require at least one reference image");
   if (spec.total && request.images.length + request.videos.length + request.audios.length > spec.total) throw new Error("too many total Yuanliu references");
   const mode = consistentValue([source.mode, metadata.mode], "mode", undefined);
   const hasReferences = request.images.length + request.videos.length + request.audios.length > 0;
@@ -517,7 +545,7 @@ export const protocols = {
         for (const field of Object.keys(ctx.body.fields || {})) {
           const values = ctx.body.fields[field];
           if (!Array.isArray(values) || !values.length) throw new Error("invalid multipart field: " + field);
-          if (["images", "videos", "audios"].includes(field)) {
+          if (["images", "videos", "audios", "reference_images"].includes(field)) {
             source[field] = values.length === 1 && /^\s*\[/.test(values[0]) ? JSON.parse(values[0]) : values.slice();
           } else {
             if (values.length !== 1) throw new Error(field + " must be provided once");

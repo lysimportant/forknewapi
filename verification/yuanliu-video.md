@@ -1,5 +1,26 @@
 # Yuanliu 视频插件与模型别名
 
+## 2026-10-10：LW 适配
+
+- P1 目标：将 `yl_lwaigc_mf_sd2_5_v2` 适配为 `Yuan-Seedance-2.5-LW`。仅增加渠道映射不能绕过插件的精确模型注册与校验。
+- 基线：New API `main@f1bef1968` 跟踪 `fork/main`，Canvas `main@d79c3f0b` 跟踪 `origin/main`，两仓工作区干净。Go 1.26.0、Node 24.12.0、pnpm 11.19.0；前端依赖已存在，Bun 不在 PATH，继续用项目本地工具执行等价检查。
+- 实时证据：北京时间 2026-10-10 18:33，`GET /openapi/v1/models` HTTP 200，9 项，LW 仍在目录中。合同为整数 4–30 秒、720p、16:9 / 9:16 / 1:1、最多 30 图与 10 音频、禁止视频参考、提示词最多 16000 字符；音频须至少搭配 1 张图片。公开文档确认沿用 `/videos`、URL 数组和 `client_request_id`。
+- 最终范围仅 New API：插件声明、别名、按秒用量、Canvas bridge 和模型广场识别。经 Canvas `main@d79c3f0b` 真实 Provider 的合成请求核对，现有通用调用发送 `reference_images: [{url}]`、`metadata.content` 的 `content` / `audioTrack` 普通角色；插件兼容这些字段即可，不需要画布单独登记 LW 或添加能力限制。首尾帧 `image` / `last_frame` 字段仍明确拒绝，不能推断为普通参考。
+- 验收：目录自动返回别名映射，画布现有文生/图片/图片加音频请求可编解码并按秒计量，非法音频独用/视频/比例/时长在出站前拒绝，模型广场状态正常识别；New API 相关测试、检查、构建和隔离 HTTP 烟测通过。
+- 无数据库、依赖、管理员价格或生产配置变更；不调用真实付费生成。回滚先停用 LW 新请求并等待在途任务结束，再回退 New API 应用提交，保留映射、价格与任务记录。
+- 基线插件回归：`go test ./plugins ./pkg/jsplugin -run 'TestYuanliu|TestBuiltIn' -count=1`，插件通过；`pkg/jsplugin` 没有匹配此筛选的测试。LW 注册、目录别名、通用参考字段及模型广场识别均已完成。
+- 按用户要求删除根 `AGENTS.md` 中强制与画布仓库联调、核对合同的条款；插件目录发现、精确模型适配及本仓回归要求保持有效。
+
+### 本轮验证与交付
+
+- `go test -mod=readonly ./plugins -run '^TestYuanliu' -count=1` 通过；`go test -mod=readonly ./plugins -skip '^TestImage2Pro' -count=1` 通过。组合测试 `go test -mod=readonly ./plugins ./pkg/jsplugin ./controller -count=1` 中宿主运行时和 controller 全包通过，plugins 仅 Image2Pro 并行改动的 `TestImage2ProH3VideoContracts` 失败，日志 `.local-tests/yuanliu/lw-go-tests.log`；该并行修改不纳入本次提交，不能把组合测试记为全通过。
+- `go vet -mod=readonly ./plugins ./pkg/jsplugin ./controller` 的对应分包检查通过。`go build -mod=readonly -o .local-tests/yuanliu/new-api-lw.exe .` 与该二进制 `plugin lint plugins/tasks/yuanliu/plugin.js` 通过，插件版本为 `1.1.0`。计费描述仍使用“视频生成单价”，单位独立放在 `unit`，未新增 UI 文案或价格常量。
+- 前端 pricing/model-cards、pricing/pricing-controls、channels/channel-configuration、channels/upstream-model-selection 四个既有套件 121/121 通过（`npm run test -- … --testTimeout=60000 --maxWorkers=1`），日志 `.local-tests/yuanliu/lw-web-tests.log`；存在原有 `TimeoutNaNWarning`，退出码 0。`npm run typecheck`、`npm run build`、改动前端及插件的 oxlint/oxfmt 检查均通过，没有依赖或锁文件变更。
+- 最终二进制 SHA256 为 `e7132caf2bae0e8fdd76661fbfddc87fb1812d0331dafa21259033ee98978a82`，嵌入源流插件与工作区源码逐字一致。隔离新 SQLite、回环模拟上游与合成凭据的 HTTP 报告为 `.local-tests/yuanliu/run-1791629694482-c60b4f/http-report.json`：14 个历史已适配别名完整创建和轮询；LW 的两种请求格式各 30 图、10 音频保持顺序；27 个非法请求出站 0 次、扣费 0；目录获取、按秒结算、内容下载和 503 不重发通过。20 次 POST 均为模拟请求，14 项模拟目录不代表当前真实目录仍有 14 项。
+- PC 浏览器 1440×1000 检查 LW 搜索、详情、模拟售罄和目录失败显示“未知”，4 个场景通过，控制台错误、警告均为空，截图已检查；报告 `.local-tests/yuanliu/lw-browser-report.json`。测试价格表达式仅用于合成计量，页面按现有“特殊计费表达式”展示。专用网关及模拟上游已退出，62804、62805、62806 均无遗留监听。
+- Canvas 未提交任何改动，工作区与索引均干净，恢复后的 `pnpm build` 9/9 通过。本轮仅交付 New API；未部署生产，也未执行真实供应商付费生成。
+- 交付目标为 `fork/main` 与附注 Tag `v2026.10.10-yuanliu-lw`，最终提交和远端同步以 Git 引用核验。更新应用后重新获取并保存 `Yuan-Seedance-2.5-LW` 的映射，再配置本站按秒售价。
+
 ## 目标与基线
 
 - P1：新增独立 `yuanliu` 任务插件，适配实时目录中的 13 个精确上游模型；渠道模型获取时提供 `Yuan-` 前缀别名及别名到上游 ID 的建议映射。
@@ -22,7 +43,7 @@
 - 已读两仓 AGENTS 与对应合同。后续修复以 Canvas `main @ e77928544327d00d5f3ae2fdbfbc7fe89f7beb58`、New API `main @ 06e25caa06a347d85f990a1558e672a66f4ee50b` 为基线，补齐 13 个既有精确 ID 和固定别名的 `newapi-video-v1` 合同；仅开放文生和普通全能参考，不借用首尾帧、编辑或延长语义。
 - Canvas API 在 Run 受理前校验参数、模式及引用数量；API/Worker 按冻结版本签发本站 HTTPS 地址，Provider 序列化到 `metadata.content`，保持显式重复引用及公共任务 ID。已有任务仍只查询，不因旧参数或素材失效重发 POST。
 - New API Canvas bridge 按已定价可执行渠道的真实映射取媒体能力交集；数量遵守各型号和 Canvas 40 项总上限，非法 Yuan 解码返回 400。估价只有类型及角色占位，不读取素材、不调用供应商。
-- `Yuan-Seedance-2.5-Official` 保留历史合同，不代表仍在实时目录上架；LW 和其它未适配的新名称不自动开放。Canvas 检查点为 `G:/multimodal-canvas/docs/yuanliu-video-checkpoint.md`，本地验证不等于实际部署或真实供应商成片。
+- `Yuan-Seedance-2.5-Official` 保留历史合同，不代表仍在实时目录上架；LW 于 2026-10-10 单独核对后补入，其它未适配的新名称不自动开放。此前 Canvas 检查点已移入 Git 历史，当前以 Canvas `AGENTS.md` / `README.md` 为准；本地验证不等于实际部署或真实供应商成片。
 
 ## 使用方式与模型映射
 
@@ -43,8 +64,9 @@
 | `Yuan-Seedance-2.5-YS` | `yl_api_hmstudio_seedance_v2_5_dc729300ff39` |
 | `Yuan-Seedance-2.5-YL1` | `yl_video-30_76dbb7993f8e` |
 | `Yuan-Seedance-2.0-YS` | `yl_api_hmstudio_seedance_v2_0_514a65db713b` |
+| `Yuan-Seedance-2.5-LW` | `yl_lwaigc_mf_sd2_5_v2` |
 
-客户端创建走 `POST /v1/videos`，查询和下载走 `GET /v1/videos/{网关任务ID}`、`GET /v1/videos/{网关任务ID}/content`。按秒模型为 Official、LJ 2.5 Full、HD 2.5 PerSecond，其余 10 个按次；在价格管理页配置对应的宿主价格后再使用。
+客户端创建走 `POST /v1/videos`，查询和下载走 `GET /v1/videos/{网关任务ID}`、`GET /v1/videos/{网关任务ID}/content`。按秒模型为 Official、LJ 2.5 Full、HD 2.5 PerSecond、LW，其余 10 个按次；在价格管理页配置对应的宿主价格后再使用。LW 的上游目录报价不自动成为本站售价。
 
 参考素材仅接受 HTTP(S) URL。插件保持每类素材顺序及重复项，不接收上传文件、Base64、首尾帧、编辑或延长模式。创建使用稳定网关任务 ID 作为 `client_request_id`，发送后未知结果禁止宿主自动重发。明确的供应商 `unknown` 保持等待；真正陌生状态仍计为轮询失败。内容固定从同渠道鉴权 `/content` 取回，不将渠道 Key 发送到 CDN。
 

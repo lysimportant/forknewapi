@@ -62,7 +62,7 @@ type canvasInputMedium struct {
 	Role string `json:"role"`
 }
 
-// canvasVideoInputProfile 保存已适配的公开别名和参考数量边界；total 同时受 Canvas 的 40 项上限约束。
+// canvasVideoInputProfile 保存已适配的公开别名和参考数量边界；total 是 New API 桥接接受的参考总数上限。
 type canvasVideoInputProfile struct {
 	alias                         string
 	images, videos, audios, total int
@@ -83,6 +83,7 @@ var canvasYuanVideoInputs = map[string]canvasVideoInputProfile{
 	"yl_api_hmstudio_seedance_v2_5_dc729300ff39":        {alias: "Yuan-Seedance-2.5-YS", images: 10, total: 10},
 	"yl_video-30_76dbb7993f8e":                          {alias: "Yuan-Seedance-2.5-YL1", images: 9, total: 9},
 	"yl_api_hmstudio_seedance_v2_0_514a65db713b":        {alias: "Yuan-Seedance-2.0-YS", images: 9, total: 9},
+	"yl_lwaigc_mf_sd2_5_v2":                             {alias: "Yuan-Seedance-2.5-LW", images: 30, audios: 10, total: 40},
 }
 
 // canvasCandidate 保存授权范围内的一条路由；Channel 从数据库读取时排除渠道凭据。
