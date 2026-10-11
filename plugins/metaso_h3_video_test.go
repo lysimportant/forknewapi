@@ -21,6 +21,7 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	assert.Equal(t, "https://metaso.cn/api/openai", plugin.Meta.BaseURL)
 	assert.Equal(t, []string{"Minimax-H3"}, plugin.Meta.Models)
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
+	assert.Equal(t, []string{"480p", "768p", "1080p", "2k"}, plugin.Meta.UsageSchema["size"].Enum)
 	binding, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", "Minimax-H3")
 	require.True(t, found)
 	assert.Same(t, plugin, binding.Plugin)
@@ -29,7 +30,7 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	_, found = registry.Generation().LookupEndpoint("POST", "/v1/responses", "Minimax-H3")
 	assert.False(t, found, "秘塔文档只确认视频协议")
 
-	textBody := map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": 5, "size": "1280x720"}
+	textBody := map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": 5, "size": "480p"}
 	decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
 		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "body": map[string]any{"kind": "json", "value": textBody},
 	})
@@ -45,20 +46,20 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	})
 	assert.Equal(t, "https://metaso.cn/api/openai/v1/videos", request["url"])
 	assert.Equal(t, true, request["noRetry"])
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": float64(5), "size": "1280x720"}, request["body"])
+	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": float64(5), "size": "854x480"}, request["body"])
 
 	imageBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": 6, "size": "720x1280",
+		"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": 6, "size": "768p",
 		"input_reference": map[string]any{"image_url": "https://cdn.example/flower.png"},
 	}
 	imageRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
 		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": imageBody,
 	})
 	assert.Equal(t, "image_to_video", commandAction(t, plugin, imageBody))
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": float64(6), "size": "720x1280", "input_reference": map[string]any{"image_url": "https://cdn.example/flower.png"}}, imageRequest["body"])
+	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": float64(6), "size": "1280x720", "input_reference": map[string]any{"image_url": "https://cdn.example/flower.png"}}, imageRequest["body"])
 
 	metadataBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "", "seconds": 5, "size": "1792x1024",
+		"model": "Minimax-H3", "prompt": "", "seconds": 5, "size": "1080p",
 		"metadata": map[string]any{"content": []any{
 			map[string]any{"type": "text", "text": "Animate the supplied image"},
 			map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/reference.png"}},
@@ -67,14 +68,14 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	metadataRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
 		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": metadataBody,
 	})
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate the supplied image", "seconds": float64(5), "size": "1792x1024", "input_reference": map[string]any{"image_url": "https://cdn.example/reference.png"}}, metadataRequest["body"])
+	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate the supplied image", "seconds": float64(5), "size": "1920x1080", "input_reference": map[string]any{"image_url": "https://cdn.example/reference.png"}}, metadataRequest["body"])
 
 	usage := metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "requestBody": imageBody})
-	assert.Equal(t, map[string]any{"seconds": float64(6), "size": "720x1280", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0)}, usage)
+	assert.Equal(t, map[string]any{"seconds": float64(6), "size": "768p", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0)}, usage)
 	assert.Empty(t, metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "usagePurpose": "billing_ratios", "requestBody": imageBody}))
 
 	multimodalBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "Animate all supplied references", "seconds": 8, "size": "1792x1024", "mode": "omni_reference",
+		"model": "Minimax-H3", "prompt": "Animate all supplied references", "seconds": 8, "size": "2k", "mode": "omni_reference",
 		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
 		"videos": []any{"https://cdn.example/reference.mp4"}, "audios": []any{"https://cdn.example/reference.mp3"},
 	}
@@ -86,7 +87,7 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"}, "videos": []any{"https://cdn.example/reference.mp4"}, "audios": []any{"https://cdn.example/reference.mp3"},
 	}, multimodalRequest["body"])
 	multimodalUsage := metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "requestBody": multimodalBody})
-	assert.Equal(t, map[string]any{"seconds": float64(8), "size": "1792x1024", "input_images": float64(2), "input_videos": float64(1), "input_audios": float64(1)}, multimodalUsage)
+	assert.Equal(t, map[string]any{"seconds": float64(8), "size": "2k", "input_images": float64(2), "input_videos": float64(1), "input_audios": float64(1)}, multimodalUsage)
 
 	query := metasoHookObject(t, plugin, "buildQueryRequest", map[string]any{"baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "taskId": "task/id?x"})
 	assert.Equal(t, "https://metaso.cn/api/openai/v1/videos/task%2Fid%3Fx", query["url"])
@@ -95,7 +96,7 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	assert.Equal(t, "GET", content["method"])
 
 	for name, body := range map[string]map[string]any{
-		"unsupported size": {"prompt": "flower", "seconds": 5, "size": "480p"},
+		"unsupported size": {"prompt": "flower", "seconds": 5, "size": "720p"},
 		"zero seconds":     {"prompt": "flower", "seconds": 0},
 		"private image":    {"prompt": "flower", "seconds": 5, "input_reference": "data:image/png;base64,abc"},
 		"too many images":  {"prompt": "flower", "seconds": 5, "images": make([]any, 10)},
@@ -107,6 +108,17 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 			require.Error(t, callErr)
 		})
 	}
+	for _, size := range []string{"480p", "768p", "1080p", "2k"} {
+		request := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
+			"upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only",
+			"requestBody": map[string]any{"prompt": "flower", "seconds": 5, "size": size},
+		})
+		assert.NotEmpty(t, request["body"], size)
+	}
+	legacy := metasoHookObject(t, plugin, "extractUsage", map[string]any{
+		"upstreamModel": "Minimax-H3", "requestBody": map[string]any{"prompt": "flower", "seconds": 5, "size": "1024x1792"},
+	})
+	assert.Equal(t, "2k", legacy["size"])
 	boundaryBody := map[string]any{
 		"prompt": "Animate all supplied references", "seconds": 5,
 		"images": make([]any, 9), "videos": make([]any, 3), "audios": make([]any, 3),

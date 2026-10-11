@@ -23,8 +23,8 @@ export const meta = {
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
     size: {
-      enum: ["1280x720", "720x1280", "1792x1024", "1024x1792"],
-      description: { en: "Output video size", zh: "输出视频尺寸" },
+      enum: ["480p", "768p", "1080p", "2k"],
+      description: { en: "Output video resolution", zh: "输出视频清晰度" },
     },
     input_images: {
       type: "number",
@@ -43,19 +43,31 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "text · 1280x720 · 5s", facts: { seconds: 5, size: "1280x720", input_images: 0, input_videos: 0, input_audios: 0 } },
-    { label: "multimodal · 1280x720 · 5s", facts: { seconds: 5, size: "1280x720", input_images: 1, input_videos: 1, input_audios: 1 } },
+    { label: "text · 480p · 5s", facts: { seconds: 5, size: "480p", input_images: 0, input_videos: 0, input_audios: 0 } },
+    { label: "multimodal · 768p · 5s", facts: { seconds: 5, size: "768p", input_images: 1, input_videos: 1, input_audios: 1 } },
   ],
 };
 
 const MODEL = "Minimax-H3";
-const DEFAULT_SIZE = "1280x720";
+const DEFAULT_SIZE = "480p";
 const MAX_SECONDS = 3600;
 const MAX_INPUT_IMAGES = 9;
 const MAX_INPUT_VIDEOS = 3;
 const MAX_INPUT_AUDIOS = 3;
 const MAX_INPUT_TOTAL = MAX_INPUT_IMAGES + MAX_INPUT_VIDEOS + MAX_INPUT_AUDIOS;
 const SIZES = new Set(meta.usageSchema.size.enum);
+const SIZE_TO_UPSTREAM = {
+  "480p": "854x480",
+  "768p": "1280x720",
+  "1080p": "1920x1080",
+  "2k": "1792x1024",
+};
+const LEGACY_SIZE_ALIASES = {
+  "1280x720": "768p",
+  "720x1280": "768p",
+  "1792x1024": "2k",
+  "1024x1792": "2k",
+};
 
 /** 去除字符串两端空白；空值统一返回空字符串。 */
 function trimmed(value) {
@@ -158,9 +170,10 @@ function normalizeRequest(request, model) {
   const seconds = Number(rawSeconds);
   if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > MAX_SECONDS) throw new Error("seconds must be an integer between 1 and 3600");
   const rawSize = request.size === undefined ? request.resolution : request.size;
-  if (request.size !== undefined && request.resolution !== undefined && String(request.size) !== String(request.resolution)) throw new Error("size and resolution conflict");
-  const size = trimmed(rawSize) || DEFAULT_SIZE;
-  if (!SIZES.has(size)) throw new Error("size must be one of the documented Metaso H3 sizes");
+  const alternateSize = request.size === undefined ? undefined : request.resolution;
+  const normalizedSize = normalizeSize(rawSize || DEFAULT_SIZE);
+  if (alternateSize !== undefined && normalizeSize(alternateSize).size !== normalizedSize.size) throw new Error("size and resolution conflict");
+  const size = normalizedSize.size;
   let images = mediaList(request.images || request.reference_images, "images");
   let videos = mediaList(request.videos || request.reference_videos, "videos");
   let audios = mediaList(request.audios || request.reference_audios, "audios");
@@ -178,13 +191,21 @@ function normalizeRequest(request, model) {
   if (videos.length > MAX_INPUT_VIDEOS) throw new Error("multimodal references cannot exceed 3 videos");
   if (audios.length > MAX_INPUT_AUDIOS) throw new Error("multimodal references cannot exceed 3 audios");
   if (total > MAX_INPUT_TOTAL) throw new Error("multimodal references cannot exceed 15 items");
-  return { prompt, seconds, size, images, videos, audios, input_images: images.length, input_videos: videos.length, input_audios: audios.length, mode: trimmed(request.mode) };
+  return { prompt, seconds, size, upstreamSize: normalizedSize.upstreamSize, images, videos, audios, input_images: images.length, input_videos: videos.length, input_audios: audios.length, mode: trimmed(request.mode) };
+}
+
+/** 将清晰度标签或旧版像素尺寸归一化为计费档位和秘塔请求尺寸。 */
+function normalizeSize(value) {
+  const raw = trimmed(value).toLowerCase();
+  const size = SIZES.has(raw) ? raw : LEGACY_SIZE_ALIASES[raw];
+  if (!size) throw new Error("size must be one of 480p, 768p, 1080p, or 2k");
+  return { size, upstreamSize: SIZES.has(raw) ? SIZE_TO_UPSTREAM[size] : raw };
 }
 
 /** 把内部请求转换为秘塔文档中的 OpenAI 视频 JSON 字段白名单。 */
 function upstreamBody(request, model) {
   const facts = normalizeRequest(request, model);
-  const body = { model: MODEL, prompt: facts.prompt, seconds: facts.seconds, size: facts.size };
+  const body = { model: MODEL, prompt: facts.prompt, seconds: facts.seconds, size: facts.upstreamSize };
   if (facts.images.length === 1 && !facts.videos.length && !facts.audios.length) body.input_reference = { image_url: facts.images[0] };
   if (facts.images.length > 1) body.images = facts.images;
   if (facts.videos.length) body.videos = facts.videos;
