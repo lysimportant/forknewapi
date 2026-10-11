@@ -361,8 +361,8 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	return io.ReadAll(response.Body)
 }
 
-// channelUpstreamModelCatalog 区分已适配模型与上游新增模型，来源为 upstream 或 plugin。
-// Models 可直接填入渠道；UnsupportedModels 仅供展示，不能绕过插件路由声明。
+// channelUpstreamModelCatalog 区分可供管理员选择的模型与尚未适配模型，来源为 upstream 或 plugin。
+// Models 可填入渠道；目录本身不授权生成，渠道路由模式须保存选择后才能使用。
 type channelUpstreamModelCatalog struct {
 	Models            []string
 	Source            string
@@ -606,9 +606,14 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 			if len(ids) == 0 {
 				return catalog, errors.New("Models response contains no valid model IDs")
 			}
+			models, unsupportedModels := ids, []string{}
+			if plugin.Meta.ModelRouting != "channel" {
+				models = intersectModelNames(ids, plugin.Meta.Models)
+				unsupportedModels = subtractModelNames(ids, plugin.Meta.Models)
+			}
 			return channelUpstreamModelCatalog{
-				Models: intersectModelNames(ids, plugin.Meta.Models), Source: "upstream",
-				UnsupportedModels: subtractModelNames(ids, plugin.Meta.Models),
+				Models: models, Source: "upstream",
+				UnsupportedModels: unsupportedModels,
 				ModelAliases:      plugin.Meta.ModelAliases,
 			}, nil
 		}

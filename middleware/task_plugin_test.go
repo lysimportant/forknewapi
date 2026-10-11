@@ -19,6 +19,8 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	builtinplugins "github.com/QuantumNous/new-api/plugins"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -1701,6 +1703,84 @@ func setupTaskPluginRouteDB(t *testing.T) {
 		model.DB = previousDB
 		common.SetMainDatabaseType(previousType)
 	})
+}
+
+// TestChannelRoutedVideoEndpoint 验证渠道授权后才固定插件，且映射在选中渠道后执行。
+func TestChannelRoutedVideoEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name, requested, saved, mapping, decoder string
+		status                                   int
+		wantPinned, wantRejected                 bool
+	}{
+		{name: "直接使用任意上游名", requested: "Xseadanco2.0", saved: "Xseadanco2.0", wantPinned: true},
+		{name: "渠道映射到另一个上游名", requested: "我的 Seedance", saved: "我的 Seedance", mapping: `{"我的 Seedance":"kksedanco2.5"}`, wantPinned: true},
+		{name: "未保存模型不接管", requested: "not-saved", saved: "Xseadanco2.0"},
+		{name: "停用渠道不授权", requested: "Xseadanco2.0", saved: "Xseadanco2.0", status: common.ChannelStatusManuallyDisabled},
+		{name: "未保存大小写不接管", requested: "XSEADANCO2.0", saved: "Xseadanco2.0"},
+		{name: "解码器不能切换模型", requested: "Xseadanco2.0", saved: "Xseadanco2.0", decoder: `return {model:"hijacked-model"};`, wantRejected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTaskPluginRouteDB(t)
+			require.NoError(t, model.DB.AutoMigrate(&model.Channel{}))
+			const key = "channel-video-endpoint-test"
+			decoder := tc.decoder
+			if decoder == "" {
+				decoder = `return {model:ctx.model,requestBody:ctx.requestBody};`
+			}
+			source := taskProtocolPluginSource(key, "1.0.0", `[]`, "/v1/videos", decoder)
+			source = strings.Replace(source, "models: [],", `models: [], modelRouting: "channel",`, 1)
+			_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(key)) })
+			setting := `{"task_plugin_key":"` + key + `"}`
+			status := tc.status
+			if status == 0 {
+				status = common.ChannelStatusEnabled
+			}
+			selected := model.Channel{Type: constant.ChannelTypeTaskPlugin, Status: status, Models: tc.saved, Key: "fixture-only", Setting: &setting, ModelMapping: &tc.mapping}
+			require.NoError(t, model.DB.Create(&selected).Error)
+
+			reached, pinned := false, false
+			router := gin.New()
+			router.POST("/v1/videos", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), func(c *gin.Context) {
+				reached = true
+				_, pinned = c.Get(jsplugin.ContextKeyPinnedEndpoint)
+				if pinned {
+					endpoint := c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint)
+					assert.True(t, endpoint.ChannelScoped)
+					assert.Equal(t, tc.requested, endpoint.Model)
+					assert.Equal(t, key, c.GetString("expected_task_plugin_key"))
+					wrongSetting := `{"task_plugin_key":"another-plugin"}`
+					wrong := model.Channel{Type: constant.ChannelTypeTaskPlugin, Setting: &wrongSetting}
+					assert.NotNil(t, SetupContextForSelectedChannel(c, &wrong, tc.requested))
+					require.Nil(t, SetupContextForSelectedChannel(c, &selected, tc.requested))
+					info := &relaycommon.RelayInfo{OriginModelName: tc.requested, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: tc.requested}}
+					require.NoError(t, helper.ModelMappedHelper(c, info, nil))
+					want := tc.requested
+					if tc.mapping != "" {
+						want = "kksedanco2.5"
+					}
+					assert.Equal(t, want, info.UpstreamModelName)
+				}
+				c.Status(http.StatusNoContent)
+			})
+			body, err := common.Marshal(map[string]any{"model": tc.requested, "prompt": "A calm ocean wave"})
+			require.NoError(t, err)
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if tc.wantRejected {
+				assert.Equal(t, http.StatusBadRequest, recorder.Code)
+				assert.False(t, reached)
+				assert.Contains(t, recorder.Body.String(), "hijacked-model")
+			} else {
+				assert.Equal(t, http.StatusNoContent, recorder.Code)
+				assert.True(t, reached)
+				assert.Equal(t, tc.wantPinned, pinned)
+			}
+		})
+	}
 }
 
 func insertTaskPluginRouteTask(t *testing.T, task *model.Task) {

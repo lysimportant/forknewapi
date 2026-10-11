@@ -7,21 +7,25 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
-// TaskAliasTarget is one mapping-derived alias after cross-channel aggregation.
-// Declared is empty when the same plugin resolves the alias to more than one
-// declared tail (display-only; pin is disabled).
+// TaskAliasTarget 表示跨渠道聚合后的模型别名或渠道授权模型。
+// Declared 为空表示渠道模式或同插件存在多个映射尾目标；ChannelScoped 仅允许
+// 显式绑定插件的类型 61 渠道在选中后解析自己的映射，不依赖全局模型声明。
 type TaskAliasTarget struct {
-	Alias     string
-	Declared  string
-	PluginKey string
+	Alias         string
+	Declared      string
+	PluginKey     string
+	ChannelScoped bool
 }
 
 type taskAliasView struct {
 	generation uint64
 	expiresAt  time.Time
+	byExact    map[string]TaskAliasTarget
 	byFold     map[string]TaskAliasTarget
 }
 
@@ -32,9 +36,9 @@ var (
 	taskAliasRebuildMu sync.Mutex
 )
 
-// ResolveTaskModelAlias returns the mapping-derived alias target for name
-// (exact or ASCII-folded). g is the caller's routing generation: a Number
-// mismatch or TTL expiry rebuilds the view against that generation.
+// ResolveTaskModelAlias 返回 name 对应的模型别名或渠道授权模型。
+// 渠道模式仅匹配已保存的精确名称，旧别名保持 ASCII 大小写折叠。
+// g 为请求固定的路由代次；代次不一致或缓存过期时从已启用渠道重建，未找到返回 false。
 func ResolveTaskModelAlias(g *jsplugin.RoutingGeneration, name string) (TaskAliasTarget, bool) {
 	if g == nil || name == "" {
 		return TaskAliasTarget{}, false
@@ -42,6 +46,9 @@ func ResolveTaskModelAlias(g *jsplugin.RoutingGeneration, name string) (TaskAlia
 	view := loadFreshTaskAliasView(g)
 	if view == nil {
 		return TaskAliasTarget{}, false
+	}
+	if target, ok := view.byExact[name]; ok {
+		return target, true
 	}
 	target, ok := view.byFold[jsplugin.ASCIIFold(name)]
 	return target, ok
@@ -74,8 +81,9 @@ func rebuildTaskAliasView() {
 }
 
 type taskAliasDraft struct {
-	spellings []string
-	byPlugin  map[string]map[string]struct{}
+	spellings     []string
+	byPlugin      map[string]map[string]struct{}
+	channelScoped bool
 }
 
 func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
@@ -86,6 +94,7 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	view := &taskAliasView{
 		generation: genNum,
 		expiresAt:  time.Now().Add(taskAliasViewTTL),
+		byExact:    make(map[string]TaskAliasTarget),
 		byFold:     make(map[string]TaskAliasTarget),
 	}
 	if DB == nil {
@@ -93,7 +102,7 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	}
 
 	var channels []Channel
-	err := DB.Select("id", "type", "models", "model_mapping").
+	err := DB.Select("id", "type", "models", "model_mapping", "setting").
 		Where("status = ?", common.ChannelStatusEnabled).
 		Find(&channels).Error
 	if err != nil {
@@ -104,24 +113,32 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	drafts := make(map[string]*taskAliasDraft)
 	for i := range channels {
 		channel := &channels[i]
-		mappingJSON := channel.GetModelMapping()
-		if mappingJSON == "" || mappingJSON == "{}" {
-			continue
+		var channelPlugin *jsplugin.LoadedPlugin
+		if channel.Type == constant.ChannelTypeTaskPlugin && channel.Setting != nil && *channel.Setting != "" {
+			var setting dto.ChannelSettings
+			// GetSetting 在解析失败时保存渠道；这里只加载部分列，必须保持只读。
+			if err := common.UnmarshalJsonStr(*channel.Setting, &setting); err != nil {
+				common.SysError(fmt.Sprintf("task alias view: channel %d invalid setting JSON (%T)", channel.Id, err))
+				continue
+			}
+			if plugin, ok := generation.Get(setting.TaskPluginKey); ok && plugin.Meta.ModelRouting == "channel" {
+				channelPlugin = plugin
+			}
 		}
+		mappingJSON := channel.GetModelMapping()
 		modelMap := make(map[string]string)
-		if err := common.UnmarshalJsonStr(mappingJSON, &modelMap); err != nil {
-			common.SysError(fmt.Sprintf("task alias view: channel %d model_mapping: %s", channel.Id, err.Error()))
-			continue
+		if mappingJSON != "" && mappingJSON != "{}" {
+			if err := common.UnmarshalJsonStr(mappingJSON, &modelMap); err != nil {
+				common.SysError(fmt.Sprintf("task alias view: channel %d model_mapping: %s", channel.Id, err.Error()))
+				continue
+			}
 		}
 		inModels := make(map[string]struct{})
 		for _, modelName := range channel.GetModels() {
 			inModels[modelName] = struct{}{}
 		}
-		for alias, mapped := range modelMap {
-			if mapped == "" {
-				continue
-			}
-			if _, exposed := inModels[alias]; !exposed {
+		for alias := range inModels {
+			if alias == "" {
 				continue
 			}
 			if _, declared := generation.CanonicalModel(alias); declared {
@@ -132,13 +149,21 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 				common.SysError(fmt.Sprintf("task alias mapping cycle dropped: channel=%d key=%q", channel.Id, alias))
 				continue
 			}
-			declared, ok := generation.CanonicalModel(tail)
-			if !ok {
-				continue
-			}
-			plugin, ok := generation.GetByModel(declared)
-			if !ok {
-				continue
+			plugin := channelPlugin
+			declared := ""
+			if plugin == nil {
+				if modelMap[alias] == "" {
+					continue
+				}
+				var ok bool
+				declared, ok = generation.CanonicalModel(tail)
+				if !ok {
+					continue
+				}
+				plugin, ok = generation.GetByModel(declared)
+				if !ok {
+					continue
+				}
 			}
 			fold := jsplugin.ASCIIFold(alias)
 			draft := drafts[fold]
@@ -147,6 +172,7 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 				drafts[fold] = draft
 			}
 			draft.spellings = append(draft.spellings, alias)
+			draft.channelScoped = draft.channelScoped || channelPlugin != nil
 			declareds := draft.byPlugin[plugin.Meta.Key]
 			if declareds == nil {
 				declareds = make(map[string]struct{})
@@ -180,18 +206,26 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 				}
 			}
 		}
-		view.byFold[jsplugin.ASCIIFold(alias)] = TaskAliasTarget{
-			Alias:     alias,
-			Declared:  declared,
-			PluginKey: pluginKey,
+		target := TaskAliasTarget{
+			Alias:         alias,
+			Declared:      declared,
+			PluginKey:     pluginKey,
+			ChannelScoped: draft.channelScoped,
+		}
+		if draft.channelScoped {
+			for _, spelling := range draft.spellings {
+				target.Alias = spelling
+				view.byExact[spelling] = target
+			}
+		} else {
+			view.byFold[jsplugin.ASCIIFold(alias)] = target
 		}
 	}
 	return view
 }
 
-// followChannelModelMapping walks one channel's mapping the same way
-// ModelMappedHelper does: visited-set cycle detection, self-map stops at
-// the current hop, a non-self cycle is reported to the caller.
+// followChannelModelMapping 按 ModelMappedHelper 的规则解析单个渠道的映射。
+// 自映射停在当前名称，其他循环返回 cyclic=true，调用方必须拒绝该模型。
 func followChannelModelMapping(modelMap map[string]string, start string) (string, bool) {
 	current := start
 	visited := map[string]bool{current: true}

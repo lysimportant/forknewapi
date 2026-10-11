@@ -1,0 +1,37 @@
+# Seedance 统一视频插件
+
+## 目标与基线
+
+- P1：实现 `seedance-video` 插件，同协议渠道复用源码，仅替换渠道地址、密钥、模型选择和映射。模型名称由管理员在渠道维护，不使用插件源码白名单，也不按名称猜测模型能力。
+- 基线：2026-10-11，`main@8602933e6`，跟踪 `fork/main`，工作区干净。Go 1.26.0、Node 24.12.0；模块要求 Go 1.25.1。已有前端本地格式化和 lint 工具，Bun 不在 PATH，不安装依赖。
+- 基线测试：`go test -mod=readonly ./plugins ./pkg/jsplugin -count=1 -timeout=180s` 通过。
+- 合同来源：用户提供的“纵横科技多能力 API”文本；此前只读模型目录返回 19 项，不从模型名称猜测归属或自动开放生成。
+- 验收：渠道显式授权任意精确模型名、同插件多渠道独立映射、真实模型目录、地址切换、创建幂等、状态解析、公开素材字段、显式 false、按次计量、无凭据内容描述和既有插件兼容。新增可选插件合同字段，扩展现有渠道只读查询；无数据库结构、依赖或 UI 修改，不部署生产，不调用收费生成。
+
+## 配置与边界
+
+- 新建“任务插件”渠道（类型 61），绑定 `seedance-video`，地址默认 `https://cnd-coo-new.pages.dev`，Key 仅保存在管理员渠道配置。`GET /v1/models` 复用宿主 Bearer 模型发现，返回真实目录供管理员选择。目录同时包含其他能力时，只选择已确认使用该视频协议的模型。
+- 获取或手填模型并保存即可使用，无需修改或重载插件源码。可以直接保存 `Xseadanco2.0`、`kksedanco2.5`，也可以保存本站模型名再映射到这些上游名。同一个本站名称在不同渠道可以有不同映射。在管理端配置每视频的本站售价；平台积分不是本站价格，插件不内置供应商价格。
+- `meta.modelRouting: "channel"` 不注册全局模型，仅对启用且显式绑定插件的渠道已保存精确模型名授权。未保存大小写不自动纠正；跨插件绑定歧义拒绝固定插件。映射在最终渠道选中后执行，解码器不得切换已授权的客户端模型。
+- 已有插件的全局模型声明优先。若本站名称与全局声明冲突（含唯一大小写折叠匹配），应使用另一个本站别名映射到实际上游 ID；不同插件的渠道名称冲突同样须消除。相同插件下的多个渠道可共享本站名称。
+- 旧插件省略该字段，保留 `meta.models` 声明、目录交集和别名行为。现有 API v1 文档、schema、TypeScript 类型同步。旧版宿主拒绝新字段，必须先更新应用再安装新插件。
+- 客户端创建 `POST /v1/videos`；插件出站创建 `/v1/videos`，查询 `/v1/tasks/{task_id}`。渠道地址支持根地址、`/v1` 和自定义路径前缀。
+- 统一字段：`model`、`prompt`、`duration`、`ratio`、`resolution`、`quality`、`negative_prompt`、`images`、`start_frame`、`end_frame`、`reference_videos`、`reference_audios`、`generate_audio`。入口兼容 `seconds`、`aspect_ratio`、`size`、URL 字符串 `input_reference`；冲突字段报错，不透传 `extra` 或厂商原生字段。
+- 时长只应用宿主安全上限 3600 秒，不代表模型能力；不补默认时长、分辨率或素材数量限制。具体模型能力以渠道后台为准。音频开关的 `false` 保留，首尾帧中的尾帧要求同时提供首帧。
+- 支持 JSON 和纯文本 multipart，素材须先取得公网 HTTPS 直链；本地文件先通过上游独立 `/v1/media` 上传，本轮不扩展宿主多步上传流程。
+- 稳定网关任务 ID 用作 `Idempotency-Key`，未知提交结果禁止宿主自动重发；此机制不提供跨客户端独立请求去重。
+- 状态仅映射 `processing`、`succeeded`、`failed`。成功必须带有效 `video_url` / `url` / `result_url` / `download_url`；由宿主无凭据代理，避免把渠道 Key 发往 CDN。失败原因保留错误码与详情并脱敏；客户端查询不回显原始供应商正文。
+- `next_poll_seconds` 未被宿主调度契约支持，继续采用宿主轮询间隔；本轮不声称已按供应商建议动态调度。
+- 凭据处理参考 OWASP Authentication Cheat Sheet 和 Session Management Cheat Sheet：Bearer 仅用于同渠道 API，内容代理无凭据，错误不回显密钥。本轮不修改登录或会话认证。
+- 影响与回滚：渠道别名索引增加读取已有 `setting` 列，使用只读 JSON 解析，不触发配置修复写回；数据库结构与既有记录无需迁移。回滚前停用该插件渠道的新提交，待在途任务结束后回退应用提交；保留已有渠道和任务记录，新插件须与支持该字段的宿主配套使用。
+
+## 检查点
+
+- 已完成插件、宿主渠道模型授权、模型目录及合同三件套实现。插件元数据人工审查：`count` 描述为“Video generation unit price / 视频生成单价”，单位为 `count`，不嵌价格或协议限制。
+- 已通过 `go test -mod=readonly ./pkg/jsplugin -count=1 -timeout=180s`；目录新建/编辑/失败兼容回归通过。schema 17 个正反合同用例与独立 `.d.ts` 类型检查通过。
+- 插件、middleware、任务适配器、router 和 service 全包回归通过。`TestSeedanceVideoHostFlow` 使用本地 HTTP 上游验证三个不同模型名的创建、查询、完成用量和无凭据内容描述；不等于真实下载、实际退款入账或供应商收费验收。
+- 三数据库矩阵及旧别名/定价回归通过，无跳过：SQLite 3.50.4、MySQL 8.0.46、PostgreSQL 16.15。命令：`GOWORK=off go test ./model -run 'TestTaskModelAliasChannelRouting|TestTaskPluginChannelSelection|TestSharedPluginKeys|TestPricingAlias|TestPricingUsageProfiles' -count=1 -timeout=120s -v`，耗时 4.913s。MySQL、PostgreSQL 使用仅本任务创建的本地隔离实例和 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN`；测试仅创建并删除独立表前缀，不接触业务数据库。
+- Go build 全模块通过：`go build -mod=readonly ./...`。Go vet 通过：`go vet -mod=readonly ./plugins ./pkg/jsplugin ./middleware ./controller ./relay/channel/task/jsplugin ./router ./service` 及 `go vet ./model`。
+- 新插件 oxfmt 与 oxlint 通过。首次集中回归的 controller 全包超过 180 秒时限；延长至 600 秒后执行 202.001s，仅 `TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner` 失败，日志出现 SQLite `SQLITE_BUSY`，成功请求数为 0。随后 `go test -mod=readonly ./controller -run '^TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner$' -count=1 -timeout=120s` 通过（3.367s），完整 `go test -mod=readonly ./controller -count=1 -timeout=600s` 复查通过（192.262s）。保留首次失败证据，未修改账户删除实现，未认定为既有问题。
+- 最终生产 diff、Go 格式及敏感信息检查通过。无 UI、依赖、登录认证或数据库结构变更；此前只读前端检查中的权限受限操作员用例超时，未在本轮修改其实现。本轮相关 Go 包最终验证通过，供应商收费生成、真实内容下载和实际退款入账仍未实测。
+- 交付分支为 `main`，远端为 `fork`（`https://github.com/lysimportant/forknewapi.git`），任务带注释 Tag 为 `v2026.10.11-seedance-channel-routing`；不向官方 `origin` 推送。提交前远端 `main` 为基线 `8602933e6`，Tag 尚未使用。仅清理本任务两个隔离数据库容器，不操作其他容器或业务数据。

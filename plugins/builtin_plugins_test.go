@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "seedance-video", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -99,8 +99,13 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "yuanliu" || key == "metaso-h3-video" {
-				assert.False(t, foundResponses, "源流未确认 Responses 协议，不应扩大入口")
+			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
+				assert.False(t, foundResponses, "仅视频插件未声明 Responses 协议，不应扩大入口")
+				if plugin.Meta.ModelRouting == "channel" {
+					binding, claimed := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", key)
+					require.True(t, claimed)
+					assert.Same(t, plugin, binding.Plugin)
+				}
 				for _, model := range plugin.Meta.Models {
 					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
 					require.True(t, claimed, model)
@@ -140,7 +145,7 @@ func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 	}
 	for _, key := range expectedKeys {
-		if key == "yuanliu" || key == "metaso-h3-video" {
+		if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {

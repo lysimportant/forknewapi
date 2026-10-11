@@ -111,6 +111,8 @@ type Meta struct {
 	UsageExamples        []UsageExample              `json:"usageExamples,omitempty"`
 	UsageProfiles        []UsageProfile              `json:"usageProfiles,omitempty"`
 	Auth                 AuthMeta                    `json:"auth"`
+	// ModelRouting 设为 channel 时，仅由类型 61 渠道已保存的模型授权，不注册全局模型。
+	ModelRouting string `json:"modelRouting,omitempty"`
 }
 
 // ModelDiscovery 声明管理页读取上游目录的只读协议；未声明时使用插件模型列表。
@@ -848,7 +850,7 @@ func cloneMeta(meta Meta) Meta {
 	meta.SubmitResponseTypes = slices.Clone(meta.SubmitResponseTypes)
 	meta.RequiredCapabilities = slices.Clone(meta.RequiredCapabilities)
 	meta.ChannelTypes = append([]int(nil), meta.ChannelTypes...)
-	meta.Models = append([]string(nil), meta.Models...)
+	meta.Models = slices.Clone(meta.Models)
 	meta.AllowedHosts = append([]string(nil), meta.AllowedHosts...)
 	meta.Routes = append([]Route(nil), meta.Routes...)
 	for index := range meta.Routes {
@@ -856,7 +858,7 @@ func cloneMeta(meta Meta) Meta {
 	}
 	meta.Protocols = append([]ProtocolClaim(nil), meta.Protocols...)
 	for index := range meta.Protocols {
-		meta.Protocols[index].Models = append([]string(nil), meta.Protocols[index].Models...)
+		meta.Protocols[index].Models = slices.Clone(meta.Protocols[index].Models)
 		meta.Protocols[index].Supports = append([]string(nil), meta.Protocols[index].Supports...)
 	}
 	if meta.Description != nil {
@@ -991,7 +993,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "modelAliases", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "modelRouting", "models", "modelAliases", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}
@@ -1100,6 +1102,14 @@ func decodeMeta(value any) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
+	if _, exists := object["modelRouting"]; exists {
+		if meta.ModelRouting, err = stringMetaField(object, "modelRouting"); err != nil {
+			return Meta{}, err
+		}
+		if meta.ModelRouting != "channel" {
+			return Meta{}, fmt.Errorf("plugin meta modelRouting must be channel when declared")
+		}
+	}
 	if rawAliases, present := object["modelAliases"]; present {
 		aliases, ok := rawAliases.(map[string]any)
 		if !ok {
@@ -1184,6 +1194,9 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	if len(meta.Key) > 30 {
 		return Meta{}, fmt.Errorf("plugin meta key must not exceed 30 characters")
+	}
+	if _, exists := object["models"]; !exists {
+		return Meta{}, fmt.Errorf("plugin meta models is required")
 	}
 	return meta, nil
 }
@@ -1305,7 +1318,29 @@ func normalizeV1Meta(meta *Meta) error {
 	if meta.FetchMode != "per_task" && meta.FetchMode != "batch" {
 		return fmt.Errorf("plugin meta fetchMode must be per_task or batch")
 	}
-	if len(meta.Models) == 0 {
+	if meta.ModelRouting != "" && meta.ModelRouting != "channel" {
+		return fmt.Errorf("plugin meta modelRouting must be channel when declared")
+	}
+	if meta.ModelRouting == "channel" {
+		if len(meta.ChannelTypes) > 0 {
+			return fmt.Errorf("plugin meta modelRouting channel must not declare channelTypes")
+		}
+		if len(meta.Routes) > 0 {
+			return fmt.Errorf("plugin meta modelRouting channel must not declare routes")
+		}
+		if len(meta.UsageProfiles) > 0 {
+			return fmt.Errorf("plugin meta modelRouting channel must use the default usageSchema, not usageProfiles")
+		}
+		if len(meta.ModelAliases) > 0 {
+			return fmt.Errorf("plugin meta modelRouting channel must not declare modelAliases")
+		}
+		if len(meta.Protocols) != 1 || meta.Protocols[0].Name != "openai_video" || meta.Protocols[0].Models != nil {
+			return fmt.Errorf("plugin meta modelRouting channel requires only openai_video without protocol models")
+		}
+		if meta.Models == nil {
+			meta.Models = []string{}
+		}
+	} else if len(meta.Models) == 0 {
 		return fmt.Errorf("plugin meta models must contain at least one model")
 	}
 	seenChannelTypes := make(map[int]struct{}, len(meta.ChannelTypes))

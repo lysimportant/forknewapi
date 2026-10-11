@@ -226,6 +226,8 @@ type PinnedEndpoint struct {
 	Model       string
 	MappedModel string
 	Candidates  []ProtocolBinding
+	// ChannelScoped 已由启用渠道 Models 和 task_plugin_key 授权，待渠道选择后映射。
+	ChannelScoped bool
 }
 
 // RouteRequestContext is the canonical request view exposed to declarative
@@ -475,6 +477,28 @@ func (g *RoutingGeneration) LookupEndpoint(method, path, model string) (Protocol
 		return ProtocolBinding{}, false
 	}
 	return bindings[0], true
+}
+
+// LookupPluginEndpoint 查询渠道模式插件的创建入口；调用方须先验证启用渠道的
+// Models 与 task_plugin_key。返回的 Model 为空，由调用方填入已授权的请求模型。
+func (g *RoutingGeneration) LookupPluginEndpoint(method, path, pluginKey string) (ProtocolBinding, bool) {
+	if g == nil {
+		return ProtocolBinding{}, false
+	}
+	plugin, ok := g.byKey[pluginKey]
+	if !ok || plugin == nil || plugin.Meta.ModelRouting != "channel" {
+		return ProtocolBinding{}, false
+	}
+	protocol, operation, ok := LookupHostProtocolOperation(method, path)
+	if !ok {
+		return ProtocolBinding{}, false
+	}
+	for _, claim := range plugin.Meta.Protocols {
+		if claim.Name == protocol {
+			return ProtocolBinding{Plugin: plugin, Protocol: protocol, Operation: operation}, true
+		}
+	}
+	return ProtocolBinding{}, false
 }
 
 // LookupEndpointCandidates returns every plugin that can serve a shared model
@@ -883,6 +907,10 @@ func buildRoutingGenerationFromPlugins(effective map[string]*LoadedPlugin, numbe
 		plugin := effective[key]
 		generation.byKey[key] = plugin
 		generation.plugins = append(generation.plugins, plugin)
+		if plugin.Meta.ModelRouting == "channel" {
+			// 渠道模式只按已绑定插件查询，建议模型不进入全局索引。
+			continue
+		}
 		for _, model := range plugin.Meta.Models {
 			generation.modelPlugins[model] = append(generation.modelPlugins[model], plugin)
 			if _, exists := generation.byModel[model]; !exists {

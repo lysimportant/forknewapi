@@ -42,6 +42,32 @@ export function parseTaskResult() { return {}; }
 	return key
 }
 
+// registerChannelRoutedModelDiscoveryTestPlugin 注册仅由渠道模型授权的统一视频插件。
+// 测试目录获取不能修改静态模型清单、全局模型路由或已保存的渠道配置。
+func registerChannelRoutedModelDiscoveryTestPlugin(t *testing.T) string {
+	t.Helper()
+	const key = "channel-discovery-test"
+	const source = `
+export const meta = {
+  apiVersion: 1, key: "channel-discovery-test", name: "Channel Discovery", version: "1.0.0", author: {name: "Test"},
+  models: [], modelRouting: "channel", fetchMode: "per_task", protocols: ["openai_video"],
+  modelDiscovery: {protocol: "openai", path: "/v1/models"},
+  usageSchema: {videos: {type: "number", unit: "count", description: {en: "Video generation unit price", zh: "视频生成单价"}}},
+};
+export const protocols = {openai_video: {decodeRequest() { return {}; }, render() { return {}; }}};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+export function listArtifacts() { return []; }
+export function buildContentRequest() { return {}; }
+`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = jsplugin.DefaultRegistry.Unregister(key) })
+	return key
+}
+
 // taskPluginDiscoveryResponse 保留模型来源和未适配模型，便于验证公开接口合同。
 type taskPluginDiscoveryResponse struct {
 	Success           bool              `json:"success"`
@@ -462,6 +488,131 @@ func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *tes
 			assert.Equal(t, "Token preview-key", request.Header.Get("Authorization"))
 			assert.Equal(t, "preview", request.Header.Get("X-Discovery"))
 			assert.Equal(t, "models.example.test", request.Host)
+		})
+	}
+}
+
+// TestFetchChannelRoutedTaskPluginModelsPreviewsExactCatalog 验证新建、已保存及编辑入口均只读取目录。
+func TestFetchChannelRoutedTaskPluginModelsPreviewsExactCatalog(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	key := registerChannelRoutedModelDiscoveryTestPlugin(t)
+	received := make(chan http.Header, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Contains(t, []string{"/v1/models", "/proxy/v1/models"}, r.URL.Path)
+		received <- r.Header.Clone()
+		_, _ = w.Write([]byte(`{"data":[{"id":"Opaque-V3"},{"id":"opaque-v3"},{"id":"deployment-29"}]}`))
+	}))
+	defer server.Close()
+	baseURL := server.URL + "/v1"
+	mapping := `{"saved-alias":"configured-upstream"}`
+	channel := &model.Channel{
+		Type: constant.ChannelTypeTaskPlugin, Name: "channel-scoped discovery", BaseURL: &baseURL,
+		Key: "disabled-fixture-key\nsaved-fixture-key", Models: "saved-alias", ModelMapping: &mapping,
+		ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeyMode: constant.MultiKeyModePolling, MultiKeyPollingIndex: 1, MultiKeyStatusList: map[int]int{
+			0: common.ChannelStatusManuallyDisabled, 1: common.ChannelStatusEnabled,
+		}},
+	}
+	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: key})
+	require.NoError(t, db.Create(channel).Error)
+	for _, test := range []struct {
+		name          string
+		saved         bool
+		request       map[string]any
+		authorization string
+	}{
+		{name: "create preview", request: map[string]any{
+			"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": key, "base_url": baseURL, "key": "create-fixture-key",
+		}, authorization: "Bearer create-fixture-key"},
+		{name: "saved channel", saved: true, authorization: "Bearer saved-fixture-key"},
+		{name: "edit preview", request: map[string]any{
+			"type": constant.ChannelTypeTaskPlugin, "channel_id": channel.Id, "task_plugin_key": key,
+			"base_url": server.URL + "/proxy/v1", "key": "draft-fixture-key",
+			"header_override": `{"Authorization":"Token {api_key}"}`,
+		}, authorization: "Token draft-fixture-key"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var response taskPluginDiscoveryResponse
+			if test.saved {
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channel.Id)}}
+				ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/fetch_models/"+fmt.Sprint(channel.Id), nil)
+				FetchUpstreamModels(ctx)
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+				assert.NotContains(t, recorder.Body.String(), "fixture-key")
+			} else {
+				response = previewTaskPluginModels(t, test.request)
+			}
+			require.True(t, response.Success, response.Message)
+			assert.Equal(t, "upstream", response.Source)
+			assert.Equal(t, []string{"Opaque-V3", "opaque-v3", "deployment-29"}, response.Data)
+			assert.Empty(t, response.UnsupportedModels)
+			assert.Empty(t, response.ModelMapping)
+			assert.Equal(t, test.authorization, (<-received).Get("Authorization"))
+			for _, name := range response.Data {
+				assert.Empty(t, jsplugin.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, "/v1/videos", name))
+			}
+		})
+	}
+	plugin, ok := jsplugin.DefaultRegistry.Get(key)
+	require.True(t, ok)
+	assert.Empty(t, plugin.Meta.Models)
+	reloaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, channel.Models, reloaded.Models)
+	assert.Equal(t, channel.ModelMapping, reloaded.ModelMapping)
+	assert.Equal(t, channel.Key, reloaded.Key)
+	assert.Equal(t, channel.Setting, reloaded.Setting)
+	assert.Equal(t, channel.GetBaseURL(), reloaded.GetBaseURL())
+	assert.Equal(t, channel.ChannelInfo, reloaded.ChannelInfo)
+	var channelCount int64
+	require.NoError(t, db.Model(&model.Channel{}).Count(&channelCount).Error)
+	assert.Equal(t, int64(1), channelCount)
+}
+
+// TestFetchChannelRoutedTaskPluginModelsPreservesSelectionOnFailure 验证失败和空目录不清空已保存选择或映射。
+func TestFetchChannelRoutedTaskPluginModelsPreservesSelectionOnFailure(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		body      string
+		wantError string
+	}{
+		{name: "upstream failure", status: http.StatusUnauthorized, body: `{"message":"fixture-private-key custom-header-secret"}`, wantError: "status code: 401"},
+		{name: "empty catalog", status: http.StatusOK, body: `{"data":[]}`, wantError: "no valid model IDs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupModelListControllerTestDB(t)
+			key := registerChannelRoutedModelDiscoveryTestPlugin(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "Bearer fixture-private-key", r.Header.Get("Authorization"))
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			mapping := `{"saved-alias":"configured-upstream"}`
+			channel := &model.Channel{
+				Type: constant.ChannelTypeTaskPlugin, Name: test.name, BaseURL: &server.URL,
+				Key: "fixture-private-key", Models: "saved-alias", ModelMapping: &mapping,
+			}
+			channel.SetSetting(dto.ChannelSettings{TaskPluginKey: key})
+			require.NoError(t, db.Create(channel).Error)
+			response := previewTaskPluginModels(t, map[string]any{
+				"type": constant.ChannelTypeTaskPlugin, "channel_id": channel.Id,
+				"header_override": `{"X-Discovery":"custom-header-secret"}`,
+			})
+			assert.False(t, response.Success)
+			assert.Contains(t, response.Message, test.wantError)
+			assert.Empty(t, response.Data)
+			assert.NotContains(t, response.Message, "fixture-private-key")
+			assert.NotContains(t, response.Message, "custom-header-secret")
+			reloaded, err := model.GetChannelById(channel.Id, true)
+			require.NoError(t, err)
+			assert.Equal(t, channel.Models, reloaded.Models)
+			assert.Equal(t, channel.ModelMapping, reloaded.ModelMapping)
+			assert.Equal(t, channel.Setting, reloaded.Setting)
 		})
 	}
 }

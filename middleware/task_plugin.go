@@ -342,6 +342,7 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		pinModel := claimedModel
 		mappedModel := ""
 		rewriteTo := ""
+		channelPluginKey := ""
 		if declared, ok := generation.CanonicalModel(claimedModel); ok {
 			lookupModel = declared
 			pinModel = declared
@@ -349,7 +350,7 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 				rewriteTo = declared
 			}
 		} else if target, ok := model.ResolveTaskModelAlias(generation, claimedModel); ok {
-			if target.Declared == "" {
+			if target.Declared == "" && !target.ChannelScoped {
 				c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 				c.Next()
 				return
@@ -357,11 +358,18 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 			lookupModel = target.Declared
 			pinModel = target.Alias
 			mappedModel = target.Declared
+			if target.ChannelScoped {
+				channelPluginKey = target.PluginKey
+			}
 			if claimedModel != target.Alias {
 				rewriteTo = target.Alias
 			}
 		}
 		binding, found := generation.LookupEndpoint(c.Request.Method, c.Request.URL.Path, lookupModel)
+		if channelPluginKey != "" {
+			binding, found = generation.LookupPluginEndpoint(c.Request.Method, c.Request.URL.Path, channelPluginKey)
+			binding.Model = pinModel
+		}
 		if !found || binding.Plugin == nil {
 			c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 			c.Next()
@@ -376,6 +384,9 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		modelRequest.Model = pinModel
 		c.Set(contextKeyTaskPluginEndpointModel, *modelRequest)
 		candidates := generation.LookupEndpointCandidates(c.Request.Method, c.Request.URL.Path, lookupModel)
+		if channelPluginKey != "" {
+			candidates = []pluginruntime.ProtocolBinding{binding}
+		}
 		if len(candidates) == 0 {
 			candidates = []pluginruntime.ProtocolBinding{binding}
 		}
@@ -418,13 +429,14 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 
 		pin := pluginruntime.PinnedPlugin{Generation: generation, Plugin: binding.Plugin}
 		pinnedEndpoint := pluginruntime.PinnedEndpoint{
-			Generation:  generation,
-			Plugin:      binding.Plugin,
-			Protocol:    binding.Protocol,
-			Operation:   binding.Operation,
-			Model:       pinModel,
-			MappedModel: mappedModel,
-			Candidates:  candidates,
+			Generation:    generation,
+			Plugin:        binding.Plugin,
+			Protocol:      binding.Protocol,
+			Operation:     binding.Operation,
+			Model:         pinModel,
+			MappedModel:   mappedModel,
+			ChannelScoped: channelPluginKey != "",
+			Candidates:    candidates,
 		}
 		c.Set(pluginruntime.ContextKeyPinnedPlugin, pin)
 		c.Set(pluginruntime.ContextKeyPinnedEndpoint, pinnedEndpoint)
@@ -640,7 +652,7 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 			} else if model, _ := result["model"].(string); strings.TrimSpace(model) == "" {
 				reason = "invalid_model"
 				detail = "decoded request is missing a model"
-			} else if model != pinned.Model || (pinned.MappedModel == "" && !slices.Contains(candidate.Plugin.Meta.Models, model)) {
+			} else if model != pinned.Model || (pinned.MappedModel == "" && !(pinned.ChannelScoped && candidate.Plugin.Meta.ModelRouting == "channel") && !slices.Contains(candidate.Plugin.Meta.Models, model)) {
 				reason = "resolved_model_not_owned"
 				detail = fmt.Sprintf("model %q is not served by this plugin", model)
 			}

@@ -51,6 +51,62 @@ func TestRegistrySnapshotSeparatesLayersWithoutExposingEntries(t *testing.T) {
 	assert.Equal(t, "1.0.0-override", plugin.Meta.Version)
 }
 
+// TestRegistryChannelModelRouting 验证渠道模型路由限制和空模型列表的管理接口序列化。
+func TestRegistryChannelModelRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name, models, fields, wantError string
+	}{
+		{"旧插件", `["candidate"]`, `protocols: ["openai_video"],`, ""},
+		{"空模型列表", `[]`, `modelRouting: "channel", protocols: ["openai_video"],`, ""},
+		{"建议模型列表", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"],`, ""},
+		{"空的禁用字段", `[]`, `modelRouting: "channel", protocols: [{name: "openai_video"}], channelTypes: [], routes: [], usageProfiles: [], modelAliases: {},`, ""},
+		{"旧模式仍要求模型", `[]`, `protocols: ["openai_video"],`, "models must contain at least one model"},
+		{"模式类型错误", `[]`, `modelRouting: true, protocols: ["openai_video"],`, "modelRouting must be a string"},
+		{"模式不能为空值", `[]`, `modelRouting: null, protocols: ["openai_video"],`, "modelRouting must be a string"},
+		{"模式不能为空字符串", `[]`, `modelRouting: "", protocols: ["openai_video"],`, "modelRouting must be channel"},
+		{"未知模式", `[]`, `modelRouting: "global", protocols: ["openai_video"],`, "modelRouting must be channel"},
+		{"禁止旧渠道类型", `[]`, `modelRouting: "channel", protocols: ["openai_video"], channelTypes: [1],`, "must not declare channelTypes"},
+		{"禁止原生路由", `[]`, `modelRouting: "channel", protocols: ["openai_video"], routes: [{method: "POST", path: "/jobs", type: "submit", decode: "create", render: "created"}],`, "must not declare routes"},
+		{"禁止模型计量分组", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"], usageProfiles: [{models: ["candidate"], schema: {}}],`, "not usageProfiles"},
+		{"禁止建议别名", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"], modelAliases: {public: "candidate"},`, "must not declare modelAliases"},
+		{"必须声明视频协议", `[]`, `modelRouting: "channel",`, "requires only openai_video"},
+		{"禁止其他协议", `[]`, `modelRouting: "channel", protocols: [{name: "openai_responses", supports: ["sync"]}],`, "requires only openai_video"},
+		{"禁止多个协议", `[]`, `modelRouting: "channel", protocols: ["openai_video", {name: "openai_responses", supports: ["sync"]}],`, "requires only openai_video"},
+		{"禁止协议模型限定", `["candidate"]`, `modelRouting: "channel", protocols: [{name: "openai_video", models: ["candidate"]}],`, "without protocol models"},
+		{"建议模型仍须规范", `[" candidate"]`, `modelRouting: "channel", protocols: ["openai_video"],`, "non-empty canonical names"},
+		{"模型不能为null", `null`, `modelRouting: "channel", protocols: ["openai_video"],`, "models must be an array"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := NewRegistry()
+			plugin, err := registry.Register(routingTestPluginSource("channel-models", 0, tc.models, tc.fields, routingProtocolExport("openai_video")), Options{})
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+			snapshot := registry.Snapshot()
+			require.Len(t, snapshot.Override, 1)
+			assert.Equal(t, plugin.Meta.ModelRouting, snapshot.Override[0].ModelRouting)
+			if tc.models != `[]` {
+				return
+			}
+			require.NotNil(t, snapshot.Override[0].Models)
+			encoded, err := common.Marshal(snapshot.Override[0])
+			require.NoError(t, err)
+			var metadata map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &metadata))
+			assert.Equal(t, []any{}, metadata["models"])
+		})
+	}
+
+	source := strings.Replace(routingTestPluginSource("channel-models", 0, `[]`, `modelRouting: "channel", protocols: ["openai_video"],`, routingProtocolExport("openai_video")), "models: [],", "", 1)
+	_, err := CompilePlugin(source, Options{})
+	require.ErrorContains(t, err, "models is required")
+
+	meta := Meta{APIVersion: 1, Key: "channel-models", Name: "Channel models", Version: "1.0.0", Author: AuthorMeta{Name: "Test"}, FetchMode: "per_task", ModelRouting: "channel", Protocols: []ProtocolClaim{{Name: "openai_video", Models: []string{}}}}
+	require.ErrorContains(t, ValidateV1Meta(meta), "without protocol models")
+}
+
 func TestRegistryRejectsPluginKeyLongerThanTaskPlatformColumn(t *testing.T) {
 	source := `export const meta = {apiVersion: 1, key: "1234567890123456789012345678901", name: "Long", version: "1", author: {name: "Test"}};`
 	_, err := NewRegistry().Register(source, Options{})

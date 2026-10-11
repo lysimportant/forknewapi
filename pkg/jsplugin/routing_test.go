@@ -129,6 +129,58 @@ func TestPerProtocolModelsAllowDisjointPluginsOnSharedProtocol(t *testing.T) {
 	assert.Same(t, right, boundB.Plugin)
 }
 
+// TestChannelModelRoutingIsolatedEndpoints 验证渠道插件只按绑定键查入口，不抢占全局模型或旧插件路由。
+func TestChannelModelRoutingIsolatedEndpoints(t *testing.T) {
+	empty := mustCompileRoutingPlugin(t, "channel-empty", 0, `[]`, `modelRouting: "channel", protocols: ["openai_video"],`, routingProtocolExport("openai_video"))
+	suggestions := mustCompileRoutingPlugin(t, "channel-suggestions", 0, `["suggested-model", "legacy-model"]`, `modelRouting: "channel", protocols: ["openai_video"],`, routingProtocolExport("openai_video"))
+	legacy := mustCompileRoutingPlugin(t, "legacy-video", 0, `["legacy-model"]`, `protocols: ["openai_video"],`, routingProtocolExport("openai_video"))
+	registry := NewRegistry()
+	require.NoError(t, registry.ReplaceOverrides([]*LoadedPlugin{empty, suggestions, legacy}))
+	generation := registry.Generation()
+	require.Len(t, generation.Plugins(), 3)
+	assert.Empty(t, registry.RoutingErrors())
+
+	for _, plugin := range []*LoadedPlugin{empty, suggestions} {
+		registered, ok := generation.Get(plugin.Meta.Key)
+		require.True(t, ok)
+		assert.Same(t, plugin, registered)
+		binding, ok := generation.LookupPluginEndpoint(" post ", "/v1/videos", plugin.Meta.Key)
+		require.True(t, ok)
+		assert.Same(t, plugin, binding.Plugin)
+		assert.Equal(t, "openai_video", binding.Protocol)
+		assert.Equal(t, "create", binding.Operation.Name)
+		assert.Empty(t, binding.Model)
+	}
+
+	_, ok := generation.GetByModel("suggested-model")
+	assert.False(t, ok)
+	_, ok = generation.CanonicalModel("SUGGESTED-MODEL")
+	assert.False(t, ok)
+	assert.Empty(t, generation.PluginsByModel("suggested-model"))
+	assert.Empty(t, generation.LookupEndpointCandidates("POST", "/v1/videos", "suggested-model"))
+	binding, ok := generation.LookupEndpoint("POST", "/v1/videos", "legacy-model")
+	require.True(t, ok)
+	assert.Same(t, legacy, binding.Plugin)
+	assert.Equal(t, []*LoadedPlugin{legacy}, generation.PluginsByModel("legacy-model"))
+	require.Len(t, generation.LookupEndpointCandidates("POST", "/v1/videos", "legacy-model"), 1)
+
+	for _, tc := range []struct {
+		method, path, key string
+	}{
+		{"POST", "/v1/videos", "missing"},
+		{"POST", "/v1/videos", legacy.Meta.Key},
+		{"GET", "/v1/videos", empty.Meta.Key},
+		{"POST", "/v1/responses", empty.Meta.Key},
+		{"GET", "/v1/videos/:task_id", empty.Meta.Key},
+		{"HEAD", "/v1/videos/:task_id/content", empty.Meta.Key},
+	} {
+		_, ok := generation.LookupPluginEndpoint(tc.method, tc.path, tc.key)
+		assert.False(t, ok, "%s %s %s", tc.method, tc.path, tc.key)
+	}
+	_, ok = (*RoutingGeneration)(nil).LookupPluginEndpoint("POST", "/v1/videos", empty.Meta.Key)
+	assert.False(t, ok)
+}
+
 func TestPreflightRoutingConflict(t *testing.T) {
 	first := mustCompileRoutingPlugin(t, "preflight-first", 90, `["model-a"]`, "", "")
 	second := mustCompileRoutingPlugin(t, "preflight-second", 90, `["model-b"]`, "", "")
@@ -1008,7 +1060,16 @@ export function parseTaskResult() { return {}; }
 `, key, key, channelTypesField, models, metaFields, exports)
 }
 
+// routingProtocolExport 生成各宿主协议必需的测试钩子，不调用上游。
 func routingProtocolExport(name string) string {
+	if name == "openai_video" {
+		return `export const protocols = {openai_video: {
+			decodeRequest: function(ctx) { return ctx; },
+			render: function(ctx, task) { return task; }
+		}};
+		export function listArtifacts() { return []; }
+		export function buildContentRequest() { return {}; }`
+	}
 	return fmt.Sprintf(`export const protocols = {%s: {
 		decodeRequest: function(ctx) { return ctx; },
 		renderEvents: function() { return {events: [], state: null, done: false}; },
