@@ -225,6 +225,43 @@ func TestCanvasCatalogProfilesFromAuthorizedCandidates(t *testing.T) {
 	}
 }
 
+// TestCanvasMetasoH3ReferenceProfile 验证秘塔精确模型向 Canvas 发布多媒体参考能力。
+func TestCanvasMetasoH3ReferenceProfile(t *testing.T) {
+	withTieredBillingConfig(t, map[string]string{"Minimax-H3": "tiered_expr"}, map[string]string{"Minimax-H3": `u("seconds") * 0.2`})
+	generation := jsplugin.DefaultRegistry.Generation()
+	plugin, found := generation.Get("metaso-h3-video")
+	require.True(t, found)
+	candidate := canvasCandidate{
+		Channel:       &model.Channel{Id: 1, Type: constant.ChannelTypeTaskPlugin},
+		Plugin:        plugin,
+		Generation:    generation,
+		UpstreamModel: "Minimax-H3",
+	}
+	profile := canvasProfile{MediaType: "video", Contract: "newapi-video-v1", Path: "/v1/videos"}
+	input, supported := canvasInputMediaProfile("Minimax-H3", profile, []canvasCandidate{candidate})
+	require.True(t, supported)
+	assert.Equal(t, canvasVideoInputProfile{unlimited: true}, input)
+	assert.Equal(t, []string{"text", "image", "video", "audio"}, canvasInputMediaTypes("Minimax-H3", profile, []canvasCandidate{candidate}))
+	assert.False(t, canvasYuanModel("Minimax-H3"))
+
+	media := make([]any, 10)
+	for index := range media {
+		media[index] = map[string]any{"type": "image", "role": "reference_image"}
+	}
+	body, err := common.Marshal(map[string]any{
+		"model": "Minimax-H3", "contract": "newapi-video-v1", "parameters": map[string]any{"seconds": 5},
+		"input_text": "Animate the supplied references", "input_media": media,
+	})
+	require.NoError(t, err)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/canvas/estimate", bytes.NewReader(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+	request, parsedProfile, err := canvasEstimateBody(context)
+	require.NoError(t, err)
+	assert.Equal(t, profile, parsedProfile)
+	assert.Len(t, request.InputMedia, 10)
+}
+
 // TestCanvasModelPricingVersionTracksAdvancedCustomEndpoints 验证高级自定义路由改变目录合同时会刷新价格版本。
 func TestCanvasModelPricingVersionTracksAdvancedCustomEndpoints(t *testing.T) {
 	candidate := canvasCandidate{

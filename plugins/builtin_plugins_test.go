@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "minimax-h3-video", "moon", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -99,7 +99,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "yuanliu" {
+			if key == "yuanliu" || key == "metaso-h3-video" {
 				assert.False(t, foundResponses, "源流未确认 Responses 协议，不应扩大入口")
 				for _, model := range plugin.Meta.Models {
 					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
@@ -140,7 +140,7 @@ func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 	}
 	for _, key := range expectedKeys {
-		if key == "yuanliu" {
+		if key == "yuanliu" || key == "metaso-h3-video" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {

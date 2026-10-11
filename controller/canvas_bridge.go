@@ -62,10 +62,11 @@ type canvasInputMedium struct {
 	Role string `json:"role"`
 }
 
-// canvasVideoInputProfile 保存已适配的公开别名和参考数量边界；total 是 New API 桥接接受的参考总数上限。
+// canvasVideoInputProfile 保存已适配的公开别名和参考能力；unlimited 表示 Canvas 不在桥接层执行数量限制。
 type canvasVideoInputProfile struct {
 	alias                         string
 	images, videos, audios, total int
+	unlimited                     bool
 }
 
 // canvasYuanVideoInputs 只纳入 Yuan 插件已核对的精确上游 ID；模型目录新增名称不会自动开放媒体输入。
@@ -447,7 +448,7 @@ func canvasYuanModel(name string) bool {
 // canvasInputMediaProfile 返回所有可执行且已定价路由的参考能力交集；未知插件、映射或公开身份失败关闭。
 func canvasInputMediaProfile(name string, profile canvasProfile, candidates []canvasCandidate) (canvasVideoInputProfile, bool) {
 	var result canvasVideoInputProfile
-	if profile.Contract != "newapi-video-v1" || (name != "MiniMax-H3" && !canvasYuanModel(name)) {
+	if profile.Contract != "newapi-video-v1" || (name != "MiniMax-H3" && name != "Minimax-H3" && !canvasYuanModel(name)) {
 		return result, false
 	}
 	matched := false
@@ -464,6 +465,11 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 				return canvasVideoInputProfile{}, false
 			}
 			input = canvasVideoInputProfile{images: 9, videos: 3, audios: 3, total: 15}
+		} else if name == "Minimax-H3" {
+			if candidate.Plugin.Meta.Key != "metaso-h3-video" || candidate.UpstreamModel != "Minimax-H3" {
+				return canvasVideoInputProfile{}, false
+			}
+			input = canvasVideoInputProfile{unlimited: true}
 		} else {
 			var known bool
 			input, known = canvasYuanVideoInputs[candidate.UpstreamModel]
@@ -491,13 +497,13 @@ func canvasInputMediaTypes(name string, profile canvasProfile, candidates []canv
 	if !supported {
 		return types
 	}
-	if input.images > 0 {
+	if input.unlimited || input.images > 0 {
 		types = append(types, "image")
 	}
-	if input.videos > 0 {
+	if input.unlimited || input.videos > 0 {
 		types = append(types, "video")
 	}
-	if input.audios > 0 {
+	if input.unlimited || input.audios > 0 {
 		types = append(types, "audio")
 	}
 	return types
@@ -587,12 +593,15 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 	}
 	if raw, exists := fields["input_media"]; exists {
 		items, ok := raw.([]any)
-		maxMedia := 15
+		maxMedia := -1
 		yuanModel := canvasYuanModel(request.Model)
 		if yuanModel {
 			maxMedia = 40
 		}
-		if !ok || len(items) > maxMedia || request.Contract != "newapi-video-v1" {
+		if !ok || request.Contract != "newapi-video-v1" {
+			return request, canvasProfile{}, errors.New("input_media 仅接受视频合同的媒体描述数组")
+		}
+		if maxMedia >= 0 && len(items) > maxMedia {
 			return request, canvasProfile{}, fmt.Errorf("input_media 仅接受视频合同的媒体描述数组，最多 %d 项", maxMedia)
 		}
 		counts := make(map[string]int)
@@ -613,11 +622,11 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 			counts[mediaType]++
 			counts[role]++
 		}
-		if (!yuanModel && (counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3)) ||
-			counts["first_frame"] > 1 || counts["last_frame"] > 1 {
+		if request.Model != "Minimax-H3" && !yuanModel && ((counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3) ||
+			counts["first_frame"] > 1 || counts["last_frame"] > 1) {
 			return request, canvasProfile{}, errors.New("媒体输入超过数量限制：图片 9 张、视频 3 段、音频 3 段，首尾帧各 1 张")
 		}
-		if counts["first_frame"]+counts["last_frame"] > 0 &&
+		if request.Model != "Minimax-H3" && counts["first_frame"]+counts["last_frame"] > 0 &&
 			counts["reference_image"]+counts["reference_video"]+counts["reference_audio"] > 0 {
 			return request, canvasProfile{}, errors.New("首尾帧不能与参考媒体混用")
 		}
@@ -638,7 +647,7 @@ func canvasCanonicalBody(request canvasEstimateRequest, profile canvasProfile) (
 		"video": {"seconds", "duration", "size", "resolution", "aspect_ratio", "quality", "seed", "generate_audio", "audio", "watermark", "negative_prompt"},
 		"audio": {"voice", "speed", "response_format", "instructions"},
 	}
-	if profile.MediaType == "video" && canvasYuanModel(request.Model) {
+	if profile.MediaType == "video" && (canvasYuanModel(request.Model) || request.Model == "Minimax-H3") {
 		allowed["video"] = append(allowed["video"], "mode")
 	}
 	body := map[string]any{"model": request.Model}
@@ -870,7 +879,7 @@ func EstimateCanvasPrice(c *gin.Context) {
 		for _, media := range request.InputMedia {
 			counts[media.Type]++
 		}
-		if counts["image"] > input.images || counts["video"] > input.videos || counts["audio"] > input.audios || len(request.InputMedia) > input.total {
+		if !input.unlimited && (counts["image"] > input.images || counts["video"] > input.videos || counts["audio"] > input.audios || len(request.InputMedia) > input.total) {
 			canvasBridgeError(c, http.StatusBadRequest, "invalid_estimate", fmt.Sprintf("媒体输入超过可执行渠道的共同限制：图片 %d 张、视频 %d 段、音频 %d 段，总计 %d 项", input.images, input.videos, input.audios, input.total))
 			return
 		}
