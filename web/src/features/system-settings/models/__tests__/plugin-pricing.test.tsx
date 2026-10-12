@@ -411,3 +411,229 @@ it('opens task expression pricing when only provider metadata supplies a schema'
   )
   expect(screen.getByRole('textbox', { name: 'seconds' })).toBeVisible()
 })
+
+/** Seedance 渠道的定价元数据，模型名称可以是渠道配置的任意精确 ID。 */
+function seedanceVariant(configured = ''): ModelPricingPluginVariant {
+  return {
+    plugin_key: 'seedance-video',
+    plugin_name: 'Seedance Video',
+    usage_schema: {
+      count: { type: 'number', unit: 'count' },
+      seconds: { type: 'number', unit: 'second' },
+      video_resolution: {
+        enum: ['480p', '720p', '1080p', '2k'],
+      },
+    },
+    configured,
+    effective: configured,
+    compatible: true,
+  }
+}
+
+it('keeps Seedance call and resolution prices separate until the draft is committed', async () => {
+  const original = 'tier( "original", u("count") * 0.25 )'
+  const rules = 'header("x-priority") == "high" ? 2 : 1'
+  const { ref, dirty } = renderEditor(
+    {
+      name: 'arbitrary-channel-video-id',
+      billingMode: 'tiered_expr',
+      billingExpr: original,
+      requestRuleExpr: rules,
+    },
+    [seedanceVariant()]
+  )
+  const save = vi.spyOn(api, 'patch')
+  const user = userEvent.setup()
+  await waitFor(() =>
+    expect(screen.getByRole('tab', { name: 'Per-call' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+  )
+  expect(dirty).toHaveBeenLastCalledWith(false)
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: original,
+    requestRuleExpr: rules,
+  })
+
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  const hdPrice = screen.getByRole('textbox', {
+    name: '1080p Price per second',
+  })
+  await user.clear(hdPrice)
+  await user.type(hdPrice, '0.08')
+  const draft = await ref.current?.commitDraft()
+  expect(draft?.billingExpr).toBe(
+    'u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0)\n' +
+      '  : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0)\n' +
+      '  : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0.08)\n' +
+      '  : tier("2k", u("seconds") * 0)'
+  )
+  expect(draft?.requestRuleExpr).toBe(rules)
+  expect(draft?.billingExpr).not.toContain('u("count")')
+
+  await user.click(screen.getByRole('tab', { name: 'Per-call' }))
+  expect(screen.getByRole('textbox', { name: 'Price per call' })).toHaveValue(
+    '0.25'
+  )
+  expect((await ref.current?.commitDraft())?.billingExpr).toBe(original)
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  expect(
+    screen.getByRole('textbox', { name: '1080p Price per second' })
+  ).toHaveValue('0.08')
+  await user.click(screen.getByRole('tab', { name: 'Expression editor' }))
+  await user.click(screen.getByRole('tab', { name: 'Per-call' }))
+  expect((await ref.current?.commitDraft())?.billingExpr).toBe(original)
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  expect(
+    screen.getByRole('textbox', { name: '1080p Price per second' })
+  ).toHaveValue('0.08')
+  expect(save).not.toHaveBeenCalled()
+})
+
+it.each([
+  {
+    kind: 'per-call without a tier',
+    expression: 'u("count") * 0.35',
+    mode: 'Per-call',
+    priceLabel: 'Price per call',
+    price: '0.35',
+  },
+  {
+    kind: 'the saved token sentinel',
+    expression: 'tier("base", p * 0 + c * 0)',
+    mode: 'Expression editor',
+    priceLabel: 'Billing expression',
+    price: 'tier("base", p * 0 + c * 0)',
+  },
+  {
+    kind: 'equal resolution prices',
+    expression:
+      'u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0.1)\n' +
+      '  : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0.1)\n' +
+      '  : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0.1)\n' +
+      '  : tier("2k", u("seconds") * 0.1)',
+    mode: 'Seconds × resolution',
+    priceLabel: '2K Price per second',
+    price: '0.1',
+  },
+])('opens Seedance $kind without rewriting saved pricing', async (saved) => {
+  const { ref, dirty } = renderEditor(
+    {
+      name: 'saved-channel-model',
+      billingMode: 'tiered_expr',
+      billingExpr: saved.expression,
+    },
+    [seedanceVariant()]
+  )
+  await waitFor(() =>
+    expect(screen.getByRole('tab', { name: saved.mode })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+  )
+  expect(screen.getByRole('textbox', { name: saved.priceLabel })).toHaveValue(
+    saved.price
+  )
+  expect((await ref.current?.commitDraft())?.billingExpr).toBe(saved.expression)
+  expect(dirty).toHaveBeenLastCalledWith(false)
+})
+
+it('starts an unconfigured sole Seedance provider with exclusive per-call pricing', async () => {
+  const { ref } = renderEditor(
+    { name: 'channel-configured-model', billingMode: 'tiered_expr' },
+    [seedanceVariant()]
+  )
+  await waitFor(() =>
+    expect(
+      screen.getByRole('textbox', { name: 'Price per call' })
+    ).toBeVisible()
+  )
+  expect((await ref.current?.commitDraft())?.billingExpr).toBe(
+    'tier("base", u("count") * 0)'
+  )
+})
+
+it('preserves custom Seedance pricing and rules until replacement is confirmed', async () => {
+  const custom = 'tier("custom", u("count") * 0.2 + u("seconds") * 0.04)'
+  const rules = 'param("watermark") == true ? 1.5 : 1'
+  const { ref, dirty } = renderEditor(
+    {
+      name: 'custom-channel-model',
+      billingMode: 'tiered_expr',
+      billingExpr: custom,
+      requestRuleExpr: rules,
+    },
+    [seedanceVariant()]
+  )
+  const user = userEvent.setup()
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Expression editor' })
+    ).toHaveAttribute('aria-selected', 'true')
+  )
+  expect(dirty).toHaveBeenLastCalledWith(false)
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  const dialog = screen.getByRole('alertdialog', {
+    name: 'Switch billing method?',
+  })
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: custom,
+    requestRuleExpr: rules,
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(
+    screen.getByRole('tab', { name: 'Expression editor' })
+  ).toHaveAttribute('aria-selected', 'true')
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  await user.click(screen.getByRole('button', { name: 'Apply billing method' }))
+  const draft = await ref.current?.commitDraft()
+  expect(draft?.requestRuleExpr).toBe(rules)
+  expect(draft?.billingExpr?.match(/u\("seconds"\) \* 0/g)).toHaveLength(4)
+  await user.click(screen.getByRole('tab', { name: 'Expression editor' }))
+  expect(await ref.current?.commitDraft()).toMatchObject({
+    billingExpr: custom,
+    requestRuleExpr: rules,
+  })
+})
+
+it('uses the Seedance editor only for its provider key on a shared model', async () => {
+  const generic = 'tier("base", u("seconds") * 0.4)'
+  const { ref } = renderEditor(
+    {
+      name: 'seedance-looking-model-name',
+      billingMode: 'tiered_expr',
+      billingExpr: generic,
+      pluginBillingExpr: { 'seedance-video': 'tier("base", u("count") * 0.3)' },
+    },
+    [
+      {
+        plugin_key: 'another-video',
+        plugin_name: 'Another Video',
+        usage_schema: { seconds: { type: 'number', unit: 'second' } },
+        configured: '',
+        effective: generic,
+        compatible: true,
+      },
+      seedanceVariant('tier("base", u("count") * 0.3)'),
+    ]
+  )
+  const user = userEvent.setup()
+  expect(screen.queryByRole('tab', { name: 'Seconds × resolution' })).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Seedance Video' }))
+  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+  const input = screen.getByRole('textbox', { name: '2K Price per second' })
+  await user.clear(input)
+  await user.type(input, '0.12')
+  await user.click(screen.getByRole('tab', { name: 'Default' }))
+  await user.click(screen.getByRole('tab', { name: 'Seedance Video' }))
+  expect(input).toHaveValue('0.12')
+  const draft = await ref.current?.commitDraft()
+  expect(draft?.billingExpr).toBe(generic)
+  expect(draft?.pluginBillingExpr?.['seedance-video']).toContain(
+    'tier("2k", u("seconds") * 0.12)'
+  )
+  expect(draft?.pluginBillingExpr?.['seedance-video']).not.toContain(
+    'u("count")'
+  )
+})

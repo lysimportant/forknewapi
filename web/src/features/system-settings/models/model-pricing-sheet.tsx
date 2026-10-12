@@ -110,6 +110,10 @@ import {
 } from './model-pricing-core'
 import { PriceInput, PriceLane } from './model-pricing-inputs'
 import { formatPricingNumber } from './pricing-format'
+import {
+  DEFAULT_SEEDANCE_BILLING_EXPR,
+  SeedanceUsagePricingEditor,
+} from './seedance-usage-pricing-editor'
 import { TaskPluginPricingEditor } from './task-plugin-pricing-editor'
 import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
 import { TieredPricingEditor } from './tiered-pricing-editor'
@@ -325,6 +329,11 @@ export const ModelPricingEditorPanel = forwardRef<
       ),
     [pricingModels]
   )
+  const livePluginVariants =
+    pluginVariants?.filter((variant) => !variant.stale) ?? []
+  const seedanceDefault =
+    livePluginVariants.length === 1 &&
+    livePluginVariants[0].plugin_key === 'seedance-video'
   const taskUsageSchema =
     usageSchema ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??
@@ -332,19 +341,19 @@ export const ModelPricingEditorPanel = forwardRef<
   const taskUsageExamples =
     usageExamplesByModel.get(watchedValues.name.trim()) ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_examples
-  const defaultTaskBillingExpr = useMemo(
-    () =>
+  const defaultTaskBillingExpr = useMemo(() => {
+    if (seedanceDefault) return DEFAULT_SEEDANCE_BILLING_EXPR
+    if (!taskUsageSchema) return ''
+    return generateTaskExprFromConfig(
+      createDefaultTaskVisualConfig(taskUsageSchema),
       taskUsageSchema
-        ? generateTaskExprFromConfig(
-            createDefaultTaskVisualConfig(taskUsageSchema),
-            taskUsageSchema
-          )
-        : '',
-    [taskUsageSchema]
-  )
+    )
+  }, [taskUsageSchema, seedanceDefault])
   const resolvedBillingExpr =
     taskUsageSchema &&
-    (!billingExpr || billingExpr === DEFAULT_TOKEN_BILLING_EXPR)
+    (!billingExpr ||
+      (billingExpr === DEFAULT_TOKEN_BILLING_EXPR &&
+        (!seedanceDefault || !editData?.billingExpr)))
       ? defaultTaskBillingExpr
       : billingExpr
 
@@ -807,8 +816,11 @@ export const ModelPricingEditorPanel = forwardRef<
     [form, validatePricingValues, buildSubmitData]
   )
 
+  const UsagePricingEditor = seedanceDefault
+    ? SeedanceUsagePricingEditor
+    : TaskUsagePricingEditor
   const expressionEditor = taskUsageSchema ? (
-    <TaskUsagePricingEditor
+    <UsagePricingEditor
       currency={currency}
       modelName={watchedValues.name.trim()}
       isVideo={isVideoPricingModel(

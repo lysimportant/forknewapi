@@ -7,7 +7,7 @@ export const meta = {
     en: "Seedance video generation through the unified video API",
     zh: "通过统一视频 API 对接 Seedance 视频生成",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   baseUrl: "https://cnd-coo-new.pages.dev",
   models: [],
@@ -23,8 +23,23 @@ export const meta = {
       unitLabel: { en: "video", zh: "个" },
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Video generation unit price", zh: "视频生成单价" },
+    },
+    video_resolution: {
+      enum: ["480p", "720p", "1080p", "2k"],
+      description: { en: "Output video resolution", zh: "输出视频分辨率" },
+      enumLabels: { "2k": { en: "2K", zh: "2K" } },
+    },
   },
-  usageExamples: [{ label: "1 video", facts: { count: 1 } }],
+  usageExamples: [
+    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
+    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
+    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
+    { label: "2K · 5s", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
+  ],
 };
 
 /** 与宿主 MaxTaskDurationSeconds 保持一致的安全上限，不代表模型支持的时长。 */
@@ -172,13 +187,25 @@ export function parseSubmitResponse(ctx, response) {
   return parsed;
 }
 
-/** 按单个视频冻结预扣用量；管理员设置单价，倍率阶段不重复计费。 */
+/**
+ * 返回按次计量；只有时长和四档清晰度均明确时才提供按秒计量，不猜测上游默认值。
+ * 按秒方案的每个价格分支始终读取 seconds（含零单价），缺少完整计量时宿主在预扣前返回 400。
+ * video_resolution 独立于请求字段，避免宿主在按次请求归一化前拒绝上游清晰度；倍率阶段不叠加用量计费。
+ */
 export function extractUsage(ctx) {
-  upstreamBody(ctx.requestBody, ctx.upstreamModel || ctx.model);
-  return ctx.usagePurpose === "billing_ratios" ? {} : { count: 1 };
+  const body = upstreamBody(ctx.requestBody, ctx.upstreamModel || ctx.model);
+  if (ctx.usagePurpose === "billing_ratios") return {};
+  const facts = { count: 1 };
+  const rawResolution = typeof body.resolution === "string" ? body.resolution.trim().toLowerCase() : "";
+  const resolution = ["480", "720", "1080"].includes(rawResolution) ? rawResolution + "p" : rawResolution;
+  if (body.duration !== undefined && meta.usageSchema.video_resolution.enum.includes(resolution)) {
+    facts.seconds = body.duration;
+    facts.video_resolution = resolution;
+  }
+  return facts;
 }
 
-/** 成功生成一个视频结算一次；失败退款由宿主负责，不采用上游积分或金额。 */
+/** 成功返回一个视频；完成响应无已确认实际时长，宿主沿用冻结的时长、清晰度和表达式。失败由宿主退款。 */
 export function extractUsageOnComplete(_task, result) {
   return result && result.status === "SUCCESS" ? { count: 1 } : null;
 }

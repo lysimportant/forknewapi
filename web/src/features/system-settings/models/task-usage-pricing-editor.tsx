@@ -87,6 +87,8 @@ import { TaskPricingMatrix } from './task-pricing-matrix'
 
 /** 视频模式只改变浏览入口，价格仍按原始 usage schema 保存。 */
 type TaskUsagePricingEditorProps = {
+  /** 复用原始表达式及预览能力，隐藏通用加法价格表入口。 */
+  expressionOnly?: boolean
   isVideo?: boolean
   modelName?: string
   currency?: PricingCurrency
@@ -318,8 +320,9 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
 ) {
   const { t, i18n } = useTranslation()
   const [editorMode, setEditorMode] = useState<EditorMode>(() =>
-    props.billingExpr &&
-    !tryParseTaskMatrixConfig(props.billingExpr, props.usageSchema)
+    props.expressionOnly ||
+    (props.billingExpr &&
+      !tryParseTaskMatrixConfig(props.billingExpr, props.usageSchema))
       ? 'raw'
       : 'visual'
   )
@@ -485,35 +488,37 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
         destructive={!rawMatrix}
         handleConfirm={handleConfirmVisualSwitch}
       />
-      <div className='grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end'>
-        <Field className='gap-2'>
-          <FieldLabel>{t('Editor mode')}</FieldLabel>
-          <Select
-            items={[
-              { value: 'visual', label: t('Visual editor') },
-              { value: 'raw', label: t('Expression editor') },
-            ]}
-            value={editorMode}
-            onValueChange={(value) =>
-              value !== null && handleModeChange(value as EditorMode)
-            }
-          >
-            <SelectTrigger
-              aria-label={t('Editor mode')}
-              className='w-full sm:w-56'
-              size='sm'
+      {!props.expressionOnly && (
+        <div className='grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end'>
+          <Field className='gap-2'>
+            <FieldLabel>{t('Editor mode')}</FieldLabel>
+            <Select
+              items={[
+                { value: 'visual', label: t('Visual editor') },
+                { value: 'raw', label: t('Expression editor') },
+              ]}
+              value={editorMode}
+              onValueChange={(value) =>
+                value !== null && handleModeChange(value as EditorMode)
+              }
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent alignItemWithTrigger={false}>
-              <SelectGroup>
-                <SelectItem value='visual'>{t('Visual editor')}</SelectItem>
-                <SelectItem value='raw'>{t('Expression editor')}</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-      </div>
+              <SelectTrigger
+                aria-label={t('Editor mode')}
+                className='w-full sm:w-56'
+                size='sm'
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}>
+                <SelectGroup>
+                  <SelectItem value='visual'>{t('Visual editor')}</SelectItem>
+                  <SelectItem value='raw'>{t('Expression editor')}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+      )}
 
       <Alert>
         <AlertDescription className='text-xs'>
@@ -705,7 +710,7 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
                   <code>header(name)</code>, <code>param(path)</code>,{' '}
                   <code>effort</code>
                 </div>
-                {!rawMatrix ? (
+                {!rawMatrix && !props.expressionOnly ? (
                   <div>
                     {t(
                       'This expression cannot be represented by the price table. You can switch to visual editing by confirming that the expression will be discarded.'

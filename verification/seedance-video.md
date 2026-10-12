@@ -35,3 +35,21 @@
 - 新插件 oxfmt 与 oxlint 通过。首次集中回归的 controller 全包超过 180 秒时限；延长至 600 秒后执行 202.001s，仅 `TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner` 失败，日志出现 SQLite `SQLITE_BUSY`，成功请求数为 0。随后 `go test -mod=readonly ./controller -run '^TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner$' -count=1 -timeout=120s` 通过（3.367s），完整 `go test -mod=readonly ./controller -count=1 -timeout=600s` 复查通过（192.262s）。保留首次失败证据，未修改账户删除实现，未认定为既有问题。
 - 最终生产 diff、Go 格式及敏感信息检查通过。无 UI、依赖、登录认证或数据库结构变更；此前只读前端检查中的权限受限操作员用例超时，未在本轮修改其实现。本轮相关 Go 包最终验证通过，供应商收费生成、真实内容下载和实际退款入账仍未实测。
 - 交付分支为 `main`，远端为 `fork`（`https://github.com/lysimportant/forknewapi.git`），任务带注释 Tag 为 `v2026.10.11-seedance-channel-routing`；不向官方 `origin` 推送。提交前远端 `main` 为基线 `8602933e6`，Tag 尚未使用。仅清理本任务两个隔离数据库容器，不操作其他容器或业务数据。
+
+## 可选计费方案（2026-10-12）
+
+- P1：为 `seedance-video` 提供互斥的“按次”和“秒数 × 清晰度”售价编辑。按次一个单价，按秒提供 480p、720p、1080p、2K 四档每秒单价；默认模型和插件独立售价使用同一入口。验收包括模式恢复、单价保存、旧价格保持、零价缺计量拒绝、成功冻结结算、失败退款和 PC 界面交互。不扩展其他供应商协议，不调用付费生成。
+- 本轮基线：`main@d9f0c91c2`，跟踪 `fork/main`，工作区干净；Go 1.26.0、Node 24.12.0，依赖已存在，Bun 不在 PATH。基线 `go test -mod=readonly ./plugins ./pkg/billingexpr -count=1 -timeout=180s` 通过；前端原 forks 池只输出 RUN，恢复为 threads 后原 `plugin-pricing.test.tsx` 7/7 通过，未修改 Vitest 配置。
+- 插件升至 1.1.0，增加 `seconds`（second）和独立计费枚举 `video_resolution`。后者避免宿主递归枚举校验误拒绝旧按次请求的 `resolution`；上游仍收到请求原值。仅将 480/720/1080 与对应 p 后缀、大小写 2K 归一化计费，不推定像素尺寸、模型默认值或上游支持范围。
+- `count=1` 始终保留；只有合法时长和四档清晰度同时明确时才提供秒数事实。按秒每个表达式叶子包含 `u("seconds") * price`，包括零价；缺时长、缺清晰度或未知清晰度会在宿主预扣及出站前求值失败，而旧按次表达式继续有效。`billing_ratios` 仍为空，不重复叠加两种用量。
+- 按秒使用请求时长，上游响应没有已确认的实际时长合同。成功 hook 仅返回 count，宿主将其合并到被冻结的时长、清晰度与售价表达式；在途任务不因后来改价重计。失败仍由既有宿主退款路径处理。
+- 沿用模型表达式与插件售价覆盖存储，不增加数据库字段、迁移、依赖或计费引擎。插件元数据人工复核：两个数值字段均为“视频生成单价 / Video generation unit price”，单位分别为 count/second，枚举为“输出视频分辨率 / Output video resolution”，不嵌数字价格。
+- 回滚：暂停该插件新提交，等在途任务结束；先将按秒售价切回按次并保存，再回退本次应用提交。保留渠道和任务记录；旧插件源码不声明秒数/清晰度事实，不能继续使用本轮新增按秒表达式。
+- 页面入口：系统管理 → 计费与支付 → 模型定价 → 编辑已绑定 `seedance-video` 的模型。默认页和该插件独立售价页均提供“每次调用 / 按秒 × 清晰度”Tab，另保留表达式编辑器。按秒售价是请求时长乘对应清晰度的每秒单价，仍应用现有组倍率和请求规则；配置四档不表示上游模型支持四档。
+- UI 复用：原 `TaskUsagePricingEditor` 允许多个数值用量相加，无法直接表达两种互斥方案，因此新增 Seedance 业务组合；复用 `PricingAmountInput`、Tabs、Field、`ConfirmDialog` 和原编辑器的表达式、预览能力。按精确插件 key 选择入口，不按模型名称猜测。未配置默认按次，旧公式打开不改写，复杂公式保留在高级编辑器，替换前确认；模式草稿各自保留，只有保存才生效。
+- Go 验证通过：`go test -mod=readonly ./plugins -run TestSeedance -count=1 -timeout=180s`；`go test -mod=readonly ./plugins ./pkg/billingexpr ./relay/channel/task/jsplugin ./service ./relay -count=1 -timeout=180s`；`go build -mod=readonly ./...`；`go vet -mod=readonly ./plugins ./pkg/billingexpr ./relay/channel/task/jsplugin ./service ./relay`。真实 JS 引擎、宿主适配器和本地 HTTP 上游覆盖四档、入口别名、小数秒、原值透传、未知尺寸按次、零价缺计量拒绝及冻结事实结算；既有宿主退款回归通过，不等于真实供应商失败或业务账户退款入账验收。
+- 前端回归：`node node_modules/vitest/vitest.mjs run src/features/system-settings/models/__tests__/plugin-pricing.test.tsx --pool=threads --maxWorkers=1 --testTimeout=10000 --reporter=verbose`，14/14 通过；`node node_modules/@typescript/native-preview/bin/tsgo -b` 全项目类型检查通过；修改的五份 TSX 文件格式与 oxlint 检查通过。七语言各新增六个 key，经技能要求的插入脚本和 `node scripts/sync-i18n.mjs` 同步，临时脚本不交付。插件 oxfmt/oxlint 通过。
+- 生产构建：在 `web/` 执行 `node node_modules/@rsbuild/core/bin/rsbuild.js build`，10.1s 成功。Bun 不在 PATH，采用项目已安装工具的 Node CLI，未修改依赖或锁文件。
+- PC 浏览器 smoke：`node .local-tests/seedance-pricing/browser-smoke.cjs`，中文浅色 1440×1000、英文深色 1280×1000 均通过。使用真实页面和本地 API fixture，覆盖两套草稿切换、四档输入、默认按秒与插件按次独立保存、PATCH 版本及精确模型名、刷新恢复、复杂公式保留和取消替换；无未知接口或 pageErrors，外网请求被阻断。截图已人工检查，证据留在忽略的 `.local-tests/seedance-pricing/evidence/`，没有真实账号或付费调用。
+- 待跟进：开发模式浏览器仍输出同一种 Base UI `nativeButton` 组合告警，定位为共享 `TaskBillingPreview → ComboboxInput → InputGroupButton → Button`；本轮未改共享组件。原七个定价基线用例没有留存同告警的运行证据，因此不认定为已证实的基线问题，也不声称控制台零错误；此次保存、恢复和切换断言均通过。
+- 检查点：本轮实现、相关回归、类型检查和构建已完成。无数据库行为、依赖或宿主合同变化；不运行本轮不涉及的三数据库矩阵。收费上游生成、实际下载及供应商实际时长仍未验收。交付 `main` 至 `fork`（`https://github.com/lysimportant/forknewapi.git`），带注释 Tag `v2026.10.12-seedance-billing-modes`。

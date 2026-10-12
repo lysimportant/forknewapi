@@ -42,6 +42,10 @@ import {
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 
 import { SettingsSwitchField } from '../components/settings-form-layout'
+import {
+  DEFAULT_SEEDANCE_BILLING_EXPR,
+  SeedanceUsagePricingEditor,
+} from './seedance-usage-pricing-editor'
 import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
 
 type TaskPluginPricingEditorProps = {
@@ -143,6 +147,10 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
       </TabsContent>
       {props.variants.map((variant) => {
         const key = variant.plugin_key
+        const UsagePricingEditor =
+          key === 'seedance-video'
+            ? SeedanceUsagePricingEditor
+            : TaskUsagePricingEditor
         const separate = Object.hasOwn(props.expressions, key)
         if (variant.stale) {
           return (
@@ -219,13 +227,16 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
                     delete next[key]
                     return next
                   }
-                  next[key] =
-                    usesExpression && modelCompatible
-                      ? props.modelExpression
-                      : generateTaskExprFromConfig(
-                          createDefaultTaskVisualConfig(variant.usage_schema),
-                          variant.usage_schema
-                        )
+                  if (usesExpression && modelCompatible) {
+                    next[key] = props.modelExpression
+                  } else if (key === 'seedance-video') {
+                    next[key] = DEFAULT_SEEDANCE_BILLING_EXPR
+                  } else {
+                    next[key] = generateTaskExprFromConfig(
+                      createDefaultTaskVisualConfig(variant.usage_schema),
+                      variant.usage_schema
+                    )
+                  }
                   return next
                 })
               }
@@ -245,7 +256,7 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
               </Alert>
             )}
             {separate ? (
-              <TaskUsagePricingEditor
+              <UsagePricingEditor
                 currency={props.currency}
                 modelName={props.modelName}
                 isVideo={props.isVideo}

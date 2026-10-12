@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -184,6 +185,117 @@ func TestSeedanceVideoPluginContracts(t *testing.T) {
 	})
 }
 
+// TestSeedanceVideoBillingSchemes 验证两种售价、清晰度归一化、缺失计量拒绝和冻结事实结算，不调用收费接口。
+func TestSeedanceVideoBillingSchemes(t *testing.T) {
+	source, err := plugins.Source("seedance-video")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "second", plugin.Meta.UsageSchema["seconds"].Unit)
+	assert.Equal(t, []string{"480p", "720p", "1080p", "2k"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
+
+	const perCall = `u("count") * 0.35`
+	const perSecond = `u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0.01) : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0.02) : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0.03) : tier("2k", u("seconds") * 0.04)`
+	const zeroPrice = `u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0) : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0) : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0) : tier("2k", u("seconds") * 0)`
+	for _, tc := range []struct {
+		name       string
+		fields     map[string]any
+		resolution string
+		cost       float64
+	}{
+		{name: "480p", fields: map[string]any{"duration": 2.5, "resolution": "480p"}, resolution: "480p", cost: 0.025},
+		{name: "720p", fields: map[string]any{"duration": 2.5, "resolution": "720p"}, resolution: "720p", cost: 0.05},
+		{name: "1080p", fields: map[string]any{"duration": 2.5, "resolution": "1080p"}, resolution: "1080p", cost: 0.075},
+		{name: "2K", fields: map[string]any{"duration": 2.5, "resolution": "2K"}, resolution: "2k", cost: 0.1},
+		{name: "480入口别名", fields: map[string]any{"seconds": "2.5", "size": "480"}, resolution: "480p", cost: 0.025},
+		{name: "720无后缀", fields: map[string]any{"duration": 2.5, "resolution": "720"}, resolution: "720p", cost: 0.05},
+		{name: "1080无后缀", fields: map[string]any{"duration": 2.5, "resolution": "1080"}, resolution: "1080p", cost: 0.075},
+		{name: "2K去空白", fields: map[string]any{"duration": 2.5, "resolution": " 2K "}, resolution: "2k", cost: 0.1},
+		{name: "旧按次无计量"},
+		{name: "缺时长", fields: map[string]any{"resolution": "1080p"}},
+		{name: "缺清晰度", fields: map[string]any{"duration": 2.5}},
+		{name: "未知清晰度仍按次", fields: map[string]any{"duration": 2.5, "resolution": "540p"}},
+		{name: "不猜测像素尺寸", fields: map[string]any{"duration": 2.5, "size": "2048x1080"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := map[string]any{"model": "我的视频模型", "prompt": "A calm ocean wave"}
+			for field, value := range tc.fields {
+				request[field] = value
+			}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "我的视频模型", ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://channel.example", UpstreamModelName: "Xseadanco2.0"},
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_billing_fixture"},
+			}
+			adaptor := taskplugin.New(plugin)
+			adaptor.Init(info)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			c.Set("resolved_task_model", info.OriginModelName)
+			c.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{Plugin: plugin, Protocol: "openai_video", Model: info.OriginModelName, ChannelScoped: true})
+			c.Set(jsplugin.ContextKeyProtocolRequest, jsplugin.ProtocolRequestContext{
+				Model: info.OriginModelName, Protocol: "openai_video", RouteRequestContext: jsplugin.RouteRequestContext{Body: map[string]any{"kind": "json", "value": request}},
+			})
+			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.NoError(t, err)
+			expectedFacts := map[string]any{"count": float64(1)}
+			if tc.resolution != "" {
+				expectedFacts["seconds"] = 2.5
+				expectedFacts["video_resolution"] = tc.resolution
+			}
+			assert.Equal(t, expectedFacts, facts)
+			ratios, err := adaptor.EstimateBillingValidated(c, info)
+			require.NoError(t, err)
+			assert.Empty(t, ratios)
+			body, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			var upstream map[string]any
+			require.NoError(t, common.DecodeJson(body, &upstream))
+			if value, exists := tc.fields["resolution"]; exists {
+				assert.Equal(t, value, upstream["resolution"])
+			} else if value, exists := tc.fields["size"]; exists {
+				assert.Equal(t, value, upstream["resolution"])
+			}
+			cost, _, err := billingexpr.RunExprWithRequest(perCall, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+			require.NoError(t, err)
+			assert.Equal(t, 0.35, cost)
+			expression := perCall
+			for _, candidate := range []string{perSecond, zeroPrice} {
+				cost, _, err = billingexpr.RunExprWithRequest(candidate, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+				if tc.resolution == "" {
+					require.Error(t, err, "缺失计量在零价分支也必须拒绝")
+					continue
+				}
+				require.NoError(t, err)
+				if candidate == perSecond {
+					assert.InDelta(t, tc.cost, cost, 1e-10)
+					expression = candidate
+				} else {
+					assert.Zero(t, cost)
+				}
+			}
+			// 完成响应的未确认时长不进入计量；结算沿用快照中的请求时长、清晰度和原售价。
+			snapshot := &billingexpr.BillingSnapshot{ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 2, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true, UsageFacts: facts}
+			task := &model.Task{Properties: model.Properties{OriginModelName: info.OriginModelName, UpstreamModelName: "Xseadanco2.0"}}
+			response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+			completed, err := adaptor.ParseTaskResult(task, response, []byte(`{"status":"succeeded","video_url":"https://cdn.example/video.mp4","duration":9999,"resolution":"540p"}`))
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{"count": float64(1)}, completed.UsageFacts)
+			settled, merged, err := service.EvaluateTaskCompletionUsage(snapshot, completed.UsageFacts)
+			require.NoError(t, err)
+			assert.Equal(t, expectedFacts, merged)
+			assert.Equal(t, expectedFacts, snapshot.UsageFacts)
+			wantCost := 0.35
+			if tc.resolution != "" {
+				wantCost = tc.cost
+			}
+			assert.InDelta(t, wantCost*500000, settled.ActualQuotaBeforeGroup, 1e-7)
+			assert.Equal(t, common.QuotaRound(wantCost*1000000), settled.ActualQuotaAfterGroup)
+			assert.Nil(t, settled.Clamp)
+		})
+	}
+}
+
 // TestSeedanceVideoHostFlow 用本地上游验证映射名称、创建幂等、完成用量及无凭据内容描述，不调用收费接口。
 func TestSeedanceVideoHostFlow(t *testing.T) {
 	source, err := plugins.Source("seedance-video")
@@ -207,6 +319,7 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 					}
 					assert.Equal(t, upstream, body["model"])
 					assert.Equal(t, false, body["generate_audio"])
+					assert.Equal(t, "2K", body["resolution"])
 					_, writeErr := io.WriteString(w, `{"code":0,"success":true,"task_id":"vid-fixture","status":"processing","next_poll_seconds":10}`)
 					assert.NoError(t, writeErr)
 				case "GET /gateway/v1/tasks/vid-fixture":
@@ -230,14 +343,14 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 			c.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{Plugin: plugin, Protocol: "openai_video", Model: info.OriginModelName, ChannelScoped: true})
 			c.Set(jsplugin.ContextKeyProtocolRequest, jsplugin.ProtocolRequestContext{
 				Model: info.OriginModelName, Protocol: "openai_video", RouteRequestContext: jsplugin.RouteRequestContext{Body: map[string]any{
-					"kind": "json", "value": map[string]any{"model": info.OriginModelName, "prompt": "A calm ocean wave", "duration": 6, "generate_audio": false},
+					"kind": "json", "value": map[string]any{"model": info.OriginModelName, "prompt": "A calm ocean wave", "duration": 6, "resolution": "2K", "generate_audio": false},
 				}},
 			})
 			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 			assert.True(t, adaptor.SkipSubmitRetry())
 			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 			require.NoError(t, err)
-			assert.Equal(t, map[string]any{"count": float64(1)}, facts)
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "2k"}, facts)
 			ratios, err := adaptor.EstimateBillingValidated(c, info)
 			require.NoError(t, err)
 			assert.Empty(t, ratios)
