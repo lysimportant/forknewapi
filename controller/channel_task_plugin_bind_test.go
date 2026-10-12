@@ -40,6 +40,10 @@ func setupTaskPluginBindChannelTest(t *testing.T) {
 		common.RedisEnabled = previousRedisEnabled
 		model.DB = originalDB
 		model.LOG_DB = originalLogDB
+		if originalDB != nil {
+			model.InitChannelCache()
+		}
+		assert.NoError(t, sqlDB.Close())
 	})
 }
 
@@ -163,4 +167,47 @@ export function parseTaskResult() { return {}; }
 	encoded, err := common.Marshal(audits)
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"base_url_source":"plugin_default"`)
+}
+
+// TestAddChannelRefreshesTaskPluginModelAliases 验证新建渠道后两种缓存模式均立即识别插件模型。
+func TestAddChannelRefreshesTaskPluginModelAliases(t *testing.T) {
+	for _, memoryCache := range []bool{false, true} {
+		t.Run(fmt.Sprintf("memory_cache_%t", memoryCache), func(t *testing.T) {
+			previousMemoryCache := common.MemoryCacheEnabled
+			common.MemoryCacheEnabled = memoryCache
+			t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCache })
+			setupTaskPluginBindChannelTest(t)
+			const key = "channel-bind-alias-refresh"
+			source := `
+export const meta = {apiVersion: 1, key: "channel-bind-alias-refresh", name: "Bind", version: "1.0.0", author: {name: "Test"}, models: [], modelRouting: "channel", fetchMode: "per_task", protocols: ["openai_video"]};
+export const protocols = {openai_video: {
+  decodeRequest(ctx) { return {kind: "submit", model: ctx.model, requestBody: ctx.body.value}; },
+  render(ctx, task) { return task; }
+}};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+export function listArtifacts() { return []; }
+export function buildContentRequest() { return {}; }
+`
+			_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+			require.NoError(t, err)
+			t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(key) })
+
+			generation := jsplugin.DefaultRegistry.Generation()
+			model.InitChannelCache()
+			_, found := model.ResolveTaskModelAlias(generation, "new-channel-model")
+			require.False(t, found)
+
+			body := `{"mode":"single","channel":{"type":61,"name":"plugin-channel","key":"sk","models":"new-channel-model","group":"default","base_url":"https://example.com","setting":"{\"task_plugin_key\":\"channel-bind-alias-refresh\"}"}}`
+			response := postAddChannel(t, 1, common.RoleRootUser, body)
+			require.Contains(t, response.Body.String(), `"success":true`)
+
+			target, found := model.ResolveTaskModelAlias(generation, "new-channel-model")
+			require.True(t, found)
+			assert.Equal(t, key, target.PluginKey)
+			assert.True(t, target.ChannelScoped)
+		})
+	}
 }

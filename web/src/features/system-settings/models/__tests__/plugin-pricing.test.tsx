@@ -193,6 +193,166 @@ it('keeps provider drafts across tabs and saves nested expressions with the mode
   await waitFor(() => expect(saveButton).toBeEnabled())
 })
 
+it.each([
+  { kind: 'unconfigured', expression: '' },
+  {
+    kind: 'previously configured',
+    expression: 'tier( "legacy", u("count") * 0.25 )',
+  },
+])(
+  'shows and saves $kind channel-routed Seedance pricing without provider variants',
+  async ({ expression }) => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'administrator', role: 100 })
+    usePricingPreferencesStore.setState({ currency: 'USD' })
+    const values = expression
+      ? {
+          'billing_setting.billing_mode': 'tiered_expr',
+          'billing_setting.billing_expr': expression,
+        }
+      : {}
+    const snapshot: ModelPricingConfig = {
+      entries: [
+        {
+          model_name: 'LLseadanco2.5',
+          version: 'channel-routed-model',
+          configured: values,
+          effective: values,
+          task_plugin_key: 'seedance-video',
+          usage_schema: {
+            count: { type: 'number', unit: 'count' },
+            seconds: { type: 'number', unit: 'second' },
+            video_resolution: { enum: ['480p', '720p', '1080p', '2k'] },
+          },
+        },
+      ],
+      options: pricingOptions({}),
+      empty_version: 'empty',
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/option/model_pricing') {
+        return { data: { success: true, data: snapshot } }
+      }
+      return { data: { success: true, data: [], vendors: [] } }
+    })
+    const save = vi.spyOn(api, 'patch').mockResolvedValue({
+      data: { success: true },
+    })
+    client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelPricingPanel modelName='LLseadanco2.5' />
+      </QueryClientProvider>
+    )
+
+    const perCallTab = await screen.findByRole('tab', { name: 'Per-call' })
+    expect(perCallTab).toHaveAttribute('aria-selected', 'true')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+    for (const resolution of ['480p', '720p', '1080p', '2K']) {
+      expect(
+        screen.getByRole('textbox', {
+          name: `${resolution} Price per second`,
+        })
+      ).toBeVisible()
+    }
+    await user.click(perCallTab)
+    await user.click(screen.getByRole('button', { name: 'Save model prices' }))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith('/api/option/model_pricing', {
+        changes: [
+          expect.objectContaining({
+            model_name: 'LLseadanco2.5',
+            expected_version: 'channel-routed-model',
+            pricing: expect.objectContaining({
+              'billing_setting.billing_mode': 'tiered_expr',
+              'billing_setting.billing_expr':
+                expression || 'tier("base", u("count") * 0)',
+            }),
+          }),
+        ],
+      })
+    )
+  }
+)
+
+it.each(['another-video', 'seedance-video-preview', undefined])(
+  'keeps generic task pricing and its saved expression for plugin key %s',
+  async (pluginKey) => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'administrator', role: 100 })
+    usePricingPreferencesStore.setState({ currency: 'USD' })
+    const expression =
+      'tier( "legacy", u("count") * 0.25 + u("seconds") * 0.04 )'
+    const values = {
+      'billing_setting.billing_mode': 'tiered_expr',
+      'billing_setting.billing_expr': expression,
+    }
+    const snapshot: ModelPricingConfig = {
+      entries: [
+        {
+          model_name: 'seedance-looking-model-name',
+          version: 'generic-model',
+          configured: values,
+          effective: values,
+          task_plugin_key: pluginKey,
+          usage_schema: seedanceVariant().usage_schema,
+        },
+      ],
+      options: pricingOptions({}),
+      empty_version: 'empty',
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/option/model_pricing') {
+        return { data: { success: true, data: snapshot } }
+      }
+      return { data: { success: true, data: [], vendors: [] } }
+    })
+    const save = vi.spyOn(api, 'patch').mockResolvedValue({
+      data: { success: true },
+    })
+    client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ModelPricingPanel modelName='seedance-looking-model-name' />
+      </QueryClientProvider>
+    )
+
+    expect(
+      await screen.findByRole('combobox', { name: 'Editor mode' })
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('tab', { name: 'Seconds × resolution' })
+    ).not.toBeInTheDocument()
+    await userEvent
+      .setup()
+      .click(screen.getByRole('button', { name: 'Save model prices' }))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith('/api/option/model_pricing', {
+        changes: [
+          expect.objectContaining({
+            model_name: 'seedance-looking-model-name',
+            expected_version: 'generic-model',
+            pricing: expect.objectContaining(values),
+          }),
+        ],
+      })
+    )
+  }
+)
+
 it('keeps long provider names accessible while allowing the tabs to wrap', () => {
   const longName =
     'Provider with a long international service name and a regional deployment designation'

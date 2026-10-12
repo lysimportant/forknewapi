@@ -128,6 +128,7 @@ type ModelPricingSheetProps = {
   isSaving?: boolean
   usageSchema?: BillingUsageSchema
   pluginVariants?: ModelPricingPluginVariant[]
+  taskPluginKey?: string
   onDirtyChange?: (dirty: boolean) => void
 }
 
@@ -158,6 +159,7 @@ export const ModelPricingSheet = forwardRef<
     isSaving,
     usageSchema,
     pluginVariants,
+    taskPluginKey,
     onDirtyChange,
   },
   ref
@@ -181,6 +183,7 @@ export const ModelPricingSheet = forwardRef<
           editData={editData}
           usageSchema={usageSchema}
           pluginVariants={pluginVariants}
+          taskPluginKey={taskPluginKey}
           onDirtyChange={onDirtyChange}
           onSave={onSave}
           isSaving={isSaving}
@@ -202,6 +205,7 @@ export const ModelPricingEditorPanel = forwardRef<
     isSaving,
     usageSchema,
     pluginVariants,
+    taskPluginKey,
     onDirtyChange,
     embedded = false,
     scrollHeader,
@@ -332,8 +336,9 @@ export const ModelPricingEditorPanel = forwardRef<
   const livePluginVariants =
     pluginVariants?.filter((variant) => !variant.stale) ?? []
   const seedanceDefault =
-    livePluginVariants.length === 1 &&
-    livePluginVariants[0].plugin_key === 'seedance-video'
+    taskPluginKey === 'seedance-video' ||
+    (livePluginVariants.length === 1 &&
+      livePluginVariants[0].plugin_key === 'seedance-video')
   const taskUsageSchema =
     usageSchema ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??

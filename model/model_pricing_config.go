@@ -39,6 +39,8 @@ type ModelPricingEntry struct {
 	Version        string                               `json:"version"`
 	Configured     PricingValues                        `json:"configured"`
 	UsageSchema    map[string]jsplugin.UsageFieldSchema `json:"usage_schema,omitempty"`
+	// TaskPluginKey 标识当前模型唯一绑定的任务插件；共享模型通过 PluginVariants 区分。
+	TaskPluginKey string `json:"task_plugin_key,omitempty"`
 }
 
 type ModelPricingPluginVariant struct {
@@ -273,9 +275,13 @@ func GetModelPricingSnapshot(names []string) (*ModelPricingSnapshot, error) {
 		entry.BillingDetails = ResolveLegacyBillingDetails(name, entry.Effective, configured)
 		if plugin, ok := generation.GetByModel(name); ok {
 			entry.UsageSchema, _ = plugin.Meta.UsageForModel(name)
+			if !generation.SharedModel(name) {
+				entry.TaskPluginKey = plugin.Meta.Key
+			}
 		} else if target, ok := ResolveTaskModelAlias(generation, name); ok {
 			if plugin, ok := generation.Get(target.PluginKey); ok {
 				entry.UsageSchema, _ = plugin.Meta.UsageForModel(target.Declared)
+				entry.TaskPluginKey = target.PluginKey
 			}
 		}
 		plugins := generation.PluginsByModel(name)

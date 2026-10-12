@@ -96,6 +96,7 @@ func TestTaskModelAliasChannelRouting(t *testing.T) {
 		{"alias-channel-alpha", `[]`, `modelRouting:"channel",`},
 		{"alias-channel-beta", `[]`, `modelRouting:"channel",`},
 		{"alias-declared", `["global-model","declared-a","declared-b"]`, ""},
+		{"alias-shared-declared", `["global-model"]`, ""},
 	} {
 		source := fmt.Sprintf(`
 export const meta = {
@@ -131,8 +132,12 @@ export function buildContentRequest(){return {};}
 				t.Skip("isolated test database DSN is not configured")
 			}
 			t.Setenv("TASK_ALIAS_TEST_DSN", dsn)
-			db, _, err := chooseDB("TASK_ALIAS_TEST_DSN", false)
+			db, dbType, err := chooseDB("TASK_ALIAS_TEST_DSN", false)
 			require.NoError(t, err)
+			previousType := common.MainDatabaseType()
+			common.SetMainDatabaseType(dbType)
+			initCol()
+			t.Cleanup(func() { common.SetMainDatabaseType(previousType); initCol() })
 			db.Config.NamingStrategy = schema.NamingStrategy{TablePrefix: fmt.Sprintf("task_alias_test_%d_", time.Now().UnixNano())}
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
@@ -214,20 +219,30 @@ export function buildContentRequest(){return {};}
 			assert.Equal(t, channels[6].Key, saved.Key)
 			assert.Equal(t, channels[6].Setting, saved.Setting)
 			assert.Equal(t, channels[6].Models, saved.Models)
-			if dialect == "sqlite" {
-				require.NoError(t, db.AutoMigrate(&Option{}))
-				t.Cleanup(func() { assert.NoError(t, db.Migrator().DropTable(&Option{})) })
-				previousRegistry := jsplugin.DefaultRegistry
-				jsplugin.DefaultRegistry = registry
-				t.Cleanup(func() { jsplugin.DefaultRegistry = previousRegistry })
-				snapshot, err := GetModelPricingSnapshot([]string{"raw-model", "alias-model"})
-				require.NoError(t, err)
-				require.Len(t, snapshot.Entries, 2)
-				for _, entry := range snapshot.Entries {
+			require.NoError(t, db.AutoMigrate(&Option{}))
+			t.Cleanup(func() { assert.NoError(t, db.Migrator().DropTable(&Option{})) })
+			previousRegistry := jsplugin.DefaultRegistry
+			jsplugin.DefaultRegistry = registry
+			t.Cleanup(func() { jsplugin.DefaultRegistry = previousRegistry })
+			snapshot, err := GetModelPricingSnapshot([]string{"raw-model", "alias-model", "declared-a", "global-model", "ordinary-model"})
+			require.NoError(t, err)
+			require.Len(t, snapshot.Entries, 5)
+			for _, entry := range snapshot.Entries {
+				switch entry.ModelName {
+				case "raw-model", "alias-model":
 					require.Contains(t, entry.UsageSchema, "videos", entry.ModelName)
 					assert.Equal(t, "number", entry.UsageSchema["videos"].Type)
 					assert.Equal(t, "count", entry.UsageSchema["videos"].Unit)
 					assert.Equal(t, "视频生成单价", entry.UsageSchema["videos"].Description["zh"])
+					assert.Equal(t, "alias-channel-alpha", entry.TaskPluginKey)
+				case "declared-a":
+					assert.Equal(t, "alias-declared", entry.TaskPluginKey)
+				case "global-model":
+					assert.Empty(t, entry.TaskPluginKey)
+					require.Len(t, entry.PluginVariants, 2)
+				case "ordinary-model":
+					assert.Empty(t, entry.TaskPluginKey)
+					assert.Empty(t, entry.UsageSchema)
 				}
 			}
 		})

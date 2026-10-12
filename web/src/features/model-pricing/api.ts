@@ -63,6 +63,7 @@ export type ModelPricingPluginVariant = {
 
 export type ModelPricingEntry = ModelPricingDescription & {
   plugin_variants?: ModelPricingPluginVariant[]
+  task_plugin_key?: string
   model_name: string
   version: string
   configured: PricingValues

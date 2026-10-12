@@ -165,6 +165,7 @@ export function ModelPricingPanel(props: {
         editData={editData}
         usageSchema={entry.usage_schema}
         pluginVariants={entry.plugin_variants}
+        taskPluginKey={entry.task_plugin_key}
         onDirtyChange={props.onDirtyChange}
         onSave={() => persist()}
         isSaving={save.isPending}

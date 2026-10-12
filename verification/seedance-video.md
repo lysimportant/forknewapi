@@ -53,3 +53,17 @@
 - PC 浏览器 smoke：`node .local-tests/seedance-pricing/browser-smoke.cjs`，中文浅色 1440×1000、英文深色 1280×1000 均通过。使用真实页面和本地 API fixture，覆盖两套草稿切换、四档输入、默认按秒与插件按次独立保存、PATCH 版本及精确模型名、刷新恢复、复杂公式保留和取消替换；无未知接口或 pageErrors，外网请求被阻断。截图已人工检查，证据留在忽略的 `.local-tests/seedance-pricing/evidence/`，没有真实账号或付费调用。
 - 待跟进：开发模式浏览器仍输出同一种 Base UI `nativeButton` 组合告警，定位为共享 `TaskBillingPreview → ComboboxInput → InputGroupButton → Button`；本轮未改共享组件。原七个定价基线用例没有留存同告警的运行证据，因此不认定为已证实的基线问题，也不声称控制台零错误；此次保存、恢复和切换断言均通过。
 - 检查点：本轮实现、相关回归、类型检查和构建已完成。无数据库行为、依赖或宿主合同变化；不运行本轮不涉及的三数据库矩阵。收费上游生成、实际下载及供应商实际时长仍未验收。交付 `main` 至 `fork`（`https://github.com/lysimportant/forknewapi.git`），带注释 Tag `v2026.10.12-seedance-billing-modes`。
+
+## 渠道模型计费入口修复（2026-10-12）
+
+- P1；基线 `main@8a7fb6f79`，跟踪 `fork/main`，开始时工作区干净。Go 1.26.0、Node 24.12.0，已有前端依赖可用，Bun 不在 PATH。
+- 问题：`/models/metadata` 编辑渠道授权模型 `LLseadanco2.5` 时显示通用 Token 编辑器。渠道已绑定 `seedance-video`，但定价快照只返回 usage schema，旧页面依赖插件全局声明生成的 variants 识别专用编辑器；该插件不声明全局模型，因此无法识别。
+- 修复：定价快照增加只读可选 `task_plugin_key`，将唯一绑定的插件身份传入模型元数据和系统定价入口；只按精确插件 key 识别，不猜测模型名称或 schema。共享声明模型仍通过各插件 variants 区分。新建渠道成功后立即刷新渠道缓存，避免等待同步周期。
+- 影响与回滚：接口只新增可选返回字段，无数据库结构或定价存储变化，无需迁移。保留已存模型名、映射、价格和任务；回退本次提交即可恢复旧页面行为。
+- Go 检查通过：`go build -mod=readonly ./...`；`go vet -mod=readonly ./model ./controller`；`go test -mod=readonly ./model -count=1 -timeout=300s`（43.340s）；`go test -mod=readonly ./controller -run 'Channel|ModelPricingConfig|Pricing' -count=1 -timeout=180s`（7.650s）。新增渠道用例覆盖启用与关闭内存缓存，快照用例覆盖任意渠道模型名、唯一声明模型、共享声明模型和普通模型。
+- 真实三数据库矩阵通过：SQLite 3.50.4、MySQL 8.0.46、PostgreSQL 16.15。执行 `pwsh -NoProfile -File .local-tests/seedance-pricing/metadata-matrix.ps1`，内部运行 `go test -mod=readonly ./model -run '^TestTaskModelAliasChannelRouting$' -count=1 -timeout=180s -v`，无跳过，4.566s。仅使用隔离实例和唯一测试表，测试容器及匿名卷已清理。
+- 前端检查通过：`node node_modules/vitest/vitest.mjs run src/features/system-settings/models/__tests__/plugin-pricing.test.tsx --pool=threads --maxWorkers=1 --testTimeout=10000 --reporter=verbose`，19/19，38.11s；`node node_modules/@typescript/native-preview/bin/tsgo -b`；涉及的五份前端文件 oxlint/oxfmt；`git diff --check`。覆盖无 variants 的渠道模型、原始公式与版本保存、其他/近似/缺失插件 key，以及原共享模型路径。Vitest 仍显示前文记录的共享 Combobox `nativeButton` 告警。
+- 生产镜像构建通过：`docker compose build new-api`，锁定的 Bun 1.4.0、Go 1.26.1-alpine 构建成功，未修改依赖或锁文件。
+- 真实前后端 PC smoke 通过：使用同一生产镜像、回环端口 43926、临时 SQLite 数据库，通过正式 setup 与加密登录 UI 获得测试账号会话，上传插件并新建 `LLseadanco2.5` 渠道。立即确认快照返回 `task_plugin_key=seedance-video`、秒数 schema 且无 variants；在真实 `/models/metadata` 切换两种方案，保存四档每秒单价及按次单价，重新进入后恢复，两个 PATCH 均成功且保留精确模型名与版本。截图已人工检查；无 pageErrors。登录前 `/api/user/auth/refresh` 返回预期 401，因此不声称控制台零错误。脚本与脱敏证据留在忽略的 `.local-tests/seedance-pricing/`，未进行上游生成调用。
+- 本地更新（2026-10-13）：`docker compose up -d --no-deps new-api`，应用与 PostgreSQL/Redis 均 healthy；应用使用已验证镜像，`/api/status` 成功、`/models/metadata` 返回 200。实际用户已有账号页面未代登录，Tab 的完整操作验证来自上述隔离实例；没有改用户模型价格或数据库结构。旧镜像保留为 `forknewapi:seedance-metadata-before-fix` 便于本地回滚。
+- 检查点：实现、回归、三数据库、生产构建与本地更新完成；交付分支为 `main`，远端为 `fork`（`https://github.com/lysimportant/forknewapi.git`），带注释 Tag `v2026.10.13-seedance-pricing-routing`。本轮完成的是计费入口识别，供应商收费生成仍未验收。

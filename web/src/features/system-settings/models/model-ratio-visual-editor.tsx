@@ -748,6 +748,11 @@ const ModelRatioVisualEditorComponent = forwardRef<
                   (entry) => entry.model_name === editData?.name
                 )?.plugin_variants
               }
+              taskPluginKey={
+                pricingConfig.data?.entries.find(
+                  (entry) => entry.model_name === editData?.name
+                )?.task_plugin_key
+              }
               usageSchema={
                 pricingConfig.data?.entries.find(
                   (entry) => entry.model_name === editData?.name
@@ -797,6 +802,11 @@ const ModelRatioVisualEditorComponent = forwardRef<
             pricingConfig.data?.entries.find(
               (entry) => entry.model_name === editData?.name
             )?.plugin_variants
+          }
+          taskPluginKey={
+            pricingConfig.data?.entries.find(
+              (entry) => entry.model_name === editData?.name
+            )?.task_plugin_key
           }
           usageSchema={
             pricingConfig.data?.entries.find(
