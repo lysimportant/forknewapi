@@ -7,7 +7,7 @@ export const meta = {
     en: "Seedance video generation through the unified video API",
     zh: "通过统一视频 API 对接 Seedance 视频生成",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "lysimportant/forknewapi" },
   baseUrl: "https://cnd-coo-new.pages.dev",
   models: [],
@@ -59,6 +59,10 @@ const REQUEST_FIELDS = new Set([
   "negative_prompt",
   "images",
   "input_reference",
+  "image",
+  "last_frame",
+  "reference_images",
+  "metadata",
   "start_frame",
   "end_frame",
   "reference_videos",
@@ -87,13 +91,105 @@ function durationValue(value) {
   return duration;
 }
 
+/** 画布媒体对象只允许一个 URL；上传接口返回的地址和公网直链都必须可被上游读取。 */
+function canvasMediaURL(value, field) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || !("url" in value))
+    throw new Error(field + " must contain only a URL");
+  if (!isMediaURL(value.url, true)) throw new Error(field + " must be a public HTTPS file URL; upload local files with /v1/media first");
+  return value.url;
+}
+
+function appendReferenceURL(request, field, url) {
+  if (request[field] !== undefined && !Array.isArray(request[field])) throw new Error(field + " must be an array of public HTTPS file URLs");
+  request[field] = (request[field] || []).concat(url);
+}
+
+function frameURL(value, field) {
+  if (typeof value === "string" && isMediaURL(value, true)) return value;
+  if (value && typeof value === "object") return canvasMediaURL(value, field);
+  throw new Error(field + " must be a public HTTPS image URL; upload local files with /v1/media first");
+}
+
+/** 将画布的视频字段转换成平台公开字段，不向供应商透传画布专用结构。 */
+function normalizeCanvasRequest(request) {
+  const source = { ...request };
+  for (const [alias, field] of [["image", "start_frame"], ["last_frame", "end_frame"]]) {
+    if (source[alias] === undefined) continue;
+    const url = frameURL(source[alias], alias);
+    if (source[field] !== undefined && source[field] !== url) throw new Error(alias + " conflicts with " + field);
+    source[field] = url;
+    delete source[alias];
+  }
+  if (source.reference_images !== undefined) {
+    if (!Array.isArray(source.reference_images)) throw new Error("reference_images must be an array of URL objects");
+    for (const image of source.reference_images) {
+      if (!image || typeof image !== "object" || Array.isArray(image) ||
+          Object.keys(image).some((field) => !["url", "role"].includes(field)))
+        throw new Error("reference_images must contain URL objects with optional frame roles");
+      const url = canvasMediaURL({ url: image.url }, "reference_images");
+      if (image.role === undefined || image.role === "reference_image") appendReferenceURL(source, "images", url);
+      else if (image.role === "first_frame" || image.role === "last_frame") {
+        const field = image.role === "first_frame" ? "start_frame" : "end_frame";
+        if (source[field] !== undefined && source[field] !== url) throw new Error("conflicting " + field + " references");
+        source[field] = url;
+      } else throw new Error("unsupported reference_images role");
+    }
+    delete source.reference_images;
+  }
+  if (source.metadata !== undefined) {
+    const metadata = source.metadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
+        Object.keys(metadata).some((field) => !["content", "resolution", "ratio", "aspect_ratio", "omni_reference_task_type"].includes(field)))
+      throw new Error("unsupported video metadata field");
+    if (metadata.omni_reference_task_type !== undefined && metadata.omni_reference_task_type !== "reference")
+      throw new Error("video editing and extension are not supported by this API");
+    for (const field of ["resolution", "ratio", "aspect_ratio"]) {
+      if (metadata[field] === undefined) continue;
+      if (source[field] !== undefined && source[field] !== metadata[field]) throw new Error("metadata." + field + " conflicts with " + field);
+      source[field] = metadata[field];
+    }
+    if (metadata.content !== undefined) {
+      if (!Array.isArray(metadata.content)) throw new Error("metadata.content must be an array");
+      for (const item of metadata.content) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid metadata.content item");
+        if (item.type === "text") {
+          if (Object.keys(item).some((field) => !["type", "text"].includes(field)) || item.text !== source.prompt)
+            throw new Error("metadata.content text must match prompt");
+          continue;
+        }
+        if (!["image_url", "video_url", "audio_url"].includes(item.type) ||
+            Object.keys(item).some((field) => !["type", "role", item.type].includes(field)))
+          throw new Error("unsupported metadata.content item");
+        const url = canvasMediaURL(item[item.type], "metadata.content " + item.type);
+        if (item.type === "image_url") {
+          if (item.role === "first_frame" || item.role === "last_frame") {
+            const field = item.role === "first_frame" ? "start_frame" : "end_frame";
+            if (source[field] !== undefined && source[field] !== url) throw new Error("conflicting " + field + " references");
+            source[field] = url;
+          } else if (item.role === undefined || item.role === "reference_image") appendReferenceURL(source, "images", url);
+          else throw new Error("unsupported metadata.content image role");
+        } else if (item.type === "video_url") {
+          if (item.role !== undefined && !["reference_video", "content"].includes(item.role)) throw new Error("unsupported metadata.content video role");
+          appendReferenceURL(source, "reference_videos", url);
+        } else {
+          if (item.role !== undefined && !["reference_audio", "audioTrack"].includes(item.role)) throw new Error("unsupported metadata.content audio role");
+          appendReferenceURL(source, "reference_audios", url);
+        }
+      }
+    }
+    delete source.metadata;
+  }
+  return source;
+}
+
 /** 模型由宿主渠道绑定授权并映射；只校验非空名称和统一字段，保留显式 false。 */
 function upstreamBody(request, model) {
   if (typeof model !== "string" || !model.trim()) throw new Error("model is required");
   if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("video request must be a JSON object");
   for (const field of Object.keys(request)) {
-    if (!REQUEST_FIELDS.has(field)) throw new Error("unsupported video request field");
+    if (!REQUEST_FIELDS.has(field)) throw new Error("unsupported video request field: " + field);
   }
+  request = normalizeCanvasRequest(request);
   if (typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("prompt is required");
   const body = { model, prompt: request.prompt };
   for (const [field, alias] of [
@@ -150,11 +246,11 @@ function decodedBody(body) {
   for (const field of Object.keys(body.fields || {})) {
     const values = body.fields[field];
     if (!Array.isArray(values) || !values.length) throw new Error("invalid multipart video field");
-    if (["images", "reference_videos", "reference_audios"].includes(field)) {
+    if (["images", "reference_images", "reference_videos", "reference_audios"].includes(field)) {
       request[field] = values.length === 1 && values[0].trim().startsWith("[") ? JSON.parse(values[0]) : values;
     } else {
       if (values.length !== 1) throw new Error("duplicate multipart video field");
-      request[field] = field === "generate_audio" ? JSON.parse(values[0]) : values[0];
+      request[field] = ["generate_audio", "metadata"].includes(field) ? JSON.parse(values[0]) : values[0];
     }
   }
   return request;

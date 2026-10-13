@@ -79,6 +79,103 @@ func TestSeedanceVideoPluginContracts(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"count":1}`, string(encoded))
 
+	t.Run("画布字段转换为文档字段", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			fields map[string]any
+			want   string
+		}{
+			{
+				name: "通用首尾帧",
+				fields: map[string]any{
+					"image": map[string]any{"url": "https://cdn.example/start.png"}, "last_frame": "https://cdn.example/end.png",
+				},
+				want: `{"model":"Xseadanco2.0","prompt":"ocean","start_frame":"https://cdn.example/start.png","end_frame":"https://cdn.example/end.png"}`,
+			},
+			{
+				name: "全能参考保留每类素材顺序与重复引用",
+				fields: map[string]any{
+					"reference_images": []any{map[string]any{"url": "https://cdn.example/a.png"}, map[string]any{"url": "https://cdn.example/a.png"}},
+					"reference_videos": []any{"https://cdn.example/one.mp4"},
+					"negative_prompt":  "blur",
+					"metadata": map[string]any{"content": []any{
+						map[string]any{"type": "video_url", "role": "content", "video_url": map[string]any{"url": "https://cdn.example/two.mp4"}},
+						map[string]any{"type": "audio_url", "role": "audioTrack", "audio_url": map[string]any{"url": "https://cdn.example/ref.wav"}},
+					}},
+				},
+				want: `{"model":"Xseadanco2.0","prompt":"ocean","negative_prompt":"blur","images":["https://cdn.example/a.png","https://cdn.example/a.png"],"reference_videos":["https://cdn.example/one.mp4","https://cdn.example/two.mp4"],"reference_audios":["https://cdn.example/ref.wav"]}`,
+			},
+			{
+				name: "结构化媒体和参数",
+				fields: map[string]any{
+					"seconds": "30", "generate_audio": false,
+					"metadata": map[string]any{"resolution": "720p", "ratio": "16:9", "omni_reference_task_type": "reference", "content": []any{
+						map[string]any{"type": "text", "text": "ocean"},
+						map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/ref.png"}},
+						map[string]any{"type": "image_url", "role": "first_frame", "image_url": map[string]any{"url": "https://cdn.example/start.png"}},
+						map[string]any{"type": "image_url", "role": "last_frame", "image_url": map[string]any{"url": "https://cdn.example/end.png"}},
+						map[string]any{"type": "video_url", "role": "reference_video", "video_url": map[string]any{"url": "https://cdn.example/ref.mp4"}},
+						map[string]any{"type": "audio_url", "role": "reference_audio", "audio_url": map[string]any{"url": "https://cdn.example/ref.wav"}},
+					}},
+				},
+				want: `{"model":"Xseadanco2.0","prompt":"ocean","duration":30,"resolution":"720p","ratio":"16:9","generate_audio":false,"images":["https://cdn.example/ref.png"],"start_frame":"https://cdn.example/start.png","end_frame":"https://cdn.example/end.png","reference_videos":["https://cdn.example/ref.mp4"],"reference_audios":["https://cdn.example/ref.wav"]}`,
+			},
+			{
+				name: "图片数组显式帧角色",
+				fields: map[string]any{"reference_images": []any{
+					map[string]any{"url": "https://cdn.example/start.png", "role": "first_frame"},
+					map[string]any{"url": "https://cdn.example/end.png", "role": "last_frame"},
+					map[string]any{"url": "https://cdn.example/ref.png", "role": "reference_image"},
+				}},
+				want: `{"model":"Xseadanco2.0","prompt":"ocean","start_frame":"https://cdn.example/start.png","end_frame":"https://cdn.example/end.png","images":["https://cdn.example/ref.png"]}`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tc.fields["prompt"] = "ocean"
+				value, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": alias, "upstreamModel": upstream, "body": map[string]any{"kind": "json", "value": tc.fields},
+				})
+				require.NoError(t, callErr)
+				intent := value.(map[string]any)
+				value, callErr = plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+					"model": alias, "upstreamModel": upstream, "baseUrl": "https://channel.example", "publicTaskId": "task-canvas-fixture",
+					"requestBody": intent["requestBody"],
+				})
+				require.NoError(t, callErr)
+				encoded, err := common.Marshal(value.(map[string]any)["body"])
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.want, string(encoded))
+			})
+		}
+	})
+
+	t.Run("画布别名不能绕过校验或静默丢弃参数", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			fields map[string]any
+		}{
+			{"参考图未知字段", map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.png", "extra": "ignored"}}}},
+			{"参考图无效地址", map[string]any{"reference_images": []any{map[string]any{"url": "data:image/png;base64,aW1hZ2U="}}}},
+			{"首帧字段冲突", map[string]any{"image": "https://cdn.example/a.png", "start_frame": "https://cdn.example/b.png"}},
+			{"尾帧需要首帧", map[string]any{"last_frame": "https://cdn.example/end.png"}},
+			{"嵌套参数冲突", map[string]any{"aspect_ratio": "16:9", "metadata": map[string]any{"ratio": "9:16"}}},
+			{"未知嵌套字段", map[string]any{"metadata": map[string]any{"extra": true}}},
+			{"编辑不能降级为参考", map[string]any{"metadata": map[string]any{"omni_reference_task_type": "edit"}}},
+			{"文字不能被忽略", map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "different prompt"}}}}},
+			{"音频不能冒充帧", map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "audio_url", "role": "first_frame", "audio_url": map[string]any{"url": "https://cdn.example/ref.wav"}}}}}},
+			{"嵌套地址需要HTTPS", map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "video_url", "video_url": map[string]any{"url": "http://cdn.example/ref.mp4"}}}}}},
+			{"嵌套媒体未知字段", map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://cdn.example/ref.png", "file_id": "ignored"}}}}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tc.fields["prompt"] = "ocean"
+				_, callErr := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": upstream, "body": map[string]any{"kind": "json", "value": tc.fields},
+				})
+				assert.Error(t, callErr)
+			})
+		}
+	})
+
 	t.Run("状态和内容地址", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
@@ -303,7 +400,7 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
 	service.InitHttpClient()
-	for _, upstream := range []string{"Xseadanco2.0", "kksedanco2.5", "future-provider-name"} {
+	for _, upstream := range []string{"Cseadanco2.5K", "LLseadanco2.5X", "future-provider-name"} {
 		t.Run(upstream, func(t *testing.T) {
 			posts, queries := 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,9 +414,10 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 					if !assert.NoError(t, common.DecodeJson(r.Body, &body)) {
 						return
 					}
-					assert.Equal(t, upstream, body["model"])
-					assert.Equal(t, false, body["generate_audio"])
-					assert.Equal(t, "2K", body["resolution"])
+					assert.Equal(t, map[string]any{
+						"model": upstream, "prompt": "A calm ocean wave", "duration": float64(30), "resolution": "720p", "ratio": "16:9",
+						"generate_audio": false, "images": []any{"https://cdn.example/ref.png"},
+					}, body)
 					_, writeErr := io.WriteString(w, `{"code":0,"success":true,"task_id":"vid-fixture","status":"processing","next_poll_seconds":10}`)
 					assert.NoError(t, writeErr)
 				case "GET /gateway/v1/tasks/vid-fixture":
@@ -343,14 +441,17 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 			c.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{Plugin: plugin, Protocol: "openai_video", Model: info.OriginModelName, ChannelScoped: true})
 			c.Set(jsplugin.ContextKeyProtocolRequest, jsplugin.ProtocolRequestContext{
 				Model: info.OriginModelName, Protocol: "openai_video", RouteRequestContext: jsplugin.RouteRequestContext{Body: map[string]any{
-					"kind": "json", "value": map[string]any{"model": info.OriginModelName, "prompt": "A calm ocean wave", "duration": 6, "resolution": "2K", "generate_audio": false},
+					"kind": "json", "value": map[string]any{
+						"model": info.OriginModelName, "prompt": "A calm ocean wave", "duration": 30, "seconds": "30", "resolution": "720p", "aspect_ratio": "16:9", "generate_audio": false,
+						"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.png"}},
+					},
 				}},
 			})
 			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 			assert.True(t, adaptor.SkipSubmitRetry())
 			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 			require.NoError(t, err)
-			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "2k"}, facts)
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(30), "video_resolution": "720p"}, facts)
 			ratios, err := adaptor.EstimateBillingValidated(c, info)
 			require.NoError(t, err)
 			assert.Empty(t, ratios)

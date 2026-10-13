@@ -237,7 +237,7 @@ func canvasAuthorizedModels(c *gin.Context) (modelListGroups, map[string][]canva
 	return groups, byModel, metadata, nil
 }
 
-// supports 判断实际可用渠道是否接受固定合同；插件必须精确声明模型和视频协议。
+// supports 判断实际可用渠道是否接受固定合同；渠道路由模型须与真实视频入口的归属一致。
 func (candidate canvasCandidate) supports(name string, profile canvasProfile) bool {
 	if candidate.Channel.Type == constant.ChannelTypeAdvancedCustom {
 		config := candidate.OtherSettings.AdvancedCustom
@@ -248,7 +248,22 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 	if candidate.Plugin == nil {
 		return candidate.Channel.Type != constant.ChannelTypeTaskPlugin && profile.MediaType != "video"
 	}
-	if profile.Contract != "newapi-video-v1" || !slices.Contains(candidate.Plugin.Meta.Models, candidate.UpstreamModel) {
+	if profile.Contract != "newapi-video-v1" {
+		return false
+	}
+	if candidate.Channel.Type == constant.ChannelTypeTaskPlugin && candidate.Plugin.Meta.ModelRouting == "channel" {
+		// 渠道模式不注册全局模型；只开放真实入口能够固定到同一插件的精确渠道名。
+		if _, declared := candidate.Generation.CanonicalModel(name); declared {
+			return false
+		}
+		target, resolved := model.ResolveTaskModelAlias(candidate.Generation, name)
+		if !resolved || !target.ChannelScoped || target.Alias != name || target.PluginKey != candidate.Plugin.Meta.Key {
+			return false
+		}
+		binding, found := candidate.Generation.LookupPluginEndpoint(http.MethodPost, profile.Path, target.PluginKey)
+		return found && binding.Plugin == candidate.Plugin && binding.Protocol == "openai_video"
+	}
+	if !slices.Contains(candidate.Plugin.Meta.Models, candidate.UpstreamModel) {
 		return false
 	}
 	// 真实视频入口先固定全局模型别名；仅检查当前渠道映射会误开放跨渠道冲突的别名。
