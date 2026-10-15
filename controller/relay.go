@@ -615,9 +615,30 @@ func executeTaskSubmissionWith(
 	durable := false
 	stage := "start"
 	defer func() {
-		if !durable && relayInfo.Billing != nil {
-			diagnostics.refund(stage)
-			relayInfo.Billing.Refund(c)
+		if !durable {
+			if pending, ok := pendingSubmissionFromContext(c); ok {
+				if isDefinitiveSubmissionRejection(taskErr) && markPendingSubmissionRejected(pending, taskErr, stage) {
+					// A provider 4xx is proof that no paid task was accepted. Settle
+					// to zero through the original billing session so the refund is
+					// idempotent and the Canvas receipt can be finalized as refunded.
+					if relayInfo.Billing != nil {
+						if settleErr := service.SettleBilling(c, relayInfo, 0); settleErr != nil {
+							logger.LogError(c, "refund rejected task submission failed: "+settleErr.Error())
+						}
+					}
+					service.FinalizeCanvasImmediateTaskReceipt(c, relayInfo, pending)
+					diagnostics.refund(stage)
+				} else {
+					// The provider may have accepted the request even when the HTTP
+					// response was lost. Keep the charge and durable receipt pending
+					// until recovery or manual reconciliation proves the outcome.
+					markPendingSubmissionNeedsReview(pending, taskErr, stage)
+				}
+				durable = true
+			} else if relayInfo.Billing != nil {
+				diagnostics.refund(stage)
+				relayInfo.Billing.Refund(c)
+			}
 		}
 	}()
 	stage = "before_attempt"
@@ -742,7 +763,10 @@ func executeTaskSubmissionWith(
 	}
 
 	stage = "insert"
-	task := model.InitTask(result.Platform, relayInfo)
+	task, hasPending := pendingSubmissionFromContext(c)
+	if !hasPending {
+		task = model.InitTask(result.Platform, relayInfo)
+	}
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource
@@ -786,7 +810,29 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("insert", "database_error", taskErr, false)
 		return nil, taskErr
 	}
-	if insertErr := task.InsertWithContext(c.Request.Context()); insertErr != nil {
+	if hasPending {
+		if task.PrivateData.Submission == nil {
+			taskErr = service.TaskErrorWrapperLocal(errors.New("pending task submission state is missing"), "task_insert_failed", http.StatusInternalServerError)
+			diagnostics.failed("insert", "database_error", taskErr, false)
+			return nil, taskErr
+		}
+		task.PrivateData.Submission.Status = model.TaskSubmissionCompleted
+		task.PrivateData.Submission.LastError = ""
+		task.PrivateData.Submission.UpdatedAt = time.Now().UnixMilli()
+		// The body and headers are only needed while replaying an unknown
+		// submission. Drop them after the provider returned a parseable result.
+		task.PrivateData.Submission.Body = nil
+		task.PrivateData.Submission.Headers = nil
+		task.PrivateData.Submission.Context = nil
+		if won, updateErr := task.UpdateWithStatus(task.Status); updateErr != nil || !won {
+			if updateErr != nil {
+				common.SysError("update task after submission error: " + updateErr.Error())
+			}
+			taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
+			diagnostics.failed("insert", "database_error", taskErr, false)
+			return nil, taskErr
+		}
+	} else if insertErr := task.InsertWithContext(c.Request.Context()); insertErr != nil {
 		common.SysError("insert task error: " + insertErr.Error())
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)
@@ -810,6 +856,70 @@ func executeTaskSubmissionWith(
 	diagnostics.complete(task, result.Quota)
 
 	return &taskSubmissionOutcome{Result: result, Task: task, RelayInfo: relayInfo}, nil
+}
+
+func isDefinitiveSubmissionRejection(taskErr *taskdto.TaskError) bool {
+	if taskErr == nil || taskErr.LocalError {
+		return false
+	}
+	// 408/429 and all 5xx responses can occur after provider-side acceptance
+	// or while a gateway is retrying, so their outcome remains recoverable.
+	return taskErr.StatusCode >= http.StatusBadRequest &&
+		taskErr.StatusCode < http.StatusInternalServerError &&
+		taskErr.StatusCode != http.StatusRequestTimeout &&
+		taskErr.StatusCode != http.StatusTooManyRequests
+}
+
+func markPendingSubmissionRejected(task *model.Task, taskErr *taskdto.TaskError, stage string) bool {
+	if task == nil || task.PrivateData.Submission == nil {
+		return false
+	}
+	oldStatus := task.Status
+	task.Status = model.TaskStatusFailure
+	task.Progress = "100%"
+	task.FinishTime = time.Now().Unix()
+	task.FailReason = stage
+	if taskErr != nil {
+		task.FailReason = taskErr.Code + ": " + taskErr.Message
+	}
+	task.Quota = 0
+	task.PrivateData.Submission.Status = model.TaskSubmissionFailed
+	task.PrivateData.Submission.UpdatedAt = time.Now().UnixMilli()
+	task.PrivateData.Submission.LastError = task.FailReason
+	won, err := task.UpdateWithStatus(oldStatus)
+	if err != nil {
+		logger.LogError(nil, "persist rejected task submission state failed: "+err.Error())
+		return false
+	}
+	return won
+}
+
+func pendingSubmissionFromContext(c *gin.Context) (*model.Task, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, exists := c.Get("task_submission_pending")
+	if !exists {
+		return nil, false
+	}
+	task, ok := value.(*model.Task)
+	return task, ok && task != nil && task.PrivateData.Submission != nil
+}
+
+func markPendingSubmissionNeedsReview(task *model.Task, taskErr *taskdto.TaskError, stage string) {
+	if task == nil || task.PrivateData.Submission == nil {
+		return
+	}
+	submission := task.PrivateData.Submission
+	submission.Status = model.TaskSubmissionNeedsReview
+	submission.UpdatedAt = time.Now().UnixMilli()
+	submission.LastError = stage
+	if taskErr != nil {
+		submission.LastError = taskErr.Code + ": " + taskErr.Message
+	}
+	if err := task.Update(); err != nil {
+		logger.LogError(nil, "persist unknown task submission state failed: "+err.Error())
+	}
 }
 
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {

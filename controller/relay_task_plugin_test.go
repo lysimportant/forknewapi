@@ -542,6 +542,46 @@ func TestAcceptedSubmitStreamNeverRetries(t *testing.T) {
 	assert.False(t, shouldRetryTaskRelay(c, 1, &dto.TaskError{StatusCode: 502, LocalError: true, NoRetry: true}, 3))
 }
 
+func TestDefinitiveSubmissionRejectionClassification(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusConflict} {
+		assert.True(t, isDefinitiveSubmissionRejection(&dto.TaskError{StatusCode: status}), "status %d", status)
+	}
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		assert.False(t, isDefinitiveSubmissionRejection(&dto.TaskError{StatusCode: status}), "status %d", status)
+	}
+	assert.False(t, isDefinitiveSubmissionRejection(&dto.TaskError{StatusCode: http.StatusBadRequest, LocalError: true}))
+	assert.False(t, isDefinitiveSubmissionRejection(nil))
+}
+
+func TestPendingSubmissionRecoverySelection(t *testing.T) {
+	events := make([]string, 0)
+	setupTaskSubmissionDatabase(t, true, &events)
+	now := time.Now().UnixMilli()
+	for _, task := range []*model.Task{
+		{TaskID: "pending", Status: model.TaskStatusNotStart, PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionPending, UpdatedAt: now}}},
+		{TaskID: "active-recovering", Status: model.TaskStatusSubmitted, PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionRecovering, UpdatedAt: now}}},
+		{TaskID: "stale-recovering", Status: model.TaskStatusSubmitted, PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionRecovering, UpdatedAt: now - int64(6*time.Minute/time.Millisecond)}}},
+		{TaskID: "failed", Status: model.TaskStatusFailure, PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionPending, UpdatedAt: now}}},
+		{TaskID: "cancelled", Status: model.TaskStatusFailure, CanvasCancelReason: "cancelled", PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionPending, UpdatedAt: now}}},
+		{TaskID: "completed-submission", Status: model.TaskStatusSubmitted, PrivateData: model.TaskPrivateData{Submission: &model.TaskSubmissionState{Status: model.TaskSubmissionCompleted, UpdatedAt: now}}},
+	} {
+		require.NoError(t, model.DB.Create(task).Error)
+	}
+
+	tasks, err := model.GetPendingSubmissionTasks(100)
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		ids[task.TaskID] = true
+	}
+	assert.True(t, ids["pending"])
+	assert.True(t, ids["stale-recovering"])
+	assert.False(t, ids["active-recovering"])
+	assert.False(t, ids["failed"])
+	assert.False(t, ids["cancelled"])
+	assert.False(t, ids["completed-submission"])
+}
+
 func TestExecuteTaskSubmissionRefundsWhenFinalReserveFails(t *testing.T) {
 	events := []string{}
 	setupTaskSubmissionDatabase(t, true, &events)

@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SetCanvasRouter 注册默认关闭的只读计费桥接；预估不进入中继、预扣或上游提交流程。
+// SetCanvasRouter 注册默认关闭的计费桥接；取消只使用原任务身份，预估不提交上游请求。
 func SetCanvasRouter(router *gin.Engine) {
 	bridge := router.Group("/v1/canvas", middleware.RouteTag("relay"), func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -22,4 +22,5 @@ func SetCanvasRouter(router *gin.Engine) {
 	bridge.GET("/catalog", middleware.TokenAuth(), controller.GetCanvasCatalog)
 	bridge.POST("/estimate", middleware.TokenAuth(), middleware.UserCriticalRateLimit("canvas_estimate"), controller.EstimateCanvasPrice)
 	bridge.GET("/receipts/:requestId", middleware.TokenAuthReadOnly(), controller.GetCanvasReceipt)
+	bridge.POST("/tasks/:taskId/cancel", middleware.TokenAuthReadOnly(), middleware.UserCriticalRateLimit("canvas_task_cancel"), controller.CancelCanvasVideoTask)
 }

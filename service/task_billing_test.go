@@ -852,6 +852,39 @@ func TestRefundTaskQuota_Wallet(t *testing.T) {
 	assert.Zero(t, getTaskQuota(t, task.ID))
 }
 
+func TestRefundTaskQuota_WalletRefundCanCrossBalanceLimit(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 101, 101, 101
+	const preConsumed = 3_400_000
+	walletAfterCharge := common.MaxWalletQuota
+	seedUser(t, userID, walletAfterCharge)
+	seedToken(t, tokenID, userID, "sk-wallet-limit-refund", 5_000_000)
+	seedChannel(t, channelID)
+	seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
+	assert.ErrorIs(t, model.IncreaseUserQuota(userID, 1, false), model.ErrWalletQuotaLimitExceeded)
+
+	// The user received other wallet credit after this task was pre-consumed.
+	// A failed task must still restore the full amount and write its refund log.
+	assert.True(t, RefundTaskQuota(ctx, task, "upstream busy"))
+	assert.Equal(t, walletAfterCharge+preConsumed, getUserQuota(t, userID))
+	assert.Equal(t, 8_400_000, getTokenRemainQuota(t, tokenID))
+	assert.Zero(t, getTokenUsedQuota(t, tokenID))
+	usedQuota, requestCount := getUserUsageAccounting(t, userID)
+	assert.Zero(t, usedQuota)
+	assert.Equal(t, 1, requestCount)
+	assert.Zero(t, getChannelUsedQuota(t, channelID))
+	assert.Zero(t, getTaskQuota(t, task.ID))
+
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, model.LogTypeRefund, log.Type)
+	assert.Equal(t, preConsumed, log.Quota)
+}
+
 func TestRefundTaskQuota_Subscription(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()

@@ -147,6 +147,9 @@ func main() {
 		}
 		return a
 	}
+	// Recover plugin submissions that may have been accepted upstream while
+	// this process was restarting before the normal task row was finalized.
+	controller.StartPendingTaskRecovery(context.Background())
 
 	// Register the periodic channel test, upstream model update, and async task
 	// polling (Midjourney / Suno / video) jobs as scheduled system tasks

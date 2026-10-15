@@ -3,39 +3,64 @@ setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
 
-rem One-click deployment settings. The password stays in the existing ssh.txt file.
-set "SSH_HOST=47.242.207.224"
-set "SSH_USER=root"
-set "SSH_PORT=22"
-set "REMOTE_DIR=/opt/forknewapi"
-set "CREDENTIAL_FILE=%USERPROFILE%\Desktop\ssh.txt"
+rem Build a linux/amd64 image for the x86_64 server. This script never connects to it.
+set "IMAGE=forknewapi:local"
+set "PLATFORM=linux/amd64"
+set "OUTPUT_DIR=%~dp0upload"
+set "OUTPUT_TAR=%OUTPUT_DIR%\forknewapi-local.tar"
 
-set "DEPLOY_DEPS=%~dp0.local-tests\deploy-deps"
-if not exist "%CREDENTIAL_FILE%" goto :missing_credentials
-where python >nul 2>&1
-if errorlevel 1 goto :missing_python
+where docker >nul 2>&1
+if errorlevel 1 goto :docker_missing
+docker info >nul 2>&1
+if errorlevel 1 goto :docker_unavailable
 
-:check_dependency
-python -c "import sys; sys.path.insert(0, r'%DEPLOY_DEPS%'); import paramiko" >nul 2>&1
-if not errorlevel 1 goto :run_deploy
-echo Installing the SSH helper into .local-tests...
-python -m pip install --isolated --no-cache-dir --index-url https://pypi.org/simple --timeout 10 --retries 2 --disable-pip-version-check --target "%DEPLOY_DEPS%" paramiko==4.0.0
-if errorlevel 1 goto :setup_failed
+echo Building %IMAGE% for %PLATFORM%...
+docker build --platform "%PLATFORM%" --tag "%IMAGE%" .
+if errorlevel 1 goto :build_failed
 
-:run_deploy
-python "%~dp0deployment\deploy-local.py" --host "%SSH_HOST%" --user "%SSH_USER%" --port "%SSH_PORT%" --remote-dir "%REMOTE_DIR%" --credential-file "%CREDENTIAL_FILE%" %*
-set "RESULT=%ERRORLEVEL%"
-if not defined DEPLOY_NO_PAUSE pause
-exit /b %RESULT%
+docker image inspect "%IMAGE%" >nul 2>&1
+if errorlevel 1 goto :image_missing
 
-:missing_credentials
-echo Credential file not found: %CREDENTIAL_FILE%
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+if errorlevel 1 goto :output_failed
+
+if exist "%OUTPUT_TAR%" del /f /q "%OUTPUT_TAR%"
+if exist "%OUTPUT_TAR%" goto :output_failed
+
+echo Saving Docker image to:
+echo %OUTPUT_TAR%
+docker save --output "%OUTPUT_TAR%" "%IMAGE%"
+if errorlevel 1 goto :save_failed
+if not exist "%OUTPUT_TAR%" goto :save_failed
+
+for %%A in ("%OUTPUT_TAR%") do set "OUTPUT_SIZE=%%~zA"
+echo.
+echo Package ready.
+echo File: %OUTPUT_TAR%
+echo Size: %OUTPUT_SIZE% bytes
+echo.
+echo Upload this .tar file to /opt/forknewapi/ on the server,
+echo then run the commands provided in the chat.
+if not defined PACKAGE_NO_PAUSE pause
+exit /b 0
+
+:docker_missing
+echo Docker was not found in PATH.
 goto :failed
-:missing_python
-echo Python 3 is required to run this deployment script.
+:docker_unavailable
+echo Docker is not running. Start Docker Desktop and try again.
 goto :failed
-:setup_failed
-echo Could not prepare the local deployment helper.
+:output_failed
+echo Could not prepare the output directory or remove the old package.
+goto :failed
+:build_failed
+echo Docker image build failed.
+goto :failed
+:image_missing
+echo The built Docker image could not be inspected.
+goto :failed
+:save_failed
+echo Docker image export failed.
 :failed
-if not defined DEPLOY_NO_PAUSE pause
+if not defined PACKAGE_NO_PAUSE pause
 exit /b 1

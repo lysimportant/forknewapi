@@ -60,12 +60,14 @@ type Task struct {
 	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
 	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
 	FailReason string                `json:"fail_reason"`
-	SubmitTime int64                 `json:"submit_time" gorm:"index"`
-	StartTime  int64                 `json:"start_time" gorm:"index"`
-	FinishTime int64                 `json:"finish_time" gorm:"index"`
-	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	// CanvasCancelReason is durable cancellation intent, independent of upstream progress.
+	CanvasCancelReason string     `json:"-" gorm:"type:varchar(191);not null;default:'';index"`
+	SubmitTime         int64      `json:"submit_time" gorm:"index"`
+	StartTime          int64      `json:"start_time" gorm:"index"`
+	FinishTime         int64      `json:"finish_time" gorm:"index"`
+	Progress           string     `json:"progress" gorm:"type:varchar(20);index"`
+	Properties         Properties `json:"properties" gorm:"type:json"`
+	Username           string     `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -131,6 +133,35 @@ type TaskPrivateData struct {
 	PluginState json.RawMessage `json:"plugin_state,omitempty"`
 	// PollFailures counts consecutive unrecognized or transient poll outcomes.
 	PollFailures int `json:"poll_failures,omitempty"`
+	// Submission records the durable outbound request barrier. It is created
+	// before the provider request is sent so a process restart can safely
+	// recover a request accepted by the provider but not yet attached to a
+	// normal task result.
+	Submission *TaskSubmissionState `json:"submission,omitempty"`
+}
+
+const (
+	TaskSubmissionPending     = "pending"
+	TaskSubmissionRecovering  = "recovering"
+	TaskSubmissionCompleted   = "completed"
+	TaskSubmissionFailed      = "failed"
+	TaskSubmissionNeedsReview = "needs_review"
+)
+
+type TaskSubmissionState struct {
+	Status        string            `json:"status"`
+	PluginKey     string            `json:"plugin_key,omitempty"`
+	PluginVersion string            `json:"plugin_version,omitempty"`
+	PublicTaskID  string            `json:"public_task_id,omitempty"`
+	URL           string            `json:"url,omitempty"`
+	Method        string            `json:"method,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	ResponseType  string            `json:"response_type,omitempty"`
+	NoRetry       bool              `json:"no_retry,omitempty"`
+	Body          []byte            `json:"body,omitempty"`
+	Context       map[string]any    `json:"context,omitempty"`
+	LastError     string            `json:"last_error,omitempty"`
+	UpdatedAt     int64             `json:"updated_at,omitempty"`
 }
 
 type TaskExecutionSnapshot struct {
@@ -202,7 +233,8 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 {
+		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 &&
+		p.Submission == nil {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。
@@ -473,6 +505,31 @@ func (Task *Task) InsertWithContext(ctx context.Context) error {
 	return DB.WithContext(ctx).Create(Task).Error
 }
 
+// GetPendingSubmissionTasks returns task rows written before an upstream
+// submission. Filtering the JSON state in Go keeps this portable across the
+// SQLite, MySQL and PostgreSQL deployments supported by New API.
+func GetPendingSubmissionTasks(limit int) ([]*Task, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var tasks []*Task
+	err := DB.Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Order("id").Limit(limit).Find(&tasks).Error
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]*Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task != nil && task.PrivateData.Submission != nil &&
+			(task.PrivateData.Submission.Status == TaskSubmissionPending ||
+				task.PrivateData.Submission.Status == TaskSubmissionRecovering &&
+					task.PrivateData.Submission.UpdatedAt < time.Now().Add(-5*time.Minute).UnixMilli()) {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered, nil
+}
+
 type taskSnapshot struct {
 	Status       TaskStatus
 	Progress     string
@@ -531,7 +588,11 @@ func (t *Task) UpdateQuota() error {
 // falls back to INSERT ON CONFLICT when the WHERE-guarded UPDATE matches
 // zero rows, which silently bypasses the CAS guard.
 func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
-	result := DB.Model(t).Where("status = ?", fromStatus).Select("*").Updates(t)
+	query := DB.Model(t).Where("status = ? AND canvas_cancel_reason = ?", fromStatus, t.CanvasCancelReason)
+	if t.Status != TaskStatusFailure && t.CanvasCancelReason != "" {
+		return false, nil
+	}
+	result := query.Select("*").Omit("CanvasCancelReason").Updates(t)
 	if result.Error != nil {
 		return false, result.Error
 	}

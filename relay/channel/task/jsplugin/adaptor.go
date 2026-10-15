@@ -83,16 +83,63 @@ const maxTaskArtifacts = 64
 const maxTaskPluginPersistedJSONBytes = 1 << 20
 
 type TaskAdaptor struct {
-	plugin         *pluginruntime.LoadedPlugin
-	info           *relaycommon.RelayInfo
-	submit         *requestDescriptor
-	routeRequest   *pluginruntime.RouteRequestContext
-	requestHeaders map[string]string
-	files          []map[string]any
+	plugin          *pluginruntime.LoadedPlugin
+	info            *relaycommon.RelayInfo
+	submit          *requestDescriptor
+	restoredContext map[string]any
+	routeRequest    *pluginruntime.RouteRequestContext
+	requestHeaders  map[string]string
+	files           []map[string]any
 }
 
 func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{plugin: plugin} }
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
+
+func (a *TaskAdaptor) SubmissionSnapshot() (*channel.TaskSubmissionSnapshot, error) {
+	if a.submit == nil {
+		return nil, fmt.Errorf("plugin submit request was not built")
+	}
+	// Every replayable task gets one stable provider idempotency key. Plugins
+	// may provide their own key, but the public task ID is a safe fallback and
+	// is available before the first request is sent.
+	if _, exists := a.submit.Headers["Idempotency-Key"]; !exists && a.info != nil && a.info.TaskRelayInfo != nil {
+		if a.submit.Headers == nil {
+			a.submit.Headers = make(map[string]string)
+		}
+		a.submit.Headers["Idempotency-Key"] = a.info.TaskRelayInfo.PublicTaskID
+	}
+	contextValue := a.submitContext(nil, a.info)
+	return &channel.TaskSubmissionSnapshot{
+		PluginKey:     a.plugin.Meta.Key,
+		PluginVersion: a.plugin.Meta.Version,
+		URL:           a.submit.URL,
+		Method:        strings.ToUpper(strings.TrimSpace(a.submit.Method)),
+		Headers:       maps.Clone(a.submit.Headers),
+		ResponseType:  a.submit.ResponseType,
+		NoRetry:       a.submit.NoRetry,
+		Context:       contextValue,
+	}, nil
+}
+
+func (a *TaskAdaptor) RestoreSubmissionSnapshot(snapshot *channel.TaskSubmissionSnapshot) error {
+	if snapshot == nil || strings.TrimSpace(snapshot.URL) == "" {
+		return fmt.Errorf("submission snapshot is empty")
+	}
+	method := strings.ToUpper(strings.TrimSpace(snapshot.Method))
+	if method == "" {
+		method = http.MethodPost
+	}
+	responseType := snapshot.ResponseType
+	if responseType == "" {
+		responseType = "json"
+	}
+	a.submit = &requestDescriptor{
+		URL: snapshot.URL, Method: method, Headers: maps.Clone(snapshot.Headers),
+		ResponseType: responseType, NoRetry: snapshot.NoRetry,
+	}
+	a.restoredContext = maps.Clone(snapshot.Context)
+	return nil
+}
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
@@ -1261,6 +1308,17 @@ func (a *TaskAdaptor) buildSubmit(c *gin.Context, info *relaycommon.RelayInfo) (
 }
 
 func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo) map[string]any {
+	if a.restoredContext != nil {
+		ctx := maps.Clone(a.restoredContext)
+		ctx["action"] = info.Action
+		ctx["originTaskId"] = info.OriginTaskID
+		ctx["publicTaskId"] = info.PublicTaskID
+		ctx["model"] = info.OriginModelName
+		ctx["upstreamModel"] = info.UpstreamModelName
+		ctx["baseUrl"] = info.ChannelBaseUrl
+		ctx["userSetting"] = info.UserSetting
+		return ctx
+	}
 	routeRequest := pluginruntime.RouteRequestContext{
 		Params:      map[string]string{},
 		Query:       map[string][]string{},

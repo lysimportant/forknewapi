@@ -226,6 +226,53 @@ func TestCanvasAccountAuthorizePrompt(t *testing.T) {
 	}
 }
 
+// TestCanvasAccountPersistentGrant 覆盖长期登录及旧授权的升级、失效边界。
+func TestCanvasAccountPersistentGrant(t *testing.T) {
+	user, identity := setupCanvasAccountControllerTest(t)
+	login := authorizeCanvasAccountForTest(t, identity)
+	expiresAt, err := time.Parse(time.RFC3339, login.Grant.ExpiresAt)
+	require.NoError(t, err)
+	assert.Greater(t, expiresAt.Unix(), time.Now().Add(399*24*time.Hour).Unix())
+	// 旧 30 天授权仍有效时自动升级，不需要用户重新兑换授权码。
+	require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", login.Grant.ID).Update("expires_at", time.Now().Add(24*time.Hour).Unix()).Error)
+	response := canvasAccountControllerRequest(http.MethodGet, "/api/canvas/account", "", login.Grant.Token, GetCanvasAccount)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var state canvasAccountTestResponse[struct {
+		ExpiresAt string `json:"expires_at"`
+	}]
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &state))
+	renewed, err := time.Parse(time.RFC3339, state.Data.ExpiresAt)
+	require.NoError(t, err)
+	assert.Greater(t, renewed.Unix(), time.Now().Add(399*24*time.Hour).Unix())
+	var grant model.CanvasGrant
+	require.NoError(t, model.DB.First(&grant, "id = ?", login.Grant.ID).Error)
+	assert.Equal(t, renewed.Unix(), grant.ExpiresAt)
+	assert.EqualValues(t, 1, grant.Revision)
+
+	// 续期不能恢复已经失效的授权。
+	for _, status := range []string{"expired", "revoked", "disabled", "rotated"} {
+		t.Run(status, func(t *testing.T) {
+			require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", grant.ID).Updates(map[string]any{"status": model.CanvasGrantStatusActive, "revoked_at": 0, "expires_at": time.Now().Add(time.Hour).Unix()}).Error)
+			require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", user.Id).Update("status", common.UserStatusEnabled).Error)
+			var stale model.CanvasGrant
+			require.NoError(t, model.DB.First(&stale, "id = ?", grant.ID).Error)
+			switch status {
+			case "expired":
+				require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", grant.ID).Update("expires_at", time.Now().Add(-time.Second).Unix()).Error)
+			case "revoked":
+				require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", grant.ID).Update("status", model.CanvasGrantStatusRevoked).Error)
+			case "disabled":
+				require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", user.Id).Update("status", common.UserStatusDisabled).Error)
+			case "rotated":
+				require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", grant.ID).Update("token_hash", model.CanvasGrantTokenHash("synthetic-replaced-grant")).Error)
+			}
+			// 身份检查通过后发生撤销/换号，迟到的续期也不能延长期限。
+			require.ErrorIs(t, model.RenewCanvasGrantExpiry(&stale), model.ErrCanvasGrantInvalid)
+			assert.Equal(t, http.StatusUnauthorized, canvasAccountControllerRequest(http.MethodGet, "/api/canvas/account", "", login.Grant.Token, GetCanvasAccount).Code)
+		})
+	}
+}
+
 // TestCanvasAccountAuthorizationManagementAndRecovery 覆盖账号授权、管理、撤销和恢复合同。
 func TestCanvasAccountAuthorizationManagementAndRecovery(t *testing.T) {
 	user, identity := setupCanvasAccountControllerTest(t)

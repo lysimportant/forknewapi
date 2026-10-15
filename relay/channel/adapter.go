@@ -96,6 +96,29 @@ type TaskSubmitRetryPolicy interface {
 	SkipSubmitRetry() bool
 }
 
+// TaskSubmissionSnapshot is the credential-bearing, encrypted-at-rest
+// description needed to replay a provider request after a gateway restart.
+// It is kept out of the public task DTO and is only used by the recovery path.
+type TaskSubmissionSnapshot struct {
+	PluginKey     string
+	PluginVersion string
+	URL           string
+	Method        string
+	Headers       map[string]string
+	ResponseType  string
+	NoRetry       bool
+	Context       map[string]any
+}
+
+// TaskSubmissionRecoveryAdaptor is implemented by adaptors that can restore
+// their submit descriptor and parse a replayed response. Adaptors without a
+// stable idempotency contract remain pending for manual reconciliation.
+type TaskSubmissionRecoveryAdaptor interface {
+	TaskAdaptor
+	SubmissionSnapshot() (*TaskSubmissionSnapshot, error)
+	RestoreSubmissionSnapshot(*TaskSubmissionSnapshot) error
+}
+
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }

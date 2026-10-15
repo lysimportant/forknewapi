@@ -30,8 +30,8 @@ import (
 const (
 	// canvasAuthorizationTTL 是授权请求和授权码的有效期。
 	canvasAuthorizationTTL = 5 * time.Minute
-	// canvasGrantTTL 是 Canvas grant 的固定有效期。
-	canvasGrantTTL = 30 * 24 * time.Hour
+	// 授权采用滚动期限，持续使用不会被固定的 30 天总寿命中断。
+	canvasGrantTTL = model.CanvasGrantIdleTTL
 )
 
 var (
@@ -316,9 +316,14 @@ func GetCanvasAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := model.RenewCanvasGrantExpiry(grant); err != nil {
+		canvasAccountModelError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
 		"user": canvasAccountUserProjection(user), "grant_id": grant.ID,
-		"groups": canvasAccountGroups(user),
+		"expires_at": time.Unix(grant.ExpiresAt, 0).UTC().Format(time.RFC3339),
+		"groups":     canvasAccountGroups(user),
 	}})
 }
 

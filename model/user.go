@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -1340,6 +1341,34 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	return nil
 }
 
+// RefundUserQuota returns quota that was previously charged from a wallet.
+//
+// Wallet credits such as top-ups and rewards are capped at MaxWalletQuota so
+// that balances remain JavaScript-safe. A refund is different: rejecting it
+// after an intervening credit would leave a failed request permanently
+// charged. Refunds therefore bypass the balance cap while keeping the amount
+// itself bounded and using the same persistent/cache update behavior.
+func RefundUserQuota(id int, quota int) (err error) {
+	if quota < 0 {
+		return errors.New("quota 不能为负数！")
+	}
+	if quota == 0 {
+		return nil
+	}
+	if err := common.ValidateWalletQuota(quota); err != nil {
+		return err
+	}
+	if err := refundUserQuota(id, quota); err != nil {
+		return err
+	}
+	gopool.Go(func() {
+		if err := cacheIncrUserQuota(id, int64(quota)); err != nil {
+			common.SysLog("failed to refund user quota: " + err.Error())
+		}
+	})
+	return nil
+}
+
 func increaseUserQuota(id int, quota int) (err error) {
 	result := DB.Model(&User{}).
 		Where("id = ? AND quota <= ?", id, common.MaxWalletQuota-quota).
@@ -1358,6 +1387,28 @@ func increaseUserQuota(id int, quota int) (err error) {
 		return gorm.ErrRecordNotFound
 	}
 	return ErrWalletQuotaLimitExceeded
+}
+
+func refundUserQuota(id int, quota int) (err error) {
+	// quota is bounded by MaxWalletQuota, so MaxInt64-quota is safe on all
+	// supported 64-bit database backends and protects the SQL addition itself.
+	result := DB.Model(&User{}).
+		Where("id = ? AND quota <= ?", id, math.MaxInt64-quota).
+		Update("quota", gorm.Expr("quota + ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	var count int64
+	if err := DB.Model(&User{}).Where("id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return errors.New("wallet quota refund would overflow")
 }
 
 func DecreaseUserQuota(id int, quota int, db bool) (err error) {

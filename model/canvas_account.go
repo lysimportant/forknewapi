@@ -280,6 +280,54 @@ func GetCanvasGrantByToken(raw string) (*CanvasGrant, *User, error) {
 	return &grant, &user, nil
 }
 
+// CanvasGrantIdleTTL 与浏览器持久 Cookie 的 400 天上限保持一致；每次有效使用可延长，撤销立即生效。
+const CanvasGrantIdleTTL = 400 * 24 * time.Hour
+
+// RenewCanvasGrantExpiry 仅延长仍有效的同版本授权，保留 token、权限修订及所有撤销状态。
+// 已过期、被重新授权替换或被禁用的授权不可借续期恢复；日内检查避免反复写库。
+func RenewCanvasGrantExpiry(grant *CanvasGrant) error {
+	if grant == nil {
+		return ErrCanvasGrantInvalid
+	}
+	now := time.Now().Unix()
+	expiresAt := now + int64(CanvasGrantIdleTTL/time.Second)
+	if grant.ExpiresAt >= expiresAt-int64((24*time.Hour)/time.Second) {
+		return nil
+	}
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		// 首次写锁同时覆盖 SQLite；CAS 防止迟到的账号查询复活旧授权。
+		changed := tx.Model(&CanvasGrant{}).
+			Where("id = ? AND token_hash = ? AND revision = ? AND status = ? AND revoked_at = 0 AND expires_at > ?", grant.ID, grant.TokenHash, grant.Revision, CanvasGrantStatusActive, now).
+			UpdateColumn("updated_at", gorm.Expr("updated_at"))
+		if changed.Error != nil {
+			return changed.Error
+		}
+		var latest CanvasGrant
+		if err := lockForUpdate(tx).Where("id = ? AND token_hash = ? AND revision = ? AND status = ? AND revoked_at = 0 AND expires_at > ?", grant.ID, grant.TokenHash, grant.Revision, CanvasGrantStatusActive, now).First(&latest).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrCanvasGrantInvalid
+			}
+			return err
+		}
+		if latest.ExpiresAt > expiresAt {
+			expiresAt = latest.ExpiresAt
+		}
+		var user User
+		if err := lockForUpdate(tx).First(&user, grant.UserID).Error; err != nil {
+			return err
+		}
+		if user.Status != common.UserStatusEnabled {
+			return ErrCanvasGrantInvalid
+		}
+		return tx.Model(&CanvasGrant{}).Where("id = ? AND expires_at < ?", grant.ID, expiresAt).
+			UpdateColumn("expires_at", expiresAt).Error
+	})
+	if err == nil {
+		grant.ExpiresAt = expiresAt
+	}
+	return err
+}
+
 // EnsureCanvasManagedToken 以 grant、分组和 operation_id 原子创建或恢复管理 Token。
 // 普通分组固定实际组；Auto 必须持久化非空显式范围且关闭跨组重试。
 func EnsureCanvasManagedToken(input CanvasManagedTokenInput) (*CanvasManagedAuthority, error) {

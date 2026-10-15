@@ -3,6 +3,7 @@ package relay
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/constant"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -187,6 +188,21 @@ func TaskPlatformUnavailableError(platform constant.TaskPlatform) (string, strin
 
 func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 	plugin, ok := ResolveTaskPluginForPlatform(pluginruntime.DefaultRegistry.Generation(), platform)
+	if !ok {
+		return nil
+	}
+	return jspluginadaptor.New(plugin)
+}
+
+// GetTaskAdaptorByPluginKey resolves the exact plugin recorded in a durable
+// submission barrier. Recovery must not silently switch to a different
+// platform mapping after a plugin registry reload.
+func GetTaskAdaptorByPluginKey(key string) channel.TaskAdaptor {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	plugin, ok := pluginruntime.DefaultRegistry.Generation().Get(key)
 	if !ok {
 		return nil
 	}

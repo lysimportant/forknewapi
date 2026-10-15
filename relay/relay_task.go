@@ -2,12 +2,14 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -343,6 +345,30 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (_ *TaskSubmit
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
 	}
+	// Persist the exact outbound body and plugin descriptor before any bytes are
+	// sent. A provider can accept the request and the process can terminate
+	// before the response reaches the controller, so this is the durable
+	// idempotency barrier for plugin-backed async tasks.
+	var requestBytes []byte
+	if requestBody != nil {
+		requestBytes, err = io.ReadAll(io.LimitReader(requestBody, 64<<20))
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
+		}
+		if len(requestBytes) == 64<<20 {
+			return nil, service.TaskErrorWrapperLocal(errors.New("task submission body exceeds size limit"), "build_request_failed", http.StatusRequestEntityTooLarge)
+		}
+		requestBody = bytes.NewReader(requestBytes)
+	}
+	if recoverable, ok := adaptor.(channel.TaskSubmissionRecoveryAdaptor); ok {
+		snapshot, snapshotErr := recoverable.SubmissionSnapshot()
+		if snapshotErr != nil {
+			return nil, service.TaskErrorWrapper(snapshotErr, "build_request_failed", http.StatusInternalServerError)
+		}
+		if err := persistPendingTask(c, info, platform, snapshot, requestBytes); err != nil {
+			return nil, service.TaskErrorWrapper(err, "task_insert_failed", http.StatusInternalServerError)
+		}
+	}
 
 	// 9. 发送请求
 	if policy, ok := adaptor.(channel.TaskSubmitRetryPolicy); ok && policy.SkipSubmitRetry() {
@@ -415,6 +441,62 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (_ *TaskSubmit
 		Immediate:      parsed.Immediate,
 		PluginState:    parsed.PluginState,
 	}, nil
+}
+
+func persistPendingTask(c *gin.Context, info *relaycommon.RelayInfo, platform constant.TaskPlatform, snapshot *channel.TaskSubmissionSnapshot, body []byte) error {
+	if info == nil || info.TaskRelayInfo == nil || snapshot == nil {
+		return errors.New("missing task submission identity")
+	}
+	// Unit-level adaptor tests can exercise the request path without opening a
+	// database. Production always initializes model.DB before serving traffic.
+	if model.DB == nil {
+		return nil
+	}
+	task := model.InitTask(platform, info)
+	task.Action = info.Action
+	task.Quota = info.PriceData.Quota
+	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
+	task.PrivateData.BillingSource = info.BillingSource
+	task.PrivateData.SubscriptionId = info.SubscriptionId
+	task.PrivateData.TokenId = info.TokenId
+	task.PrivateData.NodeName = common.NodeName
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		ModelPrice:      info.PriceData.ModelPrice,
+		GroupRatio:      info.PriceData.GroupRatioInfo.GroupRatio,
+		ModelRatio:      info.PriceData.ModelRatio,
+		OtherRatios:     info.PriceData.OtherRatios(),
+		OriginModelName: info.OriginModelName,
+		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, info.OriginModelName) || info.PriceData.UsePrice,
+		TieredSnapshot:  info.TieredBillingSnapshot,
+	}
+	task.PrivateData.Submission = &model.TaskSubmissionState{
+		Status: model.TaskSubmissionPending, PluginKey: snapshot.PluginKey,
+		PluginVersion: snapshot.PluginVersion, PublicTaskID: info.PublicTaskID,
+		URL: snapshot.URL, Method: snapshot.Method, Headers: snapshot.Headers,
+		ResponseType: snapshot.ResponseType, NoRetry: snapshot.NoRetry,
+		Body: append([]byte(nil), body...), Context: snapshot.Context,
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := service.PrepareCanvasTaskReceipt(info); err != nil {
+		return err
+	}
+	existing, found, err := model.GetByOnlyTaskId(task.TaskID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if existing.UserId != task.UserId || existing.PrivateData.Submission == nil {
+			return errors.New("task identity conflict")
+		}
+		task = existing
+	}
+	if !found {
+		if err := task.InsertWithContext(context.Background()); err != nil {
+			return err
+		}
+	}
+	c.Set("task_submission_pending", task)
+	return nil
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
