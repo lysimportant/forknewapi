@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // canvasAccountTestLogin 描述测试所需的授权兑换结果。
@@ -269,6 +270,89 @@ func TestCanvasAccountPersistentGrant(t *testing.T) {
 			// 身份检查通过后发生撤销/换号，迟到的续期也不能延长期限。
 			require.ErrorIs(t, model.RenewCanvasGrantExpiry(&stale), model.ErrCanvasGrantInvalid)
 			assert.Equal(t, http.StatusUnauthorized, canvasAccountControllerRequest(http.MethodGet, "/api/canvas/account", "", login.Grant.Token, GetCanvasAccount).Code)
+		})
+	}
+}
+
+// TestCanvasAccountPersistentGrantKeepsManagedTokens 覆盖已使用分组在授权续期后仍可调用。
+func TestCanvasAccountPersistentGrantKeepsManagedTokens(t *testing.T) {
+	_, identity := setupCanvasAccountControllerTest(t)
+	login := authorizeCanvasAccountForTest(t, identity)
+	oldExpiry := time.Now().Add(29 * 24 * time.Hour).Unix()
+	require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", login.Grant.ID).
+		Updates(map[string]any{"issued_at": time.Now().Add(-24 * time.Hour).Unix(), "expires_at": oldExpiry}).Error)
+	before := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "persistent-default"))
+	// 真实分组使用会更新 managed.updated_at，使其晚于 grant.issued_at。
+	account := canvasAccountControllerRequest(http.MethodGet, "/api/canvas/account", "", login.Grant.Token, GetCanvasAccount)
+	require.Equal(t, http.StatusOK, account.Code, account.Body.String())
+	var grant model.CanvasGrant
+	var token model.Token
+	require.NoError(t, model.DB.First(&grant, "id = ?", login.Grant.ID).Error)
+	require.NoError(t, model.DB.First(&token, "id = ?", before.TokenID).Error)
+	require.Greater(t, grant.ExpiresAt, oldExpiry)
+	assert.Equal(t, grant.ExpiresAt, token.ExpiredTime, "授权和分组令牌必须一同续期")
+	after := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "persistent-default"))
+	assert.Equal(t, before, after, "单纯续期不能轮换 Key 或让已冻结的权限修订失效")
+}
+
+// TestCanvasAccountRenewalPreservesTokenRestrictions 确保续期不覆盖人工限制，也不隐藏真正的权限变化。
+func TestCanvasAccountRenewalPreservesTokenRestrictions(t *testing.T) {
+	for _, change := range []string{"disabled", "expired", "shortened", "key", "deleted", "permission", "during-renewal"} {
+		t.Run(change, func(t *testing.T) {
+			_, identity := setupCanvasAccountControllerTest(t)
+			login := authorizeCanvasAccountForTest(t, identity)
+			oldExpiry := time.Now().Add(29 * 24 * time.Hour).Unix()
+			require.NoError(t, model.DB.Model(&model.CanvasGrant{}).Where("id = ?", login.Grant.ID).
+				Updates(map[string]any{"issued_at": time.Now().Add(-24 * time.Hour).Unix(), "expires_at": oldExpiry}).Error)
+			before := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "renewal-restriction"))
+			var token model.Token
+			require.NoError(t, model.DB.First(&token, "id = ?", before.TokenID).Error)
+			changedDuringRenewal := false
+			switch change {
+			case "disabled":
+				require.NoError(t, model.DB.Model(&token).Update("status", common.TokenStatusDisabled).Error)
+			case "expired":
+				require.NoError(t, model.DB.Model(&token).Update("expired_time", time.Now().Add(-time.Hour).Unix()).Error)
+			case "shortened":
+				require.NoError(t, model.DB.Model(&token).Update("expired_time", time.Now().Add(time.Hour).Unix()).Error)
+			case "key":
+				require.NoError(t, model.DB.Model(&token).Update("key", "synthetic-manually-changed-key").Error)
+			case "deleted":
+				require.NoError(t, model.DB.Delete(&token).Error)
+			case "permission":
+				require.NoError(t, model.DB.Model(&model.Ability{}).Where("channel_id = ?", 8100).Update("enabled", false).Error)
+			case "during-renewal":
+				const callback = "test:permission-change-during-renewal"
+				require.NoError(t, model.DB.Callback().Update().After("gorm:update").Register(callback, func(tx *gorm.DB) {
+					updates, ok := tx.Statement.Dest.(map[string]any)
+					if changedDuringRenewal || tx.Statement.Table != "tokens" || !ok || updates["expired_time"] == nil {
+						return
+					}
+					changedDuringRenewal = true
+					tx.AddError(tx.Session(&gorm.Session{NewDB: true}).Model(&model.Ability{}).
+						Where("channel_id = ?", 8100).Update("enabled", false).Error)
+				}))
+				t.Cleanup(func() { require.NoError(t, model.DB.Callback().Update().Remove(callback)) })
+			}
+			var changed model.Token
+			require.NoError(t, model.DB.Unscoped().First(&changed, token.Id).Error)
+			account := canvasAccountControllerRequest(http.MethodGet, "/api/canvas/account", "", login.Grant.Token, GetCanvasAccount)
+			require.Equal(t, http.StatusOK, account.Code, account.Body.String())
+			if change == "during-renewal" {
+				require.True(t, changedDuringRenewal)
+			}
+			if change == "permission" || change == "during-renewal" {
+				after := decodeCanvasManagedGroupForTest(t, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "renewal-restriction"))
+				assert.Greater(t, canvasPermissionRevisionForTest(t, after), canvasPermissionRevisionForTest(t, before))
+				return
+			}
+			var unchanged model.Token
+			require.NoError(t, model.DB.Unscoped().First(&unchanged, token.Id).Error)
+			assert.Equal(t, changed.Status, unchanged.Status)
+			assert.Equal(t, changed.ExpiredTime, unchanged.ExpiredTime)
+			assert.Equal(t, changed.Key, unchanged.Key)
+			assert.Equal(t, changed.DeletedAt, unchanged.DeletedAt)
+			assert.Equal(t, http.StatusConflict, canvasManagedGroupRequestForTest(t, login.Grant.Token, "default", "renewal-restriction").Code)
 		})
 	}
 }

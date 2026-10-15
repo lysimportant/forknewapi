@@ -10,15 +10,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMetasoH3VideoContracts 使用真实任务插件宿主验证秘塔合同，不访问上游或使用凭据。
+const metasoBaseURL = "https://b.metaso.cn/api/minimax"
+
+func loadMetasoPlugin(t *testing.T) *jsplugin.LoadedPlugin {
+	t.Helper()
+	source, err := plugins.Source("metaso-h3-video")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	return plugin
+}
+
+func metasoSubmitContext(body map[string]any) map[string]any {
+	return map[string]any{"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": metasoBaseURL, "apiKey": "fixture-only", "requestBody": body}
+}
+
+func metasoMedia(kind, role, url string) map[string]any {
+	return map[string]any{"type": kind, kind: map[string]any{"url": url}, "role": role}
+}
+
+// TestMetasoH3VideoContracts 使用真实插件宿主核实协议和模型隔离，不访问上游。
 func TestMetasoH3VideoContracts(t *testing.T) {
 	source, err := plugins.Source("metaso-h3-video")
 	require.NoError(t, err)
 	registry := jsplugin.NewRegistry()
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-
-	assert.Equal(t, "https://metaso.cn/api/openai", plugin.Meta.BaseURL)
+	assert.Equal(t, metasoBaseURL, plugin.Meta.BaseURL)
+	assert.Equal(t, "1.1.0", plugin.Meta.Version)
 	assert.Equal(t, []string{"Minimax-H3"}, plugin.Meta.Models)
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
 	assert.Equal(t, []string{"480p", "768p", "1080p", "2k"}, plugin.Meta.UsageSchema["size"].Enum)
@@ -26,139 +45,277 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	require.True(t, found)
 	assert.Same(t, plugin, binding.Plugin)
 	_, found = registry.Generation().LookupEndpoint("POST", "/v1/videos", "MiniMax-H3")
-	assert.False(t, found, "模型 ID 大小写不同，不应自动变成别名")
+	assert.False(t, found, "保留秘塔对外模型名，不抢占官方模型")
 	_, found = registry.Generation().LookupEndpoint("POST", "/v1/responses", "Minimax-H3")
-	assert.False(t, found, "秘塔文档只确认视频协议")
+	assert.False(t, found)
 
-	textBody := map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": 5, "size": "480p"}
-	decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
-		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "body": map[string]any{"kind": "json", "value": textBody},
-	})
-	require.NoError(t, err)
-	decodedBytes, err := common.Marshal(decoded)
-	require.NoError(t, err)
-	var command map[string]any
-	require.NoError(t, common.Unmarshal(decodedBytes, &command))
-	assert.Equal(t, "text_to_video", command["action"])
-
-	request := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": textBody,
-	})
-	assert.Equal(t, "https://metaso.cn/api/openai/v1/videos", request["url"])
+	body := map[string]any{"model": "Minimax-H3", "prompt": "flower", "seconds": 5, "size": "480p"}
+	request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
+	assert.Equal(t, metasoBaseURL+"/v2/video_generation", request["url"])
+	assert.Equal(t, "POST", request["method"])
 	assert.Equal(t, true, request["noRetry"])
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "A sunflower swaying gently", "seconds": float64(5), "size": "854x480"}, request["body"])
-
-	imageBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": 6, "size": "768p",
-		"input_reference": map[string]any{"image_url": "https://cdn.example/flower.png"},
-	}
-	imageRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": imageBody,
-	})
-	assert.Equal(t, "image_to_video", commandAction(t, plugin, imageBody))
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate this flower", "seconds": float64(6), "size": "1280x720", "input_reference": map[string]any{"image_url": "https://cdn.example/flower.png"}}, imageRequest["body"])
-
-	metadataBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "", "seconds": 5, "size": "1080p",
-		"metadata": map[string]any{"content": []any{
-			map[string]any{"type": "text", "text": "Animate the supplied image"},
-			map[string]any{"type": "image_url", "role": "reference_image", "image_url": map[string]any{"url": "https://cdn.example/reference.png"}},
-		}},
-	}
-	metadataRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": metadataBody,
-	})
-	assert.Equal(t, map[string]any{"model": "Minimax-H3", "prompt": "Animate the supplied image", "seconds": float64(5), "size": "1920x1080", "input_reference": map[string]any{"image_url": "https://cdn.example/reference.png"}}, metadataRequest["body"])
-
-	usage := metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "requestBody": imageBody})
-	assert.Equal(t, map[string]any{"seconds": float64(6), "size": "768p", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0)}, usage)
-	assert.Empty(t, metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "usagePurpose": "billing_ratios", "requestBody": imageBody}))
-
-	multimodalBody := map[string]any{
-		"model": "Minimax-H3", "prompt": "Animate all supplied references", "seconds": 8, "size": "2k", "mode": "omni_reference",
-		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
-		"videos": []any{"https://cdn.example/reference.mp4"}, "audios": []any{"https://cdn.example/reference.mp3"},
-	}
-	multimodalRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": multimodalBody,
-	})
-	assert.Equal(t, map[string]any{
-		"model": "Minimax-H3", "prompt": "Animate all supplied references", "seconds": float64(8), "size": "1792x1024", "mode": "omni_reference",
-		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"}, "videos": []any{"https://cdn.example/reference.mp4"}, "audios": []any{"https://cdn.example/reference.mp3"},
-	}, multimodalRequest["body"])
-	multimodalUsage := metasoHookObject(t, plugin, "extractUsage", map[string]any{"upstreamModel": "Minimax-H3", "requestBody": multimodalBody})
-	assert.Equal(t, map[string]any{"seconds": float64(8), "size": "2k", "input_images": float64(2), "input_videos": float64(1), "input_audios": float64(1)}, multimodalUsage)
-
-	query := metasoHookObject(t, plugin, "buildQueryRequest", map[string]any{"baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "taskId": "task/id?x"})
-	assert.Equal(t, "https://metaso.cn/api/openai/v1/videos/task%2Fid%3Fx", query["url"])
-	content := metasoHookObject(t, plugin, "buildContentRequest", map[string]any{"baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "taskId": "task/id?x", "artifactKey": "video", "clientRequest": map[string]any{"method": "GET"}})
-	assert.Equal(t, "https://metaso.cn/api/openai/v1/videos/task%2Fid%3Fx/content", content["url"])
-	assert.Equal(t, "GET", content["method"])
-
-	for name, body := range map[string]map[string]any{
-		"unsupported size": {"prompt": "flower", "seconds": 5, "size": "720p"},
-		"zero seconds":     {"prompt": "flower", "seconds": 0},
-		"private image":    {"prompt": "flower", "seconds": 5, "input_reference": "data:image/png;base64,abc"},
-		"too many images":  {"prompt": "flower", "seconds": 5, "images": make([]any, 10)},
-		"too many videos":  {"prompt": "flower", "seconds": 5, "videos": make([]any, 4)},
-		"too many audios":  {"prompt": "flower", "seconds": 5, "audios": make([]any, 4)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"upstreamModel": "Minimax-H3", "requestBody": body, "baseUrl": "https://metaso.cn/api/openai"})
-			require.Error(t, callErr)
-		})
-	}
-	for _, size := range []string{"480p", "768p", "1080p", "2k"} {
-		request := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-			"upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only",
-			"requestBody": map[string]any{"prompt": "flower", "seconds": 5, "size": size},
-		})
-		assert.NotEmpty(t, request["body"], size)
-	}
-	legacy := metasoHookObject(t, plugin, "extractUsage", map[string]any{
-		"upstreamModel": "Minimax-H3", "requestBody": map[string]any{"prompt": "flower", "seconds": 5, "size": "1024x1792"},
-	})
-	assert.Equal(t, "2k", legacy["size"])
-	boundaryBody := map[string]any{
-		"prompt": "Animate all supplied references", "seconds": 5,
-		"images": make([]any, 9), "videos": make([]any, 3), "audios": make([]any, 3),
-	}
-	for _, field := range []string{"images", "videos", "audios"} {
-		items := boundaryBody[field].([]any)
-		for index := range items {
-			items[index] = "https://cdn.example/" + field + "/" + string(rune('a'+index))
-		}
-	}
-	boundaryRequest := metasoHookObject(t, plugin, "buildSubmitRequest", map[string]any{
-		"upstreamModel": "Minimax-H3", "baseUrl": "https://metaso.cn/api/openai", "apiKey": "fixture-only", "requestBody": boundaryBody,
-	})
-	assert.Equal(t, float64(9), float64(len(boundaryRequest["body"].(map[string]any)["images"].([]any))))
-	assert.Equal(t, float64(3), float64(len(boundaryRequest["body"].(map[string]any)["videos"].([]any))))
-	assert.Equal(t, float64(3), float64(len(boundaryRequest["body"].(map[string]any)["audios"].([]any))))
+	assert.Equal(t, "Bearer fixture-only", request["headers"].(map[string]any)["Authorization"])
+	assert.JSONEq(t, `{"model":"MiniMax-H3","content":[{"type":"text","text":"flower"}],"duration":5,"resolution":"480p","ratio":"16:9"}`, metasoJSON(t, request["body"]))
+	assert.Equal(t, "text_to_video", commandAction(t, plugin, body))
+	hailuoSource, err := plugins.Source("hailuo")
+	require.NoError(t, err)
+	hailuo, err := registry.RegisterFactory(hailuoSource, jsplugin.Options{})
+	require.NoError(t, err)
+	binding, found = registry.Generation().LookupEndpoint("POST", "/v1/videos", "MiniMax-H3")
+	require.True(t, found)
+	assert.Same(t, hailuo, binding.Plugin)
 }
 
-// metasoHookObject 将插件 Hook 返回值转换为便于断言的 JSON 对象。
+// TestMetasoH3NativeExample 确认文档的 content、角色、比例与 false 原样进入上游请求。
+func TestMetasoH3NativeExample(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	const example = `{"model":"MiniMax-H3","content":[{"type":"text","text":"Pull focus to the people in the background and add more steam to the ramen bowl."},{"type":"image_url","image_url":{"url":"https://cdn.example/ramen.png"},"role":"first_frame"}],"resolution":"2K","duration":5,"ratio":"adaptive","fast_mode":false}`
+	var body map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(example, &body))
+	assert.Equal(t, "image_to_video", commandAction(t, plugin, body))
+	request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
+	assert.JSONEq(t, example, metasoJSON(t, request["body"]))
+	assert.JSONEq(t, `{"seconds":5,"size":"2k","input_images":1,"input_videos":0,"input_audios":0}`, metasoJSON(t, metasoHookObject(t, plugin, "extractUsage", metasoSubmitContext(body))))
+	body["fast_mode"] = true
+	request = metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
+	assert.Equal(t, true, request["body"].(map[string]any)["fast_mode"])
+	ctx := metasoSubmitContext(body)
+	ctx["usagePurpose"] = "billing_ratios"
+	assert.Empty(t, metasoHookObject(t, plugin, "extractUsage", ctx))
+}
+
+func TestMetasoH3BaseURLs(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	for _, test := range []struct{ base, want string }{
+		{"", metasoBaseURL}, {metasoBaseURL + "/", metasoBaseURL},
+		{metasoBaseURL + "/v2", metasoBaseURL}, {metasoBaseURL + "/v2/video_generation", metasoBaseURL},
+		{"https://metaso.cn/api/openai", metasoBaseURL}, {"https://metaso.cn/api/openai/v1/", metasoBaseURL},
+		{"https://metaso.cn/api/openai/v1/videos", metasoBaseURL},
+		{"https://proxy.example/prefix", "https://proxy.example/prefix"}, {"https://proxy.example/prefix/v1/videos", "https://proxy.example/prefix"},
+	} {
+		t.Run(test.base, func(t *testing.T) {
+			ctx := metasoSubmitContext(map[string]any{"prompt": "flower", "seconds": 5})
+			ctx["baseUrl"] = test.base
+			request := metasoHookObject(t, plugin, "buildSubmitRequest", ctx)
+			assert.Equal(t, test.want+"/v2/video_generation", request["url"])
+			if test.base != "" {
+				require.NoError(t, jsplugin.ValidateRequestURL(request["url"].(string), test.base, plugin.Meta.AllowedHosts))
+			}
+			ctx["taskId"] = "task/id?x"
+			query := metasoHookObject(t, plugin, "buildQueryRequest", ctx)
+			assert.Equal(t, test.want+"/v2/query/video_generation/task%2Fid%3Fx", query["url"])
+			assert.Equal(t, "GET", query["method"])
+		})
+	}
+}
+
+func TestMetasoH3LegacyAndCanvasInputs(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	for _, test := range []struct {
+		name         string
+		body         map[string]any
+		want, action string
+	}{
+		{
+			name:   "legacy single image",
+			body:   map[string]any{"prompt": "flower", "seconds": 6, "size": "768p", "input_reference": map[string]any{"image_url": "https://cdn.example/first.png"}},
+			want:   `{"model":"MiniMax-H3","content":[{"type":"text","text":"flower"},{"type":"image_url","image_url":{"url":"https://cdn.example/first.png"},"role":"first_frame"}],"duration":6,"resolution":"768P","ratio":"adaptive"}`,
+			action: "image_to_video",
+		},
+		{
+			name: "Canvas mixed frames and references keep roles",
+			body: map[string]any{"prompt": "flower", "seconds": 5, "size": "1080p", "aspect_ratio": "9:16", "metadata": map[string]any{
+				"fast_mode": false, "aigc_watermark": false, "content": []any{
+					metasoMedia("image_url", "first_frame", "https://cdn.example/first.png"), metasoMedia("image_url", "last_frame", "https://cdn.example/last.png"), metasoMedia("image_url", "reference_image", "https://cdn.example/reference.png"),
+				},
+			}},
+			want:   `{"model":"MiniMax-H3","content":[{"type":"text","text":"flower"},{"type":"image_url","image_url":{"url":"https://cdn.example/first.png"},"role":"first_frame"},{"type":"image_url","image_url":{"url":"https://cdn.example/last.png"},"role":"last_frame"},{"type":"image_url","image_url":{"url":"https://cdn.example/reference.png"},"role":"reference_image"}],"duration":5,"resolution":"1080p","ratio":"9:16","fast_mode":false,"aigc_watermark":false}`,
+			action: "reference_to_video",
+		},
+		{
+			name:   "one image with video and audio is not dropped",
+			body:   map[string]any{"prompt": "flower", "seconds": 8, "size": "2k", "mode": "omni_reference", "images": []any{"https://cdn.example/image.png"}, "videos": []any{"https://cdn.example/video.mp4"}, "audios": []any{"https://cdn.example/audio.mp3"}},
+			want:   `{"model":"MiniMax-H3","content":[{"type":"text","text":"flower"},{"type":"image_url","image_url":{"url":"https://cdn.example/image.png"},"role":"reference_image"},{"type":"video_url","video_url":{"url":"https://cdn.example/video.mp4"},"role":"reference_video"},{"type":"audio_url","audio_url":{"url":"https://cdn.example/audio.mp3"},"role":"reference_audio"}],"duration":8,"resolution":"2K","ratio":"adaptive"}`,
+			action: "reference_to_video",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(test.body))
+			assert.JSONEq(t, test.want, metasoJSON(t, request["body"]))
+			assert.Equal(t, test.action, commandAction(t, plugin, test.body))
+		})
+	}
+	for _, test := range []struct{ size, resolution, ratio string }{
+		{"480p", "480p", "16:9"}, {"768P", "768P", "16:9"}, {"1080p", "1080p", "16:9"}, {"2K", "2K", "16:9"},
+		{"1280x720", "768P", "16:9"}, {"720x1280", "768P", "9:16"}, {"1792x1024", "2K", "16:9"}, {"1024x1792", "2K", "9:16"},
+	} {
+		t.Run(test.size, func(t *testing.T) {
+			request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(map[string]any{"prompt": "flower", "seconds": 5, "size": test.size}))
+			body := request["body"].(map[string]any)
+			assert.Equal(t, test.resolution, body["resolution"])
+			assert.Equal(t, test.ratio, body["ratio"])
+		})
+	}
+	decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "body": map[string]any{"kind": "form", "fields": map[string]any{
+			"content": []string{`[{"type":"text","text":"flower"}]`}, "duration": []string{"5"}, "fast_mode": []string{"false"}, "metadata": []string{`{"ratio":"9:16"}`},
+		}},
+	})
+	require.NoError(t, err)
+	var intent map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(metasoJSON(t, decoded), &intent))
+	request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(intent["requestBody"].(map[string]any)))
+	assert.Equal(t, false, request["body"].(map[string]any)["fast_mode"])
+	assert.Equal(t, "9:16", request["body"].(map[string]any)["ratio"])
+}
+
+func TestMetasoH3Validation(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	for name, fields := range map[string]map[string]any{
+		"unsupported size": {"size": "720p"}, "too short": {"seconds": 3}, "too long": {"seconds": 31}, "fraction": {"seconds": 5.5},
+		"high resolution long video": {"seconds": 16, "size": "2K"}, "duration conflict": {"duration": 6},
+		"resolution conflict": {"size": "768p", "resolution": "2K"}, "bad boolean": {"fast_mode": 0}, "null boolean": {"fast_mode": nil},
+		"metadata conflict": {"fast_mode": false, "metadata": map[string]any{"fast_mode": true}},
+		"invalid metadata":  {"metadata": "not-json"}, "metadata array": {"metadata": []any{}},
+		"invalid content": {"content": "not-json"}, "invalid item": {"content": []any{true}},
+		"invalid role":          {"content": []any{metasoMedia("video_url", "first_frame", "https://cdn.example/video.mp4")}},
+		"duplicate first frame": {"content": []any{metasoMedia("image_url", "first_frame", "https://cdn.example/a.png"), metasoMedia("image_url", "first_frame", "https://cdn.example/b.png")}},
+		"nonpublic image":       {"image": "data:image/png;base64,abc"}, "invalid ratio": {"ratio": "5:7"}, "adaptive without visual": {"ratio": "adaptive"},
+		"ratio conflict": {"ratio": "16:9", "aspect_ratio": "9:16"}, "no text": {"prompt": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := map[string]any{"prompt": "flower", "seconds": 5}
+			for key, value := range fields {
+				body[key] = value
+			}
+			_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", metasoSubmitContext(body))
+			require.Error(t, err)
+		})
+	}
+	for _, base := range []string{"https://metaso.cn/api/openai?x=1", "https://user:pass@example.com", "https://example.com/#fragment"} {
+		ctx := metasoSubmitContext(map[string]any{"prompt": "flower", "seconds": 5})
+		ctx["baseUrl"] = base
+		_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+		require.Error(t, err)
+	}
+	for _, size := range []string{"480p", "768P"} {
+		request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(map[string]any{"prompt": "flower", "seconds": 30, "size": size}))
+		assert.Equal(t, float64(30), request["body"].(map[string]any)["duration"])
+	}
+	for _, kind := range []struct {
+		field string
+		count int
+	}{{"images", 9}, {"videos", 3}, {"audios", 3}} {
+		body := map[string]any{"prompt": "flower", "seconds": 5, "mode": "omni_reference"}
+		values := make([]any, kind.count+1)
+		for index := range values {
+			values[index] = "https://cdn.example/reference"
+		}
+		body[kind.field] = values[:kind.count]
+		metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
+		body[kind.field] = values
+		_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", metasoSubmitContext(body))
+		require.Error(t, err, kind.field)
+	}
+}
+
+func TestMetasoH3SubmitAndQueryResults(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	response := metasoHookObject(t, plugin, "parseSubmitResponse", map[string]any{}, map[string]any{"statusCode": 200, "body": map[string]any{"task_id": "native-task"}})
+	assert.Equal(t, "native-task", response["taskId"])
+	for _, body := range []map[string]any{
+		{"request_id": "not-a-task"}, {"id": "not-native"}, {"task_id": " "},
+		{"task_id": "invalid", "error": map[string]any{"message": "denied"}},
+		{"task_id": "invalid", "base_resp": map[string]any{"status_code": 1004, "status_msg": "denied"}},
+	} {
+		_, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{}, map[string]any{"statusCode": 200, "body": body})
+		require.Error(t, err)
+	}
+	_, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{}, map[string]any{"statusCode": 500, "body": map[string]any{"task_id": "not-accepted"}})
+	require.Error(t, err)
+	for _, test := range []struct{ body, status, reason string }{
+		{`{"task":{"status":"queued"}}`, "QUEUED", ""}, {`{"task":{"status":"running"}}`, "IN_PROGRESS", ""},
+		{`{"task":{"status":"succeeded","content":{"url":"https://cdn.example/result.mp4"}}}`, "SUCCESS", ""},
+		{`{"task":{"status":"failed","error":{"message":"content rejected"}}}`, "FAILURE", "content rejected"},
+		{`{"task":{"status":"cancelled"}}`, "FAILURE", "upstream video generation failed"},
+		{`{"task":{"status":"new-status"}}`, "UNKNOWN", "unrecognized video status"},
+		{`{"error":{"http_code":"401","message":"denied"}}`, "FAILURE", "denied"},
+		{`{"base_resp":{"status_code":1004,"status_msg":"denied"}}`, "FAILURE", "denied"},
+	} {
+		t.Run(test.body, func(t *testing.T) {
+			var body map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(test.body, &body))
+			result := metasoHookObject(t, plugin, "parseTaskResult", map[string]any{}, body)
+			assert.Equal(t, test.status, result["status"])
+			if test.reason != "" {
+				assert.Equal(t, test.reason, result["reason"])
+			}
+			if test.status == "SUCCESS" {
+				assert.Equal(t, "https://cdn.example/result.mp4", result["url"])
+			}
+		})
+	}
+	for _, code := range []int{408, 429, 500, 503} {
+		_, err := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{}, map[string]any{"error": map[string]any{"http_code": code, "message": "retry later"}})
+		require.ErrorContains(t, err, "retry later", "查询临时错误不能将已受理任务判为失败")
+	}
+	_, err = plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{}, map[string]any{"task": map[string]any{"status": "succeeded"}})
+	require.Error(t, err, "缺失结果地址不能提前报告成功")
+}
+
+func TestMetasoH3ArtifactsAndCompletionUsage(t *testing.T) {
+	plugin := loadMetasoPlugin(t)
+	body := map[string]any{"task": map[string]any{
+		"id": "native-task", "status": "succeeded", "resolution": "2K", "duration": 5,
+		"content": map[string]any{"url": "https://cdn.example/result.mp4"},
+		"usage":   map[string]any{"output_seconds": 5.2, "input_image_count": 0, "input_seconds": 7.5, "input_audio_seconds": 6},
+	}}
+	for _, data := range []any{body, map[string]any{"data": map[string]any{"task_id": "native-task", "data": body}}} {
+		ctx := map[string]any{"status": "SUCCESS", "data": data, "artifactKey": "video", "clientRequest": map[string]any{"method": "GET"}, "apiKey": "fixture-only"}
+		artifacts, err := plugin.Engine.Call(t.Context(), "listArtifacts", ctx)
+		require.NoError(t, err)
+		assert.JSONEq(t, `[{"key":"video","type":"video","mimeType":"video/mp4"}]`, metasoJSON(t, artifacts))
+		request := metasoHookObject(t, plugin, "buildContentRequest", ctx)
+		assert.Equal(t, map[string]any{"url": "https://cdn.example/result.mp4", "method": "GET", "credentialless": true}, request, "CDN 请求不携带渠道密钥")
+	}
+	_, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{"artifactKey": "video", "data": map[string]any{}})
+	require.ErrorContains(t, err, "artifact_not_found")
+	usage := metasoHookObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS"}, body)
+	assert.Equal(t, map[string]any{"seconds": 5.2, "size": "2k", "input_images": float64(0)}, usage, "时长不可写入按个数计价的视频/音频字段")
+	invalid := map[string]any{"task": map[string]any{"resolution": "unknown", "usage": map[string]any{"output_seconds": -1, "input_image_count": 10}}}
+	for _, test := range []struct {
+		status string
+		body   any
+	}{{"SUCCESS", invalid}, {"SUCCESS", map[string]any{"task": map[string]any{}}}, {"IN_PROGRESS", body}} {
+		value, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{}, map[string]any{"status": test.status}, test.body)
+		require.NoError(t, err)
+		assert.Nil(t, value)
+	}
+}
+
+func metasoJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	return string(encoded)
+}
+
 func metasoHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string, args ...any) map[string]any {
 	t.Helper()
 	value, err := plugin.Engine.Call(t.Context(), hook, args...)
 	require.NoError(t, err)
-	encoded, err := common.Marshal(value)
-	require.NoError(t, err)
 	var result map[string]any
-	require.NoError(t, common.Unmarshal(encoded, &result))
+	require.NoError(t, common.UnmarshalJsonStr(metasoJSON(t, value), &result))
 	return result
 }
 
-// commandAction 解码指定请求并返回插件选择的生成动作。
 func commandAction(t *testing.T, plugin *jsplugin.LoadedPlugin, body map[string]any) string {
 	t.Helper()
 	value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
 		"model": "Minimax-H3", "upstreamModel": "Minimax-H3", "body": map[string]any{"kind": "json", "value": body},
 	})
 	require.NoError(t, err)
-	encoded, err := common.Marshal(value)
-	require.NoError(t, err)
 	var result map[string]any
-	require.NoError(t, common.Unmarshal(encoded, &result))
+	require.NoError(t, common.UnmarshalJsonStr(metasoJSON(t, value), &result))
 	return result["action"].(string)
 }

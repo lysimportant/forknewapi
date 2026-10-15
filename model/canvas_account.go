@@ -319,6 +319,9 @@ func RenewCanvasGrantExpiry(grant *CanvasGrant) error {
 		if user.Status != common.UserStatusEnabled {
 			return ErrCanvasGrantInvalid
 		}
+		if err := renewCanvasManagedTokenExpiriesWithTx(tx, &latest, &user, expiresAt); err != nil {
+			return err
+		}
 		return tx.Model(&CanvasGrant{}).Where("id = ? AND expires_at < ?", grant.ID, expiresAt).
 			UpdateColumn("expires_at", expiresAt).Error
 	})
@@ -326,6 +329,53 @@ func RenewCanvasGrantExpiry(grant *CanvasGrant) error {
 		grant.ExpiresAt = expiresAt
 	}
 	return err
+}
+
+// renewCanvasManagedTokenExpiriesWithTx 只延长仍与旧授权期限一致的有效管理 Token。
+// 保留人工修改、禁用、删除和已过期的 Token；单纯续期不改变 Key 或权限修订。
+func renewCanvasManagedTokenExpiriesWithTx(tx *gorm.DB, grant *CanvasGrant, user *User, expiresAt int64) error {
+	if expiresAt <= grant.ExpiresAt {
+		return nil
+	}
+	initCol()
+	var managedTokens []CanvasManagedToken
+	if err := lockForUpdate(tx).Where("grant_id = ? AND user_id = ? AND status = ? AND replaced_by_id IS NULL AND revoked_at = 0", grant.ID, user.Id, CanvasManagedTokenStatusActive).
+		Order("id ASC").Find(&managedTokens).Error; err != nil {
+		return err
+	}
+	for _, managed := range managedTokens {
+		var token Token
+		if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", managed.TokenID, user.Id).First(&token).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+		if token.Status != common.TokenStatusEnabled || token.ExpiredTime <= time.Now().Unix() ||
+			token.ExpiredTime != grant.ExpiresAt || !canvasManagedTokenContractValid(&managed, &token) {
+			continue
+		}
+		authority := CanvasManagedAuthority{Grant: *grant, User: *user, Managed: managed, Token: token}
+		before, after, err := canvasPermissionFingerprintsWithTx(tx, &authority, expiresAt)
+		if err != nil {
+			return err
+		}
+		if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+			return fmt.Errorf("invalidate renewed token cache: %w", err)
+		}
+		if err := tx.Model(&Token{}).Where("id = ? AND user_id = ?", token.Id, user.Id).
+			UpdateColumn("expired_time", expiresAt).Error; err != nil {
+			return err
+		}
+		// 只有其它权限事实未变才平移指纹；同时发生的权限变更留给正常校验递增修订。
+		if managed.PermissionFingerprint == before {
+			if err := tx.Model(&CanvasManagedToken{}).Where("id = ?", managed.ID).
+				UpdateColumn("permission_fingerprint", after).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // EnsureCanvasManagedToken 以 grant、分组和 operation_id 原子创建或恢复管理 Token。
@@ -712,10 +762,22 @@ func createCanvasManagedReplacementTokenWithTx(tx *gorm.DB, grant *CanvasGrant, 
 // 指纹覆盖用户、grant、Token、相关站点选项、Ability 和渠道状态。
 func ReconcileCanvasManagedAuthority(managedID int64) (*CanvasManagedAuthority, error) {
 	initCol()
+	var reference CanvasManagedToken
+	if err := DB.Select("grant_id").First(&reference, managedID).Error; err != nil {
+		return nil, err
+	}
 	var authority CanvasManagedAuthority
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		// 与授权续期、分组管理保持 grant -> managed 的锁顺序，避免并发反向等待。
+		if err := tx.Model(&CanvasGrant{}).Where("id = ?", reference.GrantID).
+			UpdateColumn("updated_at", gorm.Expr("updated_at")).Error; err != nil {
+			return err
+		}
 		if err := lockForUpdate(tx).First(&authority.Managed, managedID).Error; err != nil {
 			return err
+		}
+		if authority.Managed.GrantID != reference.GrantID {
+			return ErrCanvasManagedTokenChanged
 		}
 		if err := loadCanvasManagedAuthorityWithTx(tx, &authority); err != nil {
 			return err
@@ -1042,12 +1104,19 @@ func loadCanvasManagedAuthorityWithTx(tx *gorm.DB, authority *CanvasManagedAutho
 
 // canvasPermissionFingerprintWithTx 计算排除余额和价格后的权限指纹。
 func canvasPermissionFingerprintWithTx(tx *gorm.DB, authority *CanvasManagedAuthority) (string, error) {
+	current, _, err := canvasPermissionFingerprintsWithTx(tx, authority, 0)
+	return current, err
+}
+
+// canvasPermissionFingerprintsWithTx 用同一次读取的权限事实计算续期前后指纹。
+// 两次独立读取会把中间发生的权限变化错误归入续期，漏掉应递增的权限修订。
+func canvasPermissionFingerprintsWithTx(tx *gorm.DB, authority *CanvasManagedAuthority, renewedExpiry int64) (string, string, error) {
 	groups := []string{authority.Managed.GroupID}
 	if authority.Managed.GroupID == "auto" {
 		var err error
 		groups, err = authority.Token.GetAutoGroups()
 		if err != nil || len(groups) == 0 {
-			return "", ErrCanvasAutoGroupEmpty
+			return "", "", ErrCanvasAutoGroupEmpty
 		}
 	}
 	groups = normalizeCanvasAutoGroups(groups)
@@ -1055,7 +1124,7 @@ func canvasPermissionFingerprintWithTx(tx *gorm.DB, authority *CanvasManagedAuth
 
 	permissionOptions, err := canvasPermissionOptionsWithTx(tx, authority)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	type permissionAbility struct {
 		Group         string  `json:"group" gorm:"column:group_id"`
@@ -1073,7 +1142,7 @@ func canvasPermissionFingerprintWithTx(tx *gorm.DB, authority *CanvasManagedAuth
 			Joins("LEFT JOIN channels ON channels.id = abilities.channel_id").
 			Where("abilities."+commonGroupCol+" IN ?", groups).
 			Order("abilities." + commonGroupCol + " ASC, abilities.model ASC, abilities.channel_id ASC").Scan(&abilities).Error; err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	payload := struct {
@@ -1111,10 +1180,20 @@ func canvasPermissionFingerprintWithTx(tx *gorm.DB, authority *CanvasManagedAuth
 	payload.Options, payload.Abilities = permissionOptions, abilities
 	encoded, err := common.Marshal(payload)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), nil
+	current := hex.EncodeToString(digest[:])
+	if renewedExpiry == 0 {
+		return current, "", nil
+	}
+	payload.Grant.ExpiresAt, payload.Token.ExpiredTime = renewedExpiry, renewedExpiry
+	encoded, err = common.Marshal(payload)
+	if err != nil {
+		return "", "", err
+	}
+	digest = sha256.Sum256(encoded)
+	return current, hex.EncodeToString(digest[:]), nil
 }
 
 // canvasManagedTokenContractValid 校验不会随余额消耗变化的管理 Token 固定字段。
