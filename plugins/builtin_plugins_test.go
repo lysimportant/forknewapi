@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"io/fs"
+	"slices"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -10,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "seedance-video", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
+var expectedKeys = []string{"alibaba", "doubao", "globalstore", "google", "grok-video", "hailuo", "image2pro", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "seedance-video", "shumai-h3-video", "sora", "sunoapi", "vertex-ai", "vidu", "yuanliu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -99,7 +100,41 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
+			if key == "globalstore" {
+				// 混合入口：图片模型只绑定后台 Responses，视频模型只绑定标准视频接口。
+				require.True(t, foundResponses, "openai_responses claim must be present")
+				assert.Equal(t, []string{"background"}, responsesClaim.Supports)
+				require.Len(t, responsesClaim.Models, 8)
+				videoModels := make([]string, 0, len(plugin.Meta.Models))
+				for _, model := range plugin.Meta.Models {
+					if !slices.Contains(responsesClaim.Models, model) {
+						videoModels = append(videoModels, model)
+					}
+				}
+				require.Len(t, videoModels, 15)
+				for _, model := range responsesClaim.Models {
+					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
+					require.True(t, claimed, model)
+					assert.Same(t, plugin, binding.Plugin)
+					_, videoClaimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
+					assert.False(t, videoClaimed, model)
+				}
+				for _, model := range videoModels {
+					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
+					require.True(t, claimed, model)
+					assert.Same(t, plugin, binding.Plugin)
+					_, imageClaimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
+					assert.False(t, imageClaimed, model)
+				}
+				for _, hook := range []string{"decodeRequest", "renderFinal"} {
+					callable, callableErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", hook)
+					require.NoError(t, callableErr)
+					assert.True(t, callable, hook)
+				}
+				renderEvents, eventsErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", "renderEvents")
+				require.NoError(t, eventsErr)
+				assert.False(t, renderEvents, "仅后台模式的插件不应导出 renderEvents")
+			} else if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
 				assert.False(t, foundResponses, "仅视频插件未声明 Responses 协议，不应扩大入口")
 				if plugin.Meta.ModelRouting == "channel" {
 					binding, claimed := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", key)
