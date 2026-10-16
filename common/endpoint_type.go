@@ -45,6 +45,10 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 			constant.EndpointTypeOpenAIResponseCompact,
 			constant.EndpointTypeOpenAIAlphaSearch,
 		}
+	case constant.ChannelTypeGlobalStore:
+		// GlobalStore 模型中心的图片渠道只服务图片生成：不暴露 OpenAI/Responses 端点，
+		// 否则 banana*/seedream* 会被当作文本模型路由到 /v1/chat/completions。
+		endpointTypes = []constant.EndpointType{constant.EndpointTypeImageGeneration}
 	default:
 		if IsOpenAIResponseOnlyModel(modelName) {
 			endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAIResponse}
@@ -53,8 +57,10 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 		}
 	}
 	if IsImageGenerationModel(modelName) {
-		// add to first
-		endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
+		// add to first（GlobalStore 图片渠道已显式置顶，避免重复）
+		if len(endpointTypes) == 0 || endpointTypes[0] != constant.EndpointTypeImageGeneration {
+			endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
+		}
 	}
 	return endpointTypes
 }

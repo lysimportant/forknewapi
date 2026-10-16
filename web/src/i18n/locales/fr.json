@@ -5622,6 +5622,8 @@
     "Task logs": "Journaux des tâches",
     "Task Logs": "Journaux de tâches",
     "Task Plugin": "Plugin de tâche",
+    "GlobalStore": "GlobalStore",
+    "Generate images through the GlobalStore model center (asynchronous tasks)": "Générer des images via le centre de modèles GlobalStore (tâches asynchrones)",
     "Task plugin *": "Plugin de tâche *",
     "Task plugin setting updated": "Paramètre des plugins de tâche mis à jour",
     "Task Plugins": "Plugins de tâches",

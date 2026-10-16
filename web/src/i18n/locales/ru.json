@@ -5622,6 +5622,8 @@
     "Task logs": "Журналы задач",
     "Task Logs": "Журнал задач",
     "Task Plugin": "Плагин задач",
+    "GlobalStore": "GlobalStore",
+    "Generate images through the GlobalStore model center (asynchronous tasks)": "Генерация изображений через центр моделей GlobalStore (асинхронные задачи)",
     "Task plugin *": "Плагин задач *",
     "Task plugin setting updated": "Настройка плагинов задач обновлена",
     "Task Plugins": "Плагины задач",

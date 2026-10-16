@@ -111,6 +111,9 @@ export const STATIC_I18N_KEYS = [
   'Flexible integration',
   'Connect to model services through a Sub2API gateway',
   'Connect to model services from another New API instance',
+  // GlobalStore 原生图片渠道的名称与说明同样是运行时动态翻译键。
+  'GlobalStore',
+  'Generate images through the GlobalStore model center (asynchronous tasks)',
 
   'Price per image',
   'Per image',

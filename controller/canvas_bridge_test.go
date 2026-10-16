@@ -125,7 +125,7 @@ func setupCanvasBridgeDB(t *testing.T, dialect string) *gorm.DB {
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":2,"secret":9}`))
 	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"vip":1.5}}`))
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP","auto":"Auto"}`))
-	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"Canvas-Text":0.02,"canvas-text":0.03,"canvas-image":0.1,"gpt-image-auto":0.1,"canvas-audio":0.02,"canvas-unprofiled":0.02,"canvas-hidden":0.02,"canvas-other-group":0.02,"canvas-free":0,"canvas-video":0.1}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"Canvas-Text":0.02,"canvas-text":0.03,"canvas-image":0.1,"gpt-image-auto":0.1,"canvas-audio":0.02,"canvas-unprofiled":0.02,"canvas-hidden":0.02,"canvas-other-group":0.02,"canvas-free":0,"canvas-video":0.1,"banana2":0.05}`))
 	common.QuotaPerUnit, operation_setting.USDExchangeRate = 500000, 7.3
 	operation_setting.SelfUseModeEnabled = false
 	require.NoError(t, i18n.Init())
@@ -136,6 +136,18 @@ func setupCanvasBridgeDB(t *testing.T, dialect string) *gorm.DB {
 func canvasFixtureChannel(t *testing.T, db *gorm.DB, group string, names ...string) *model.Channel {
 	t.Helper()
 	channel := &model.Channel{Type: constant.ChannelTypeOpenAI, Key: "synthetic-channel-secret", Status: common.ChannelStatusEnabled, Name: "Canvas fixture", Models: strings.Join(names, ","), Group: group}
+	require.NoError(t, db.Create(channel).Error)
+	for _, name := range names {
+		require.NoError(t, db.Create(&model.Ability{Group: group, Model: name, ChannelId: channel.Id, Enabled: true}).Error)
+	}
+	return channel
+}
+
+// canvasGlobalStoreFixtureChannel 用原生 GlobalStore 图片渠道建立真实渠道和能力行，
+// 使目录推导走与任务插件渠道完全不同的分支。
+func canvasGlobalStoreFixtureChannel(t *testing.T, db *gorm.DB, group string, names ...string) *model.Channel {
+	t.Helper()
+	channel := &model.Channel{Type: constant.ChannelTypeGlobalStore, Key: "synthetic-channel-secret", Status: common.ChannelStatusEnabled, Name: "Canvas GlobalStore fixture", Models: strings.Join(names, ","), Group: group}
 	require.NoError(t, db.Create(channel).Error)
 	for _, name := range names {
 		require.NoError(t, db.Create(&model.Ability{Group: group, Model: name, ChannelId: channel.Id, Enabled: true}).Error)
@@ -180,6 +192,10 @@ func TestCanvasCatalogProfilesFromAuthorizedCandidates(t *testing.T) {
 			{IncomingPath: "/v1/images/generations", Models: []string{"advanced-image", "mixed-model"}},
 		}}},
 	}
+	// GlobalStore 图片模型由原生图片渠道承载：无任务插件绑定时只声明图片合同，不暴露视频合同。
+	globalStoreImageCandidate := canvasCandidate{
+		Channel: &model.Channel{Id: 6, Type: constant.ChannelTypeGlobalStore},
+	}
 	for _, test := range []struct {
 		name       string
 		modelName  string
@@ -209,6 +225,9 @@ func TestCanvasCatalogProfilesFromAuthorizedCandidates(t *testing.T) {
 		{name: "advanced custom missing config", modelName: "advanced-image", candidates: []canvasCandidate{{Channel: &model.Channel{Id: 3, Type: constant.ChannelTypeAdvancedCustom}}}},
 		{name: "advanced custom model mismatch", modelName: "other-model", candidates: []canvasCandidate{advancedImageCandidate}},
 		{name: "candidate ambiguity", modelName: "mixed-model", candidates: []canvasCandidate{textCandidate, advancedImageCandidate}, contracts: []string{"openai-chat-completions", "openai-images"}},
+		{name: "globalstore native image channel", modelName: "banana2", candidates: []canvasCandidate{globalStoreImageCandidate}, contracts: []string{"openai-images"}},
+		{name: "globalstore explicit image endpoint", modelName: "seedream_5.0Pro", metadata: model.Model{Endpoints: `["image-generation"]`}, candidates: []canvasCandidate{globalStoreImageCandidate}, contracts: []string{"openai-images"}},
+		{name: "globalstore native channel keeps every name on the image contract", modelName: "sd_2.5_discount", candidates: []canvasCandidate{globalStoreImageCandidate}, contracts: []string{"openai-images"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profiles := canvasCatalogProfiles(test.metadata, test.candidates, test.modelName)
@@ -221,6 +240,29 @@ func TestCanvasCatalogProfilesFromAuthorizedCandidates(t *testing.T) {
 				return
 			}
 			assert.Equal(t, test.contracts, contracts)
+		})
+	}
+}
+
+// TestCanvasReferenceImagesRequirePublicURL 验证参考图传输声明只在全部候选都要求公网 URL 时发布。
+func TestCanvasReferenceImagesRequirePublicURL(t *testing.T) {
+	imageProfile := canvasProfile{MediaType: "image", Contract: "openai-images", Path: "/v1/images/generations"}
+	globalStore := canvasCandidate{Channel: &model.Channel{Id: 6, Type: constant.ChannelTypeGlobalStore}}
+	openAI := canvasCandidate{Channel: &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI}}
+	for _, test := range []struct {
+		name       string
+		modelName  string
+		profile    canvasProfile
+		candidates []canvasCandidate
+		required   bool
+	}{
+		{name: "globalstore only", modelName: "banana2", profile: imageProfile, candidates: []canvasCandidate{globalStore}, required: true},
+		{name: "globalstore with OpenAI stays inline", modelName: "banana2", profile: imageProfile, candidates: []canvasCandidate{globalStore, openAI}, required: false},
+		{name: "OpenAI only stays inline", modelName: "gpt-image-auto", profile: imageProfile, candidates: []canvasCandidate{openAI}, required: false},
+		{name: "no matching candidate", modelName: "banana2", profile: canvasProfile{MediaType: "video", Contract: "newapi-video-v1", Path: "/v1/videos"}, candidates: []canvasCandidate{globalStore}, required: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.required, canvasReferenceImagesRequirePublicURL(test.modelName, test.profile, test.candidates))
 		})
 	}
 }
@@ -303,6 +345,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 			canvasFixtureChannel(t, db, "default", "Canvas-Text", "canvas-image", "gpt-image-auto", "canvas-audio", "canvas-unprofiled", "canvas-free", "canvas-unpriced", "canvas-hidden")
 			canvasFixtureChannel(t, db, "default", "canvas-text")
 			canvasFixtureChannel(t, db, "secret", "canvas-other-group")
+			canvasGlobalStoreFixtureChannel(t, db, "default", "banana2", "seedream_5.0Pro")
 			canvasFixtureChannel(t, db, "vip", "Canvas-Text")
 			longModel, oversizedModel := strings.Repeat("中", 100), strings.Repeat("中", 171)
 			canvasFixtureChannel(t, db, "default", longModel, oversizedModel)
@@ -340,7 +383,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 			for _, item := range catalog.Models {
 				items[item.ID] = item
 			}
-			assert.Len(t, items, 11)
+			assert.Len(t, items, 13)
 			assert.True(t, items[longModel].Available)
 			assert.False(t, items[oversizedModel].Available)
 			assert.Equal(t, "invalid_model_id", items[oversizedModel].UnavailableReason)
@@ -351,6 +394,16 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 			assert.True(t, items["gpt-image-auto"].Available)
 			assert.Equal(t, "image", items["gpt-image-auto"].MediaType)
 			assert.Equal(t, "openai-images", items["gpt-image-auto"].Contract)
+			// 原生 GlobalStore 图片渠道：配了固定价的模型出图片合同，未配价的模型按缺价剔除能力。
+			assert.True(t, items["banana2"].Available)
+			assert.Equal(t, "image", items["banana2"].MediaType)
+			assert.Equal(t, "openai-images", items["banana2"].Contract)
+			// 上游只接受服务端可达的公网参考图：原生 GlobalStore 图片渠道必须声明传输方式。
+			assert.Equal(t, "public-url", items["banana2"].Capabilities["referenceImages"])
+			// 其它图片渠道仍内联下发，不得收到该声明。
+			assert.NotContains(t, items["gpt-image-auto"].Capabilities, "referenceImages")
+			assert.False(t, items["seedream_5.0Pro"].Available)
+			assert.Equal(t, "missing_pricing", items["seedream_5.0Pro"].UnavailableReason)
 			assert.Equal(t, "openai-audio", items["canvas-audio"].Contract)
 			assert.Equal(t, "missing_profile", items["canvas-unprofiled"].UnavailableReason)
 			assert.Equal(t, "missing_pricing", items["canvas-unpriced"].UnavailableReason)
@@ -366,6 +419,7 @@ func TestCanvasBridgeDatabaseMatrix(t *testing.T) {
 				{"canvas-text", "openai-chat-completions", "15000", nil},
 				{"canvas-unprofiled", "openai-chat-completions", "10000", nil},
 				{"canvas-image", "openai-images", "100000", map[string]any{"n": 2}},
+				{"banana2", "openai-images", "25000", nil},
 				{"canvas-audio", "openai-audio", "10000", map[string]any{"voice": "alloy"}},
 				{"canvas-free", "openai-chat-completions", "0", nil},
 			} {

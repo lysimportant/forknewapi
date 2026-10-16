@@ -13,9 +13,10 @@ import (
 
 const globalstoreBaseURL = "https://saas.globalstore.ai/kyyReactApiServer"
 
-// globalstoreImageModels 与 globalstoreVideoModels 必须与插件 meta.models 逐字一致。
-// 唯一例外是 gpt-image-2：该名字是本 fork 的内置模型，插件对外加 globalstore/ 前缀以避免
-// 抢占内置计费与路由判定，上游仍按原名下发（见插件里的 UPSTREAM_MODEL_NAMES）。
+// globalstoreImageModels 是已迁出任务插件的 8 个图片模型；它们现在由 fork 的原生 GlobalStore
+// 图片渠道（ChannelTypeGlobalStore / relay/channel/globalstore）服务。插件必须不再声明它们，
+// 否则 ChannelTypeTaskPlugin 渠道会和原生图片渠道争抢同一批模型（下面有回归断言）。
+// gpt-image-2 在本 fork 是内置模型，原生渠道沿用 `globalstore/` 前缀，上游仍按原名下发。
 var globalstoreImageModels = []string{
 	"banana2", "bananapro", "banana_c1", "banana_c2",
 	"globalstore/gpt-image-2", "gpt-image-2.5", "seedream-5.0", "seedream_5.0Pro",
@@ -28,9 +29,9 @@ var globalstoreVideoModels = []string{
 	"veo3.1-fast", "wan3.0", "wan3.0-Prime",
 }
 
+// globalstoreUsageKeys 是插件默认（视频）用量字段，管理员据此选「按次」或「清晰度 + 秒数」。
 var globalstoreUsageKeys = []string{
-	"audio_mode", "count", "images", "input_audios", "input_images",
-	"input_videos", "quality", "resolution", "seconds",
+	"count", "seconds", "video_resolution",
 }
 
 func loadGlobalstorePlugin(t *testing.T) *jsplugin.LoadedPlugin {
@@ -107,24 +108,20 @@ func TestGlobalstoreContracts(t *testing.T) {
 
 	declared := append([]string(nil), plugin.Meta.Models...)
 	sort.Strings(declared)
-	expected := append(append([]string(nil), globalstoreImageModels...), globalstoreVideoModels...)
+	expected := append([]string(nil), globalstoreVideoModels...)
 	sort.Strings(expected)
-	assert.Equal(t, expected, declared, "描述符必须覆盖文档的全部 23 个模型")
+	assert.Equal(t, expected, declared, "插件只声明 15 个视频模型；图片模型已迁到原生图片渠道")
 
-	require.Len(t, plugin.Meta.Protocols, 2)
+	require.Len(t, plugin.Meta.Protocols, 1)
 	assert.Equal(t, "openai_video", plugin.Meta.Protocols[0].Name)
 	assert.Equal(t, globalstoreVideoModels, plugin.Meta.Protocols[0].Models)
 	assert.Empty(t, plugin.Meta.Protocols[0].Supports, "标准视频入口不声明模式")
-	assert.Equal(t, "openai_responses", plugin.Meta.Protocols[1].Name)
-	assert.Equal(t, globalstoreImageModels, plugin.Meta.Protocols[1].Models)
-	assert.Equal(t, []string{"background"}, plugin.Meta.Protocols[1].Supports, "图片模型只有异步后台模式")
 
-	t.Run("binds image models to background Responses only", func(t *testing.T) {
+	t.Run("no longer claims the image models", func(t *testing.T) {
 		for _, model := range globalstoreImageModels {
-			binding, found := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
-			require.True(t, found, model)
-			assert.Same(t, plugin, binding.Plugin)
-			assert.Equal(t, "openai_responses", binding.Protocol)
+			assert.NotContains(t, plugin.Meta.Models, model, "图片模型必须交给原生图片渠道")
+			_, responsesFound := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
+			assert.False(t, responsesFound, model)
 			_, videoFound := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
 			assert.False(t, videoFound, model)
 		}
@@ -148,7 +145,17 @@ func TestGlobalstoreContracts(t *testing.T) {
 			assert.NotEmpty(t, schema.Description, key)
 		}
 		sort.Strings(keys)
-		assert.Equal(t, globalstoreUsageKeys, keys)
+		assert.Equal(t, globalstoreUsageKeys, keys, "默认 schema 只服务视频模型")
+	})
+
+	t.Run("leaves the default usage schema to the video models", func(t *testing.T) {
+		assert.Empty(t, plugin.Meta.UsageProfiles, "图片模型已迁出，插件不再需要按次 profile")
+
+		schema, examples := plugin.Meta.UsageForModel("sd_2.5_special")
+		assert.Equal(t, plugin.Meta.UsageSchema, schema, "视频模型沿用默认 schema")
+		assert.Equal(t, plugin.Meta.UsageExamples, examples)
+		assert.Contains(t, schema, "seconds")
+		assert.Contains(t, schema, "video_resolution")
 	})
 }
 
@@ -428,40 +435,11 @@ func TestGlobalstoreTaskResults(t *testing.T) {
 	})
 }
 
-// TestGlobalstoreImageResponses 核实图片模型只走后台 Responses 且不泄漏上游地址。
-func TestGlobalstoreImageResponses(t *testing.T) {
+// TestGlobalstoreImageUpstreamContract 保留图片模型的「上游请求体 + 参数校验」契约。
+// 图片的对外入口已改由 fork 的原生 GlobalStore 图片渠道（ChannelTypeGlobalStore）承载，
+// 因此这里只留不依赖宿主协议的用例，它们同时是 relay/channel/globalstore 适配器必须复现的上游字段契约。
+func TestGlobalstoreImageUpstreamContract(t *testing.T) {
 	plugin := loadGlobalstorePlugin(t)
-
-	resolve := func(t *testing.T, value map[string]any) map[string]any {
-		t.Helper()
-		return globalstoreProtocol(t, plugin, "openai_responses", map[string]any{
-			"model": "banana2", "upstreamModel": "banana2",
-			"body": map[string]any{"kind": "json", "value": value},
-		})
-	}
-
-	t.Run("decodes a text request", func(t *testing.T) {
-		decoded := resolve(t, map[string]any{"model": "banana2", "input": "a cat on a roof"})
-		assert.Equal(t, "submit", decoded["kind"])
-		assert.Equal(t, "text_to_image", decoded["action"])
-		request := decoded["requestBody"].(map[string]any)
-		assert.Equal(t, "a cat on a roof", request["prompt"])
-		assert.Equal(t, "banana2", request["model"])
-	})
-
-	t.Run("decodes a message with reference images", func(t *testing.T) {
-		decoded := resolve(t, map[string]any{"model": "banana2", "input": []any{map[string]any{
-			"role": "user",
-			"content": []any{
-				map[string]any{"type": "input_text", "text": "a cat"},
-				map[string]any{"type": "input_image", "image_url": "https://cdn.example/a.png"},
-			},
-		}}})
-		assert.Equal(t, "image_to_image", decoded["action"])
-		request := decoded["requestBody"].(map[string]any)
-		assert.Equal(t, "a cat", request["prompt"])
-		assert.Equal(t, []any{"https://cdn.example/a.png"}, request["reference_images"])
-	})
 
 	t.Run("builds the upstream image request", func(t *testing.T) {
 		request := globalstoreObject(t, plugin, "buildSubmitRequest", globalstoreSubmitContext("banana2", map[string]any{"prompt": "a cat", "aspect_ratio": "21:9", "resolution": "4k"}))
@@ -484,25 +462,6 @@ func TestGlobalstoreImageResponses(t *testing.T) {
 		assert.JSONEq(t, `{"model":"banana_c1","prompt":"a cat","aspect_ratio":"21:9","resolution":"1K","quality":"standard"}`, globalstoreJSON(t, request["body"]))
 	})
 
-	t.Run("rejects unsupported Responses fields", func(t *testing.T) {
-		for name, value := range map[string]map[string]any{
-			"tools":             {"input": "a cat", "tools": []any{}},
-			"unsupported field": {"input": "a cat", "seed": 1},
-			"multiple messages": {"input": []any{map[string]any{"role": "user", "content": "a"}, map[string]any{"role": "user", "content": "b"}}},
-			"system role":       {"input": []any{map[string]any{"role": "system", "content": "a"}}},
-			"audio content":     {"input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_audio", "input_audio": "x"}}}}},
-			"prompt conflict":   {"input": "a cat", "prompt": "a dog"},
-		} {
-			t.Run(name, func(t *testing.T) {
-				_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "decodeRequest"}, map[string]any{
-					"model": "banana2", "upstreamModel": "banana2",
-					"body": map[string]any{"kind": "json", "value": value},
-				})
-				require.Error(t, err)
-			})
-		}
-	})
-
 	t.Run("rejects image parameters the model does not support", func(t *testing.T) {
 		for name, body := range map[string]map[string]any{
 			"n greater than one": {"prompt": "a cat", "n": 2},
@@ -522,33 +481,6 @@ func TestGlobalstoreImageResponses(t *testing.T) {
 				require.Error(t, err)
 			})
 		}
-	})
-
-	t.Run("renders only the host artifact link", func(t *testing.T) {
-		value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "renderFinal"}, map[string]any{
-			"requestBody": map[string]any{"model": "banana2"},
-			"artifacts": map[string]any{"image": map[string]any{
-				"key": "image", "type": "image", "mimeType": "image/png",
-				"url": "https://gateway.example/v1/tasks/t/image/content?a=1&b=2",
-			}},
-		})
-		require.NoError(t, err)
-		encoded, marshalErr := common.Marshal(value)
-		require.NoError(t, marshalErr)
-		var rendered map[string]any
-		require.NoError(t, common.Unmarshal(encoded, &rendered))
-		output := rendered["output"].([]any)
-		require.Len(t, output, 1)
-		content := output[0].(map[string]any)["content"].([]any)
-		text := content[0].(map[string]any)["text"].(string)
-		assert.Contains(t, text, "gateway.example")
-		assert.Contains(t, text, "&amp;", "HTML 属性必须转义")
-		assert.Equal(t, map[string]any{"vendor": "globalstore"}, rendered["metadata"])
-
-		_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_responses", "renderFinal"}, map[string]any{
-			"requestBody": map[string]any{"model": "banana2"},
-		})
-		require.ErrorContains(t, err, "artifact is unavailable")
 	})
 }
 
@@ -599,34 +531,19 @@ func TestGlobalstoreArtifactsAndUsage(t *testing.T) {
 			"first_image": "https://cdn.example/a.png", "reference_images": []any{"https://cdn.example/b.png"},
 			"reference_videos": []any{"https://cdn.example/v.mp4"}, "generate_audio": false,
 		}))
-		keys := make([]string, 0, len(facts))
-		for key := range facts {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		assert.Equal(t, globalstoreUsageKeys, keys, "计费事实必须与描述符声明的字段一致")
-		assert.Equal(t, float64(10), facts["seconds"])
-		assert.Equal(t, float64(0), facts["images"])
-		assert.Equal(t, float64(2), facts["input_images"])
-		assert.Equal(t, float64(1), facts["input_videos"])
-		assert.Equal(t, "1080p", facts["resolution"])
-		assert.Equal(t, "disabled", facts["audio_mode"])
+		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(10), "video_resolution": "1080p"}, facts, "视频模型同时给出按次与按秒两种口径")
+
+		defaulted := globalstoreObject(t, plugin, "extractUsage", globalstoreSubmitContext("sd_2.0_discount", map[string]any{"prompt": "flower", "seconds": 5}))
+		assert.Equal(t, "4k", defaulted["video_resolution"], "未指定清晰度时上报模型默认清晰度")
+		assert.Equal(t, float64(5), defaulted["seconds"])
 
 		imageFacts := globalstoreObject(t, plugin, "extractUsage", globalstoreSubmitContext("banana2", map[string]any{"prompt": "a cat", "reference_images": []any{"https://cdn.example/a.png"}}))
-		assert.Equal(t, float64(0), imageFacts["seconds"])
-		assert.Equal(t, float64(1), imageFacts["images"])
-		assert.Equal(t, float64(1), imageFacts["input_images"])
-		assert.Equal(t, "1k", imageFacts["resolution"])
-		assert.Equal(t, "unspecified", imageFacts["quality"])
-		assert.Equal(t, "unspecified", imageFacts["audio_mode"])
+		assert.Equal(t, map[string]any{"count": float64(1)}, imageFacts, "图片模型只有按次计费")
 
 		ctx := globalstoreSubmitContext("banana2", map[string]any{"prompt": "a cat"})
 		ctx["usagePurpose"] = "billing_ratios"
 		ratios := globalstoreObject(t, plugin, "extractUsage", ctx)
 		assert.Empty(t, ratios, "倍率估算阶段不重复计费")
-
-		pixel := globalstoreObject(t, plugin, "extractUsage", globalstoreSubmitContext("banana2", map[string]any{"prompt": "a cat", "size": "1024x1024"}))
-		assert.Equal(t, "unspecified", pixel["resolution"], "像素尺寸无法可靠映射时归为 unspecified")
 	})
 
 	t.Run("only settles completed tasks", func(t *testing.T) {
@@ -634,10 +551,7 @@ func TestGlobalstoreArtifactsAndUsage(t *testing.T) {
 		assert.Equal(t, map[string]any{"count": float64(1)}, completed)
 
 		image := globalstoreObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS", "state": map[string]any{"kind": "image"}, "url": "https://cdn.example/i.png"}, map[string]any{"status": "completed", "object": "image", "image_url": "https://cdn.example/i.png"})
-		assert.Equal(t, map[string]any{"count": float64(1), "images": float64(1)}, image)
-
-		fromBody := globalstoreObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS"}, map[string]any{"status": "completed", "object": "image", "image_url": "https://cdn.example/i.png"})
-		assert.Equal(t, map[string]any{"count": float64(1), "images": float64(1)}, fromBody, "缺少持久化状态时退回上游响应体判断媒体类型")
+		assert.Equal(t, map[string]any{"count": float64(1)}, image, "完成阶段只落按次计数，时长与清晰度沿用冻结值")
 
 		for name, call := range map[string]struct {
 			result map[string]any

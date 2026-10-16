@@ -5622,6 +5622,8 @@
     "Task logs": "タスクログ",
     "Task Logs": "タスクログ",
     "Task Plugin": "タスクプラグイン",
+    "GlobalStore": "GlobalStore",
+    "Generate images through the GlobalStore model center (asynchronous tasks)": "GlobalStore モデルセンターで画像を生成（非同期タスク）",
     "Task plugin *": "タスクプラグイン *",
     "Task plugin setting updated": "タスクプラグイン設定を更新しました",
     "Task Plugins": "タスクプラグイン",

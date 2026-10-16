@@ -160,6 +160,7 @@ func TestResponsesAllAPITypeRequestConversion(t *testing.T) {
 		constant.APITypeReplicate:      {"Replicate", constant.ChannelTypeReplicate, "owner/image-model", "", "", true},
 		constant.APITypeCodex:          {"Codex", constant.ChannelTypeCodex, "gpt-test", "input", "hello", false},
 		constant.APITypeAdvancedCustom: {"AdvancedCustom", constant.ChannelTypeAdvancedCustom, "test-model", "input", "hello", false},
+		constant.APITypeGlobalStore:    {"GlobalStore", constant.ChannelTypeGlobalStore, "banana2", "", "", true},
 	}
 	for apiType := 0; apiType < constant.APITypeDummy; apiType++ {
 		test, ok := tests[apiType]

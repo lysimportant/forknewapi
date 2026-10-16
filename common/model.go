@@ -32,6 +32,9 @@ var (
 		"prefix:imagen-",
 		"flux-",
 		"flux.1-",
+		// GlobalStore 模型中心的图片模型家族；缺失会让它们被当作纯文本模型，并丢掉按次计费口径。
+		"prefix:banana",
+		"prefix:seedream",
 	}
 	OpenAITextModels = []string{
 		"gpt-",

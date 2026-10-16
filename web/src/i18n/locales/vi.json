@@ -5622,6 +5622,8 @@
     "Task logs": "Nhật ký tác vụ",
     "Task Logs": "Nhật ký tác vụ",
     "Task Plugin": "Plugin tác vụ",
+    "GlobalStore": "GlobalStore",
+    "Generate images through the GlobalStore model center (asynchronous tasks)": "Tạo hình ảnh qua trung tâm mô hình GlobalStore (tác vụ bất đồng bộ)",
     "Task plugin *": "Plugin tác vụ *",
     "Task plugin setting updated": "Đã cập nhật cài đặt plugin tác vụ",
     "Task Plugins": "Plugin tác vụ",

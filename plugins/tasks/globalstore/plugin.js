@@ -83,57 +83,50 @@ const VIDEO_MODELS = {
 const IMAGE_MODEL_IDS = Object.keys(IMAGE_MODELS);
 const VIDEO_MODEL_IDS = Object.keys(VIDEO_MODELS);
 
-/** 描述符同时声明两个入口；模型子集把图片和视频绑定到各自的宿主接口。 */
+/** 只声明视频入口；图片模型改由 fork 的原生 GlobalStore 图片渠道（ChannelTypeGlobalStore）服务。 */
 export const meta = {
   apiVersion: 1,
   key: "globalstore",
   name: "GlobalStore Model Center",
   icon: "GS",
   description: {
-    en: "GlobalStore v2 model-center image and video tasks through the OpenAI video and background Responses APIs",
-    zh: "通过 OpenAI 视频接口与后台 Responses 接入 GlobalStore v2 模型中心图片与视频任务",
+    en: "GlobalStore v2 model-center video tasks through the OpenAI video API",
+    zh: "通过 OpenAI 视频接口接入 GlobalStore v2 模型中心视频任务",
   },
   version: "1.0.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://docs.globalstore.ai/zh",
   baseUrl: "https://saas.globalstore.ai/kyyReactApiServer",
   allowedHosts: ["saas.globalstore.ai:443"],
-  models: IMAGE_MODEL_IDS.concat(VIDEO_MODEL_IDS),
+  models: VIDEO_MODEL_IDS,
   fetchMode: "per_task",
   requiredCapabilities: ["task-submit-no-retry@1"],
-  protocols: [
-    { name: "openai_video", models: VIDEO_MODEL_IDS },
-    { name: "openai_responses", models: IMAGE_MODEL_IDS, supports: ["background"] },
-  ],
+  protocols: [{ name: "openai_video", models: VIDEO_MODEL_IDS }],
+  // 默认用量 = 视频：管理员可选「按次」(count) 或「清晰度 + 秒数」计费。
   usageSchema: {
-    count: { type: "number", unit: "count", description: { en: "Task count", zh: "任务数量" } },
-    seconds: { type: "number", unit: "second", description: { en: "Requested video duration", zh: "请求视频时长" } },
-    images: { type: "number", unit: "count", description: { en: "Output image count", zh: "输出图片数量" } },
-    input_images: { type: "number", unit: "count", description: { en: "Input image count", zh: "输入图片数量" } },
-    input_videos: { type: "number", unit: "count", description: { en: "Input video count", zh: "输入视频数量" } },
-    input_audios: { type: "number", unit: "count", description: { en: "Input audio count", zh: "输入音频数量" } },
-    resolution: {
-      enum: ["unspecified", "480p", "720p", "1080p", "1k", "2k", "3k", "4k"],
-      description: { en: "Requested resolution", zh: "请求清晰度" },
+    count: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "个" },
+      description: { en: "Per-call price of one video", zh: "视频按次单价" },
     },
-    quality: {
-      enum: ["unspecified", "standard", "low", "medium", "high"],
-      description: { en: "Requested image quality", zh: "请求图片质量" },
+    seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Requested video duration", zh: "请求视频时长" },
     },
-    audio_mode: {
-      enum: ["unspecified", "enabled", "disabled"],
-      description: { en: "Audio generation mode", zh: "音频生成模式" },
+    video_resolution: {
+      enum: ["480p", "720p", "1080p", "2k", "4k"],
+      enumLabels: { "2k": { en: "2K", zh: "2K" }, "4k": { en: "4K", zh: "4K" } },
+      description: { en: "Requested video resolution", zh: "请求视频清晰度" },
     },
   },
   usageExamples: [
-    {
-      label: "banana2 · 1 image",
-      facts: { count: 1, seconds: 0, images: 1, input_images: 0, input_videos: 0, input_audios: 0, resolution: "1k", quality: "unspecified", audio_mode: "unspecified" },
-    },
-    {
-      label: "sd_2.0_fast_discount · 720p · 5s",
-      facts: { count: 1, seconds: 5, images: 0, input_images: 0, input_videos: 0, input_audios: 0, resolution: "720p", quality: "unspecified", audio_mode: "enabled" },
-    },
+    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
+    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
+    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
+    { label: "2K · 5s", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
+    { label: "4K · 5s", facts: { count: 1, seconds: 5, video_resolution: "4k" } },
   ],
 };
 
@@ -589,26 +582,10 @@ function taskKind(body, fallback) {
   return "video";
 }
 
-/** 计费事实：与请求校验同源，显式像素尺寸无法可靠映射时使用 unspecified。 */
-function usageFacts(facts) {
-  const values = {
-    count: 1,
-    seconds: facts.kind === "video" ? facts.duration : 0,
-    images: facts.kind === "image" ? 1 : 0,
-    input_images: facts.kind === "video" ? facts.first.length + facts.last.length + facts.references.length : facts.references.length,
-    input_videos: facts.kind === "video" ? facts.videos.length : 0,
-    input_audios: facts.kind === "video" ? facts.audios.length : 0,
-    resolution: usageResolution(facts),
-    quality: facts.quality && facts.quality !== "unspecified" ? facts.quality : "unspecified",
-    audio_mode: facts.kind === "video" && facts.generateAudio !== undefined ? (facts.generateAudio ? "enabled" : "disabled") : "unspecified",
-  };
-  return values;
-}
-
-/** 清晰度事实只上报宿主声明的枚举；像素尺寸与上游大小写差异都归为 unspecified。 */
-function usageResolution(facts) {
+/** 清晰度事实只上报宿主声明的枚举；像素尺寸与上游大小写差异都归为「未知」。 */
+function videoUsageResolution(facts) {
   const raw = trimmed(facts.resolution).toLowerCase();
-  return ["480p", "720p", "1080p", "1k", "2k", "3k", "4k"].includes(raw) ? raw : "unspecified";
+  return ["480p", "720p", "1080p", "2k", "4k"].includes(raw) ? raw : "";
 }
 
 /** 生成 GlobalStore 任务创建请求；提交结果未知时禁止宿主自动重试。 */
@@ -638,23 +615,29 @@ export function parseSubmitResponse(_ctx, response) {
   return { taskId: taskId, taskData: body };
 }
 
-/** 返回提交阶段冻结的计费事实；倍率估算阶段不重复计费。 */
+/**
+ * 返回提交阶段冻结的计费事实；倍率估算阶段不重复计费。
+ * 图片模型只上报按次的 count；视频模型始终给 count，并在能确定清晰度时补 seconds +
+ * video_resolution，管理员写「按次」或「清晰度 + 秒数」两种表达式都能命中。
+ */
 export function extractUsage(ctx) {
+  if (ctx.usagePurpose === "billing_ratios") return {};
   const model = ctx.upstreamModel || ctx.model;
   const facts = normalizeRequest(ctx.requestBody, model);
-  if (ctx.usagePurpose === "billing_ratios") return {};
-  return usageFacts(facts);
+  if (facts.kind === "image") return { count: 1 };
+  const usage = { count: 1 };
+  const resolution = videoUsageResolution(facts);
+  if (resolution) {
+    usage.seconds = facts.duration;
+    usage.video_resolution = resolution;
+  }
+  return usage;
 }
 
-/** 完成阶段只补输出数量；上游 amount/actualDuration 语义未确认，不参与结算。 */
-export function extractUsageOnComplete(_ctx, result, body) {
+/** 完成响应没有已确认的实际时长，宿主沿用冻结的时长与清晰度，这里只落一个按次计数。 */
+export function extractUsageOnComplete(_ctx, result, _body) {
   if (!result || result.status !== "SUCCESS") return null;
-  const state = result.state;
-  const kind =
-    state && (state.kind === "image" || state.kind === "video")
-      ? state.kind
-      : taskKind(taskObject(result.data) || taskObject(body) || {}, "");
-  return kind === "image" ? { count: 1, images: 1 } : { count: 1 };
+  return { count: 1 };
 }
 
 /** 构造 v2 任务查询请求。 */
@@ -790,7 +773,7 @@ function responsesRequest(ctx) {
   return request;
 }
 
-/** 注册两个入口：视频走标准视频协议，图片走仅后台模式的 Responses。 */
+/** 只注册视频入口：图片模型由 fork 的原生 GlobalStore 图片渠道承载。 */
 export const protocols = {
   openai_video: {
     decodeRequest: function (ctx) {
@@ -811,26 +794,6 @@ export const protocols = {
       if (task.status === "SUCCESS" && isHTTPURL((task.data || {}).url)) output.url = task.data.url;
       if (task.status === "FAILURE") output.error = { code: "video_generation_failed", message: "GlobalStore video generation failed" };
       return output;
-    },
-  },
-  openai_responses: {
-    decodeRequest: function (ctx) {
-      const request = responsesRequest(ctx);
-      const facts = normalizeRequest(request, request.model);
-      return { kind: "submit", model: ctx.model || request.model, action: facts.references.length ? "image_to_image" : "text_to_image", requestBody: request };
-    },
-    renderFinal: function (ctx) {
-      return {
-        output: [
-          {
-            type: "message",
-            status: "completed",
-            role: "assistant",
-            content: [{ type: "output_text", text: imageOutput(ctx), annotations: [], logprobs: [] }],
-          },
-        ],
-        metadata: { vendor: "globalstore" },
-      };
     },
   },
 };

@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"io/fs"
-	"slices"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -100,41 +99,9 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			if key == "globalstore" {
-				// 混合入口：图片模型只绑定后台 Responses，视频模型只绑定标准视频接口。
-				require.True(t, foundResponses, "openai_responses claim must be present")
-				assert.Equal(t, []string{"background"}, responsesClaim.Supports)
-				require.Len(t, responsesClaim.Models, 8)
-				videoModels := make([]string, 0, len(plugin.Meta.Models))
-				for _, model := range plugin.Meta.Models {
-					if !slices.Contains(responsesClaim.Models, model) {
-						videoModels = append(videoModels, model)
-					}
-				}
-				require.Len(t, videoModels, 15)
-				for _, model := range responsesClaim.Models {
-					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
-					require.True(t, claimed, model)
-					assert.Same(t, plugin, binding.Plugin)
-					_, videoClaimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
-					assert.False(t, videoClaimed, model)
-				}
-				for _, model := range videoModels {
-					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
-					require.True(t, claimed, model)
-					assert.Same(t, plugin, binding.Plugin)
-					_, imageClaimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
-					assert.False(t, imageClaimed, model)
-				}
-				for _, hook := range []string{"decodeRequest", "renderFinal"} {
-					callable, callableErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", hook)
-					require.NoError(t, callableErr)
-					assert.True(t, callable, hook)
-				}
-				renderEvents, eventsErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", "renderEvents")
-				require.NoError(t, eventsErr)
-				assert.False(t, renderEvents, "仅后台模式的插件不应导出 renderEvents")
-			} else if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
+			// globalstore 的图片模型已迁到 fork 的原生图片渠道（ChannelTypeGlobalStore），
+			// 任务插件只剩视频入口，因此与其它仅视频插件走同一条断言分支。
+			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" {
 				assert.False(t, foundResponses, "仅视频插件未声明 Responses 协议，不应扩大入口")
 				if plugin.Meta.ModelRouting == "channel" {
 					binding, claimed := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", key)
@@ -180,7 +147,7 @@ func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 	}
 	for _, key := range expectedKeys {
-		if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" {
+		if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {

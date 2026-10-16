@@ -26,3 +26,29 @@ func TestWanEndpointsDistinguishImagesFromVideos(t *testing.T) {
 		})
 	}
 }
+
+// TestGlobalStoreImageFamiliesUseImageEndpoints 锁定 GlobalStore 模型中心的图片家族识别。
+// 漏识别会让原生渠道把图片模型按 /v1/chat/completions 暴露给 Canvas，并让定价面板丢掉 image_count。
+func TestGlobalStoreImageFamiliesUseImageEndpoints(t *testing.T) {
+	// 非插件原生渠道是 GlobalStore 图片模型的落点，与 Ali 同形（无专属 case，落到 default）。
+	for _, name := range []string{
+		"gpt-image-2", "gpt-image-2.5",
+		"banana2", "bananapro", "banana_c1", "banana_c2",
+		"seedream-5.0", "seedream_5.0Pro",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.True(t, common.IsImageGenerationModel(name))
+			assert.Contains(t, common.GetEndpointTypesByChannelType(constant.ChannelTypeAli, name), constant.EndpointTypeImageGeneration)
+		})
+	}
+	for _, name := range []string{
+		"grok_video", "grok_1.5", "omni_720P", "veo3.1-fast",
+		"wan3.0", "wan3.0-Prime", "sd_2.0_discount", "sd_2.5_special",
+		"seedance_2.0_nsfw_c1", "seedance_2_0_x1_official",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, common.IsImageGenerationModel(name))
+			assert.NotContains(t, common.GetEndpointTypesByChannelType(constant.ChannelTypeAli, name), constant.EndpointTypeImageGeneration)
+		})
+	}
+}

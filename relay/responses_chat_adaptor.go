@@ -23,7 +23,8 @@ import (
 func newResponsesAdaptor(info *relaycommon.RelayInfo) (channel.Adaptor, *types.NewAPIError) {
 	switch info.ChannelType {
 	case constant.ChannelTypeMidjourney, constant.ChannelTypeMidjourneyPlus, constant.ChannelTypeSunoAPI,
-		constant.ChannelTypeKling, constant.ChannelTypeVidu, constant.ChannelTypeDoubaoVideo, constant.ChannelTypeSora:
+		constant.ChannelTypeKling, constant.ChannelTypeVidu, constant.ChannelTypeDoubaoVideo, constant.ChannelTypeSora,
+		constant.ChannelTypeGlobalStore:
 		return nil, responsesChatRequestError(fmt.Errorf("channel type %d does not support text Responses", info.ChannelType))
 	}
 	adaptor := GetAdaptor(info.ApiType)

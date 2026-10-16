@@ -5622,6 +5622,8 @@
     "Task logs": "任务日志",
     "Task Logs": "任务日志",
     "Task Plugin": "任务插件",
+    "GlobalStore": "GlobalStore",
+    "Generate images through the GlobalStore model center (asynchronous tasks)": "通过 GlobalStore 模型中心生成图片（异步任务）",
     "Task plugin *": "任务插件 *",
     "Task plugin setting updated": "任务插件设置已更新",
     "Task Plugins": "任务插件",

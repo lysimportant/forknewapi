@@ -123,6 +123,29 @@ var canvasProfiles = []canvasProfile{
 	{MediaType: "audio", Contract: "openai-audio", Path: "/v1/audio/speech"},
 }
 
+// canvasReferenceURLChannels 列出必须以服务端可达公网 URL 接收参考图的渠道类型。
+// 这些上游明确拒绝 base64 与文件字节，画布只能签发短期签名地址；未列出的渠道继续内联下发。
+var canvasReferenceURLChannels = map[int]struct{}{
+	constant.ChannelTypeGlobalStore: {},
+}
+
+// canvasReferenceImagesRequirePublicURL 仅当全部实际候选都属于公网 URL 渠道时才要求签发，
+// 与 canvasInputMediaTypes 一致只发布候选共同支持的结论，避免同类模型的其它渠道收到非文件字段。
+// 判定只看调用合同归属，不看价格：计费可用性已由 Available 单独表达。
+func canvasReferenceImagesRequirePublicURL(name string, profile canvasProfile, candidates []canvasCandidate) bool {
+	matched := false
+	for _, candidate := range candidates {
+		if !candidate.supports(name, profile) {
+			continue
+		}
+		if _, ok := canvasReferenceURLChannels[candidate.Channel.Type]; !ok {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
 // canvasBridgeError 返回稳定错误码，避免将数据库、插件或价格表达式内容传给调用方。
 func canvasBridgeError(c *gin.Context, status int, code, message string) {
 	c.Header("Cache-Control", "no-store")
@@ -564,6 +587,10 @@ func GetCanvasCatalog(c *gin.Context) {
 			item.MediaType, item.Contract = profile.MediaType, profile.Contract
 			item.InputMediaTypes = canvasInputMediaTypes(name, profile, candidates)
 			item.Capabilities = map[string]any{"mediaTypes": []string{profile.MediaType}, "mentionMediaTypes": item.InputMediaTypes}
+			if profile.MediaType == "image" && canvasReferenceImagesRequirePublicURL(name, profile, candidates) {
+				// 声明参考图传输方式，画布据此签发公网 URL 并改用 JSON edits 提交。
+				item.Capabilities["referenceImages"] = "public-url"
+			}
 			item.Available = slices.ContainsFunc(candidates, func(candidate canvasCandidate) bool {
 				return candidate.supports(name, profile) && candidate.priced(name)
 			})

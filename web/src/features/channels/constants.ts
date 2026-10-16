@@ -25,6 +25,8 @@ export const CHANNEL_TYPE_NEW_API = 60
 
 export const CHANNEL_TYPE_TASK_PLUGIN = 61
 
+export const CHANNEL_TYPE_GLOBAL_STORE = 62
+
 export const CHANNEL_TYPES = {
   0: 'Unknown',
   1: 'OpenAI',
@@ -84,6 +86,7 @@ export const CHANNEL_TYPES = {
   59: 'Sub2API',
   60: 'New API',
   61: 'Task Plugin',
+  62: 'GlobalStore',
 } as const
 
 export type ChannelProviderPresentation = {
@@ -162,6 +165,10 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
   59: { descriptionKey: 'Connect to model services through a Sub2API gateway' },
   60: {
     descriptionKey: 'Connect to model services from another New API instance',
+  },
+  62: {
+    descriptionKey:
+      'Generate images through the GlobalStore model center (asynchronous tasks)',
   },
 } satisfies Record<
   Exclude<keyof typeof CHANNEL_TYPES, 0 | typeof CHANNEL_TYPE_TASK_PLUGIN>,
