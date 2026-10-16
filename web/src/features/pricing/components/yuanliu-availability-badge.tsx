@@ -22,11 +22,12 @@ import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { toIntlLocale } from '@/i18n/languages'
 import { cn } from '@/lib/utils'
 
+import { isSeedanceModel } from '../lib/seedance-model'
 import { isYuanliuModel } from '../lib/yuanliu-model'
 import type {
+  CatalogAvailabilityMap,
   PricingModel,
   YuanliuAvailability,
-  YuanliuAvailabilityMap,
 } from '../types'
 
 /** 目录供给状态对应的展示语义；unknown 不暗示模型可调用。 */
@@ -40,16 +41,31 @@ const STATUS_VARIANTS: Record<YuanliuAvailability['status'], StatusVariant> = {
 /** 缓存状态超过三分钟后不再作为当前供给情况展示。 */
 const MAX_STATUS_AGE_MS = 3 * 60 * 1000
 
-/** 只为源流插件模型显示供给状态；缺失、过期和请求失败均显示 unknown。 */
-export function YuanliuAvailabilityBadge(props: {
+type AvailabilityBadgeProps = {
   model: PricingModel
-  availability: YuanliuAvailabilityMap
+  availability: CatalogAvailabilityMap
   isUnavailable?: boolean
   showCheckedAt?: boolean
   className?: string
-}) {
-  const { t, i18n } = useTranslation()
+}
+
+export function YuanliuAvailabilityBadge(props: AvailabilityBadgeProps) {
   if (!isYuanliuModel(props.model, props.availability)) return null
+  return <CatalogAvailabilityBadge {...props} provider='Yuanliu' />
+}
+
+export function SeedanceAvailabilityBadge(props: AvailabilityBadgeProps) {
+  if (!isSeedanceModel(props.model, props.availability)) return null
+  return <CatalogAvailabilityBadge {...props} provider='Seedance' />
+}
+
+/** 缺少查询结果、状态过期或请求失败均显示 unknown。 */
+function CatalogAvailabilityBadge(
+  props: AvailabilityBadgeProps & {
+    provider: 'Yuanliu' | 'Seedance'
+  }
+) {
+  const { t, i18n } = useTranslation()
 
   const entry = props.availability[props.model.model_name]
   const checkedAtMs = entry?.checked_at
@@ -70,13 +86,21 @@ export function YuanliuAvailabilityBadge(props: {
   const label = {
     available: t('Listed in catalog'),
     sold_out: t('Sold out'),
-    disabled: t('Unlisted in catalog'),
+    disabled: t('Upstream temporarily unavailable'),
     unknown: t('Unknown'),
   }[status]
   const checkedAt = Number.isFinite(checkedAtMs)
     ? new Date(checkedAtMs).toLocaleString(toIntlLocale(i18n.language))
     : t('Unknown')
   const checkedAtLabel = t('Catalog checked: {{time}}', { time: checkedAt })
+  const catalogLabel =
+    props.provider === 'Seedance'
+      ? t('Seedance catalog status')
+      : t('Yuanliu catalog status')
+  const catalogHint =
+    props.provider === 'Seedance'
+      ? t('Based on Seedance catalog; generation is not guaranteed.')
+      : t('Based on Yuanliu catalog; generation is not guaranteed.')
 
   return (
     <span
@@ -85,14 +109,14 @@ export function YuanliuAvailabilityBadge(props: {
         props.className
       )}
     >
-      <span className='text-muted-foreground'>Yuanliu</span>
+      <span className='text-muted-foreground'>{props.provider}</span>
       <StatusBadge
         label={label}
         variant={STATUS_VARIANTS[status]}
         type='text'
         copyable={false}
-        aria-label={`${t('Yuanliu catalog status')}: ${label}`}
-        title={`${t('Based on Yuanliu catalog; generation is not guaranteed.')} ${checkedAtLabel}`}
+        aria-label={`${catalogLabel}: ${label}`}
+        title={`${catalogHint} ${checkedAtLabel}`}
       />
       {props.showCheckedAt && (
         <span className='text-muted-foreground'>{checkedAtLabel}</span>

@@ -66,13 +66,15 @@ func (cache *yuanliuCatalogCache) get(ctx context.Context, channel *model.Channe
 		Keys              []string
 		IsMultiKey        bool
 		MultiKeyStatuses  map[int]int
+		PluginKey         string
 		PluginVersion     string
 		PluginBaseURL     string
+		ModelRouting      string
 		ModelDiscovery    *jsplugin.ModelDiscovery
 		SupportedModelIDs []string
 	}{channel.Key, channel.BaseURL, channel.Setting, channel.OtherSettings, channel.HeaderOverride,
 		channel.Keys, channel.ChannelInfo.IsMultiKey, channel.ChannelInfo.MultiKeyStatusList,
-		plugin.Version, plugin.BaseURL, plugin.ModelDiscovery, plugin.Models})
+		plugin.Key, plugin.Version, plugin.BaseURL, plugin.ModelRouting, plugin.ModelDiscovery, plugin.Models})
 	if err != nil {
 		return yuanliuCatalogSnapshot{}
 	}
@@ -140,9 +142,15 @@ func (cache *yuanliuCatalogCache) get(ctx context.Context, channel *model.Channe
 
 // fetchYuanliuModelNames 使用渠道已有的目录地址、密钥和代理设置进行一次受限的只读请求。
 func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
-	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
+	return fetchPricingTaskPluginModelNames(channel, "yuanliu", false)
+}
+
+// fetchPricingTaskPluginModelNames 复用有界只读目录请求；渠道模型插件允许空目录及只有 ID 的 OpenAI 条目。
+// Yuanliu 继续要求非空目录和插件声明的精确 ID，避免改变既有状态判断。
+func fetchPricingTaskPluginModelNames(channel *model.Channel, pluginKey string, channelModels bool) (map[string]string, error) {
+	plugin, ok := jsplugin.DefaultRegistry.Get(pluginKey)
 	if !ok || plugin.Meta.ModelDiscovery == nil || plugin.Meta.ModelDiscovery.Protocol != "openai" {
-		return nil, errors.New("Yuanliu model discovery is unavailable")
+		return nil, errors.New("task plugin model discovery is unavailable")
 	}
 	var settings dto.ChannelSettings
 	if channel.Setting != nil && *channel.Setting != "" {
@@ -150,8 +158,8 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 			return nil, errors.New("invalid channel settings")
 		}
 	}
-	if settings.TaskPluginKey != "yuanliu" {
-		return nil, errors.New("channel is not bound to Yuanliu")
+	if settings.TaskPluginKey != pluginKey {
+		return nil, errors.New("channel is not bound to the requested task plugin")
 	}
 	baseURL := strings.TrimSpace(channel.GetBaseURL())
 	if baseURL == "" {
@@ -184,7 +192,7 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 	defer cancel()
 	body, err := getTaskPluginModelDiscoveryPage(ctx, &client, requestURL.String(), headers, 1<<20)
 	if err != nil {
-		return nil, errors.New("Yuanliu model discovery failed")
+		return nil, errors.New("task plugin model discovery failed")
 	}
 	var response struct {
 		Data *[]struct {
@@ -192,8 +200,8 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 			Name string `json:"name"`
 		} `json:"data"`
 	}
-	if err := common.Unmarshal(body, &response); err != nil || response.Data == nil || len(*response.Data) == 0 {
-		return nil, errors.New("invalid Yuanliu model catalog")
+	if err := common.Unmarshal(body, &response); err != nil || response.Data == nil || (!channelModels && len(*response.Data) == 0) {
+		return nil, errors.New("invalid task plugin model catalog")
 	}
 	declared := make(map[string]struct{}, len(plugin.Meta.Models))
 	for _, id := range plugin.Meta.Models {
@@ -202,14 +210,17 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 	names := make(map[string]string)
 	seen := make(map[string]struct{}, len(*response.Data))
 	for _, item := range *response.Data {
-		if item.ID == "" {
-			return nil, errors.New("invalid Yuanliu model ID")
+		if strings.TrimSpace(item.ID) == "" {
+			return nil, errors.New("invalid task plugin model ID")
 		}
 		if _, duplicate := seen[item.ID]; duplicate {
-			return nil, errors.New("duplicate Yuanliu model ID")
+			return nil, errors.New("duplicate task plugin model ID")
 		}
 		seen[item.ID] = struct{}{}
-		if _, supported := declared[item.ID]; supported {
+		if _, supported := declared[item.ID]; supported || channelModels {
+			if channelModels && strings.TrimSpace(item.Name) == "" {
+				item.Name = item.ID
+			}
 			names[item.ID] = item.Name
 		}
 	}
@@ -218,6 +229,15 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 
 // resolveYuanliuModel 只接受渠道映射最终指向插件精确模型 ID 的名称。
 func resolveYuanliuModel(name string, mapping map[string]string, declared map[string]struct{}) string {
+	name = resolvePricingTaskPluginModel(name, mapping)
+	if _, ok := declared[name]; ok {
+		return name
+	}
+	return ""
+}
+
+// resolvePricingTaskPluginModel 解析渠道的多级模型映射，循环或空名称不能作为目录目标。
+func resolvePricingTaskPluginModel(name string, mapping map[string]string) string {
 	visited := map[string]bool{name: true}
 	for {
 		next, ok := mapping[name]
@@ -230,10 +250,7 @@ func resolveYuanliuModel(name string, mapping map[string]string, declared map[st
 		visited[next] = true
 		name = next
 	}
-	if _, ok := declared[name]; ok {
-		return name
-	}
-	return ""
+	return name
 }
 
 // aggregateYuanliuAvailability 将所有可路由渠道的结果合并；失败渠道不使售罄或缺失变成确定结论。
@@ -297,7 +314,13 @@ func aggregateYuanliuAvailability(targets map[int]string, snapshots map[int]yuan
 // 数据库读取失败返回 503；上游目录失败或等待超过 8 秒仅使受影响模型为 unknown。
 // 请求可能触发带渠道凭据的只读目录 GET，超时刷新会继续填充缓存；响应不含渠道信息或凭据。
 func GetYuanliuAvailability(c *gin.Context) {
-	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
+	getPricingTaskPluginAvailability(c, "yuanliu", &pricingYuanliuCatalogCache, fetchYuanliuModelNames)
+}
+
+// getPricingTaskPluginAvailability 仅汇总当前用户可见、启用且绑定指定插件的渠道。
+// 渠道路由插件直接使用保存的渠道模型与映射，不依赖插件静态 models。
+func getPricingTaskPluginAvailability(c *gin.Context, pluginKey string, cache *yuanliuCatalogCache, fetch func(*model.Channel) (map[string]string, error)) {
+	plugin, ok := jsplugin.DefaultRegistry.Get(pluginKey)
 	models := make(map[string]yuanliuAvailability)
 	if !ok {
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"models": models}})
@@ -358,7 +381,7 @@ func GetYuanliuAvailability(c *gin.Context) {
 			continue
 		}
 		var settings dto.ChannelSettings
-		if channel.Setting == nil || common.UnmarshalJsonStr(*channel.Setting, &settings) != nil || settings.TaskPluginKey != "yuanliu" {
+		if channel.Setting == nil || common.UnmarshalJsonStr(*channel.Setting, &settings) != nil || settings.TaskPluginKey != pluginKey {
 			continue
 		}
 		byID[channel.Id] = channel
@@ -379,7 +402,11 @@ func GetYuanliuAvailability(c *gin.Context) {
 		if _, ok := usableGroups[ability.Group]; !ok && ability.Group != "all" {
 			continue
 		}
-		upstreamID := resolveYuanliuModel(ability.Model, normalizeChannelModelMapping(channel), declared)
+		mapping := normalizeChannelModelMapping(channel)
+		upstreamID := resolveYuanliuModel(ability.Model, mapping, declared)
+		if plugin.Meta.ModelRouting == "channel" {
+			upstreamID = resolvePricingTaskPluginModel(ability.Model, mapping)
+		}
 		if upstreamID == "" {
 			continue
 		}
@@ -404,7 +431,7 @@ func GetYuanliuAvailability(c *gin.Context) {
 		wait.Go(func() {
 			for channelID := range work {
 				channel := byID[channelID]
-				snapshot := pricingYuanliuCatalogCache.get(requestCtx, channel, plugin.Meta, fetchYuanliuModelNames)
+				snapshot := cache.get(requestCtx, channel, plugin.Meta, fetch)
 				snapshotsLock.Lock()
 				snapshots[channel.Id] = snapshot
 				snapshotsLock.Unlock()

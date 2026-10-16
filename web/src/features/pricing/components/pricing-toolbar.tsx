@@ -83,9 +83,9 @@ export interface PricingToolbarProps {
   hasActiveFilters: boolean
   activeFilterCount: number
   onClearFilters: () => void
-  hasYuanliuModels: boolean
-  isReloadingYuanliuAvailability: boolean
-  onReloadYuanliuAvailability: () => void
+  hasCatalogModels: boolean
+  isReloadingCatalogAvailability: boolean
+  onReloadCatalogAvailability: () => void
 }
 
 export function PricingToolbar(props: PricingToolbarProps) {
@@ -128,7 +128,7 @@ export function PricingToolbar(props: PricingToolbarProps) {
         </div>
 
         <div className='flex min-w-0 flex-wrap items-center gap-2'>
-          {props.hasYuanliuModels && (
+          {props.hasCatalogModels && (
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -136,9 +136,9 @@ export function PricingToolbar(props: PricingToolbarProps) {
                     type='button'
                     variant='outline'
                     size='icon-sm'
-                    aria-label={t('Reload Yuanliu status from gateway')}
-                    disabled={props.isReloadingYuanliuAvailability}
-                    onClick={props.onReloadYuanliuAvailability}
+                    aria-label={t('Reload upstream status from gateway')}
+                    disabled={props.isReloadingCatalogAvailability}
+                    onClick={props.onReloadCatalogAvailability}
                   />
                 }
               >
@@ -146,12 +146,12 @@ export function PricingToolbar(props: PricingToolbarProps) {
                   aria-hidden
                   className={cn(
                     'size-4',
-                    props.isReloadingYuanliuAvailability && 'animate-spin'
+                    props.isReloadingCatalogAvailability && 'animate-spin'
                   )}
                 />
               </TooltipTrigger>
               <TooltipContent>
-                {t('Reload Yuanliu status from gateway')}
+                {t('Reload upstream status from gateway')}
               </TooltipContent>
             </Tooltip>
           )}

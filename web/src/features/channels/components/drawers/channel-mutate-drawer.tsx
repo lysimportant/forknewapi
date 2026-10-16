@@ -127,6 +127,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import {
   getAllModels,
   getChannel,
+  getChannelTypeModels,
   getGroups,
   getPrefillGroups,
   getTaskPluginOptions,
@@ -136,6 +137,7 @@ import {
   ADD_MODE_OPTIONS,
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_STATUS_LABELS,
+  CHANNEL_TYPE_GLOBAL_STORE,
   CHANNEL_TYPE_OPTIONS,
   CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_TYPE_WARNINGS,
@@ -183,6 +185,7 @@ import {
   getChannelPluginExtensions,
   supportsChannelPluginExtensions,
 } from '../../lib/channel-plugin-extensions'
+import { getDefaultBaseUrl } from '../../lib/channel-type-config'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
@@ -394,6 +397,7 @@ export function ChannelMutateDrawer({
   const [isCodexCredentialRefreshing, setIsCodexCredentialRefreshing] =
     useState(false)
   const initialModelsRef = useRef<string[]>([])
+  const pendingGlobalStoreModelsRef = useRef(false)
   const initialModelMappingRef = useRef<string>('')
   const initialStatusCodeMappingRef = useRef<string>('')
   const [statusCodeRiskOpen, setStatusCodeRiskOpen] = useState(false)
@@ -639,7 +643,45 @@ export function ChannelMutateDrawer({
   )
 
   // Get basic models for the current channel type
+  const globalStoreModelsQuery = useQuery({
+    queryKey: ['channel_type_models', CHANNEL_TYPE_GLOBAL_STORE],
+    queryFn: async () => {
+      const response = requireServerSuccess(await getChannelTypeModels())
+      const models = response.data?.[CHANNEL_TYPE_GLOBAL_STORE]
+      if (
+        !Array.isArray(models) ||
+        !models.length ||
+        models.some((name) => typeof name !== 'string' || !name.trim())
+      ) {
+        throw new Error(t('Failed to load models'))
+      }
+      return [...new Set(models)]
+    },
+    enabled: open && !isEditing && currentType === CHANNEL_TYPE_GLOBAL_STORE,
+    meta: { errorToast: false },
+  })
+  useEffect(() => {
+    if (
+      !open ||
+      isEditing ||
+      currentType !== CHANNEL_TYPE_GLOBAL_STORE ||
+      !pendingGlobalStoreModelsRef.current ||
+      !globalStoreModelsQuery.data
+    ) {
+      return
+    }
+    pendingGlobalStoreModelsRef.current = false
+    if (form.getValues('models')?.trim()) return
+    form.setValue('models', formatModelsArray(globalStoreModelsQuery.data), {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+  }, [open, isEditing, currentType, globalStoreModelsQuery.data, form])
+
   const basicModels = useMemo(() => {
+    if (currentType === CHANNEL_TYPE_GLOBAL_STORE) {
+      return globalStoreModelsQuery.data ?? []
+    }
     if (!allModelsList.length) return []
     // Filter models based on common patterns for specific types
     if (currentType === 1) {
@@ -648,7 +690,7 @@ export function ChannelMutateDrawer({
       )
     }
     return allModelsList
-  }, [allModelsList, currentType])
+  }, [allModelsList, currentType, globalStoreModelsQuery.data])
 
   // Get prefill groups
   const prefillGroups = useMemo(
@@ -681,6 +723,12 @@ export function ChannelMutateDrawer({
   const taskPluginOptionsQuery = useQuery({
     queryKey: ['task-plugin-options'],
     queryFn: async () => requireServerSuccess(await getTaskPluginOptions()),
+    select: (plugins) =>
+      plugins.map((plugin) =>
+        plugin.key === 'globalstore'
+          ? { ...plugin, name: t('GlobalStore Video') }
+          : plugin
+      ),
     enabled: open && canBindTaskPlugin,
     meta: { errorToast: false },
   })
@@ -725,9 +773,11 @@ export function ChannelMutateDrawer({
           (item) => item.key === target.key
         )
         if (!plugin) return
+        pendingGlobalStoreModelsRef.current = false
         const previousPlugin = taskPluginOptionsQuery.data?.find(
           (item) => item.key === form.getValues('task_plugin_key')
         )
+        const previousType = form.getValues('type')
         form.setValue('type', CHANNEL_TYPE_TASK_PLUGIN, { shouldDirty: true })
         form.setValue('task_plugin_key', plugin.key, { shouldDirty: true })
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
@@ -740,7 +790,9 @@ export function ChannelMutateDrawer({
         }
         const baseUrl = nextTaskPluginBaseUrl(
           form.getValues('base_url'),
-          previousPlugin?.baseUrl,
+          previousType === CHANNEL_TYPE_GLOBAL_STORE
+            ? getDefaultBaseUrl(CHANNEL_TYPE_GLOBAL_STORE)
+            : previousPlugin?.baseUrl,
           plugin.baseUrl
         )
         if (baseUrl !== null) {
@@ -756,6 +808,26 @@ export function ChannelMutateDrawer({
           target.type === CHANNEL_TYPE_TASK_PLUGIN
         ) {
           return
+        }
+        if (target.type === CHANNEL_TYPE_GLOBAL_STORE && !isEditing) {
+          const previousPlugin = taskPluginOptionsQuery.data?.find(
+            (item) => item.key === form.getValues('task_plugin_key')
+          )
+          const baseUrl = nextTaskPluginBaseUrl(
+            form.getValues('base_url'),
+            previousPlugin?.baseUrl,
+            getDefaultBaseUrl(CHANNEL_TYPE_GLOBAL_STORE)
+          )
+          if (baseUrl !== null) {
+            form.setValue('base_url', baseUrl, {
+              shouldDirty: true,
+              shouldValidate: true,
+            })
+          }
+          pendingGlobalStoreModelsRef.current = true
+          form.setValue('models', '', { shouldDirty: true })
+        } else {
+          pendingGlobalStoreModelsRef.current = false
         }
         form.setValue('type', target.type, { shouldDirty: true })
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
@@ -1209,6 +1281,7 @@ export function ChannelMutateDrawer({
   }, [basicModels, updateModels, t])
 
   const handleClearModels = useCallback(() => {
+    pendingGlobalStoreModelsRef.current = false
     form.setValue('models', '')
     toast.success(t('Cleared all models'))
   }, [form, t])
@@ -1251,6 +1324,7 @@ export function ChannelMutateDrawer({
   // Handle model selection change from MultiSelect
   const handleModelsChange = useCallback(
     (selected: string[]) => {
+      pendingGlobalStoreModelsRef.current = false
       try {
         const merged = mergeDiscoveredModelAliases(
           selected,
@@ -2801,6 +2875,22 @@ export function ChannelMutateDrawer({
                       copyChipOnClick
                     />
                   </FormControl>
+                  {currentType === CHANNEL_TYPE_GLOBAL_STORE && !isEditing && (
+                    <>
+                      {globalStoreModelsQuery.isLoading && (
+                        <LoadingState inline message={t('Loading models...')} />
+                      )}
+                      {globalStoreModelsQuery.isError && (
+                        <ErrorState
+                          className='min-h-0 p-3'
+                          title={t('Failed to load models')}
+                          onRetry={() => {
+                            void globalStoreModelsQuery.refetch()
+                          }}
+                        />
+                      )}
+                    </>
+                  )}
                   {canBindTaskPlugin &&
                     canHavePluginExtensions &&
                     !showProviderPicker && (

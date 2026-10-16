@@ -69,9 +69,30 @@ export function withPluginPricing(
     billing_mode: variant.billing_mode ?? 'tiered_expr',
     billing_expr: variant.billing_expr,
     billing_usage_schema: variant.billing_usage_schema,
-    billing_usage_examples: variant.billing_usage_examples,
+    billing_usage_examples: pluginUsageExamples(variant),
     billing_plugin_variants: undefined,
   }
+}
+
+/** Seedance examples omit duration; duration-dependent totals must not look like fixed prices. */
+function pluginUsageExamples(variant: BillingPluginVariant) {
+  if (variant.plugin_key !== 'seedance-video') {
+    return variant.billing_usage_examples
+  }
+  const compiled = compileBillingExpression(variant.billing_expr)
+  if (compiled.status !== 'ready') return []
+  let usesDuration = false
+  visitExpression(compiled.ast, (node) => {
+    if (node.kind !== 'call' || node.name !== 'u') return
+    const key = node.args[0]
+    if (key?.kind === 'literal' && key.value === 'seconds') usesDuration = true
+  })
+  if (usesDuration) return []
+  return (variant.billing_usage_examples ?? []).flatMap((example) => {
+    const resolution = example.facts.video_resolution
+    if (typeof resolution !== 'string' || !resolution.trim()) return []
+    return [{ ...example, label: resolution.replace(/^2k$/i, '2K') }]
+  })
 }
 
 export function pluginExpressionsEqual(

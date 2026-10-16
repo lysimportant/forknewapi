@@ -17,17 +17,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useMemo } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { PricingModel, TokenUnit, YuanliuAvailabilityMap } from '../types'
+import { DEFAULT_TOKEN_UNIT } from '../constants'
+import { useInfiniteModels } from '../hooks/use-infinite-models'
+import type {
+  PricingModel,
+  TokenUnit,
+  YuanliuAvailabilityMap,
+  SeedanceAvailabilityMap,
+} from '../types'
 import { ModelCard } from './model-card'
+import { ModelListFooter } from './model-list-footer'
 import type { ModelPerfBadgeData } from './model-perf-badge'
 
 export interface ModelCardGridProps {
@@ -40,15 +44,13 @@ export interface ModelCardGridProps {
   selectedGroup?: string
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }
 
 export function ModelCardGrid(props: ModelCardGridProps) {
-  const { t } = useTranslation()
-  const [page, setPage] = useState(1)
-  const pageSize = DEFAULT_PRICING_PAGE_SIZE
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
-  const totalPages = Math.max(1, Math.ceil(props.models.length / pageSize))
-  const currentPage = Math.min(page, totalPages)
+  const modelList = useInfiniteModels(props.models)
 
   const perfQuery = useQuery({
     queryKey: ['perf-metrics-summary', 24],
@@ -56,11 +58,6 @@ export function ModelCardGrid(props: ModelCardGridProps) {
     staleTime: 60 * 1000,
     retry: false,
   })
-
-  const pagedModels = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return props.models.slice(start, start + pageSize)
-  }, [currentPage, pageSize, props.models])
 
   const perfMap = useMemo(() => {
     const map = new Map<string, ModelPerfBadgeData>()
@@ -77,7 +74,7 @@ export function ModelCardGrid(props: ModelCardGridProps) {
   return (
     <div className='flex flex-col gap-4 sm:gap-5'>
       <div className='grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3'>
-        {pagedModels.map((model) => (
+        {modelList.visibleModels.map((model) => (
           <ModelCard
             key={model.id ?? model.model_name}
             model={model}
@@ -87,6 +84,10 @@ export function ModelCardGrid(props: ModelCardGridProps) {
             showRechargePrice={props.showRechargePrice}
             selectedGroup={props.selectedGroup}
             yuanliuAvailability={props.yuanliuAvailability}
+            seedanceAvailability={props.seedanceAvailability}
+            isSeedanceAvailabilityUnavailable={
+              props.isSeedanceAvailabilityUnavailable
+            }
             isYuanliuAvailabilityUnavailable={
               props.isYuanliuAvailabilityUnavailable
             }
@@ -96,42 +97,13 @@ export function ModelCardGrid(props: ModelCardGridProps) {
         ))}
       </div>
 
-      {totalPages > 1 && (
-        <div className='text-muted-foreground flex flex-col items-center justify-between gap-3 border-t px-4 py-3 text-sm sm:flex-row'>
-          <p className='text-muted-foreground'>
-            {t('Page {{current}} of {{total}}', {
-              current: currentPage,
-              total: totalPages,
-            })}
-          </p>
-          <div className='flex items-center gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={currentPage <= 1}
-              className='gap-1.5'
-            >
-              <ChevronLeft className='size-4' />
-              {t('Previous page')}
-            </Button>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              onClick={() =>
-                setPage((current) => Math.min(totalPages, current + 1))
-              }
-              disabled={currentPage >= totalPages}
-              className='gap-1.5'
-            >
-              {t('Next page')}
-              <ChevronRight className='size-4' />
-            </Button>
-          </div>
-        </div>
-      )}
+      <ModelListFooter
+        count={modelList.visibleCount}
+        total={props.models.length}
+        hasMore={modelList.hasMore}
+        onLoadMore={modelList.loadMore}
+        sentinelRef={modelList.sentinelRef}
+      />
     </div>
   )
 }

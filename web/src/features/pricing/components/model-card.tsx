@@ -45,10 +45,14 @@ import type {
   PriceType,
   TokenUnit,
   YuanliuAvailabilityMap,
+  SeedanceAvailabilityMap,
 } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
-import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
+import {
+  YuanliuAvailabilityBadge,
+  SeedanceAvailabilityBadge,
+} from './yuanliu-availability-badge'
 
 export interface ModelCardProps {
   model: PricingModel
@@ -61,6 +65,8 @@ export interface ModelCardProps {
   perf?: ModelPerfBadgeData
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }
 
 export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
@@ -293,6 +299,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             model={props.model}
             availability={props.yuanliuAvailability ?? {}}
             isUnavailable={props.isYuanliuAvailabilityUnavailable}
+            className='mt-1'
+          />
+          <SeedanceAvailabilityBadge
+            model={props.model}
+            availability={props.seedanceAvailability ?? {}}
+            isUnavailable={props.isSeedanceAvailabilityUnavailable}
             className='mt-1'
           />
         </div>

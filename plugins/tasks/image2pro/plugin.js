@@ -70,13 +70,13 @@ const REQUEST_FIELDS = [
   Object.values(MEDIA_RULES).flatMap((rule) => rule.aliases)
 );
 
-/** Image2Pro 插件声明；秒数是用量，价格由管理员配置，不换算上游积分。 */
+/** Image2Pro 插件声明；Seedance 按次、Flash 按秒，价格由管理员配置，不换算上游积分。 */
 export const meta = {
   apiVersion: 1,
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.2.0",
+  version: "2.3.0",
   author: { name: "lysimportant/forknewapi" },
   description: {
     en: "Image2Pro Seedance 2.0 and Flash-MAX text and reference-image video generation",
@@ -92,6 +92,19 @@ export const meta = {
   usageSchema: {
     seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   },
+  usageProfiles: [
+    {
+      models: [SEEDANCE_MODEL, "Seedance2.0"],
+      schema: {
+        count: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "request", zh: "次" },
+          description: { en: "Video generation unit price", zh: "视频生成单价" },
+        },
+      },
+    },
+  ],
 };
 
 /** 先排除 data URL，避免扫描整段 Base64；HTTP(S) 地址仍拒绝内嵌凭据、控制字符和反斜杠。 */
@@ -110,12 +123,11 @@ function apiBase(ctx) {
 
 /** 读取有界秒数并兼容旧任务冻结的小数时长；新建请求另按精确模型范围校验。 */
 function requestedSeconds(request) {
-  if (request.seconds === undefined && request.duration === undefined) throw new Error("seconds or duration is required for Image2Pro per-second billing");
+  if (request.seconds === undefined && request.duration === undefined) throw new Error("seconds or duration is required for Image2Pro video generation");
   for (const field of ["seconds", "duration"]) {
     const value = request[field];
     if (value === undefined) continue;
-    if (value === -1 || value === "-1")
-      throw new Error("automatic duration is unavailable because Image2Pro has no verified output duration for per-second billing");
+    if (value === -1 || value === "-1") throw new Error("automatic duration is unavailable for Image2Pro video generation");
     if (
       (typeof value !== "number" && typeof value !== "string") ||
       (typeof value === "string" && !/^\d+(?:\.\d+)?$/.test(value.trim())) ||
@@ -381,7 +393,7 @@ export function buildSubmitRequest(ctx) {
   };
 }
 
-/** 校验提交任务 ID 并保存请求秒数；完成响应不含时长，不能从积分推测结算量。 */
+/** 保存请求时长和新 Seedance 的按次标记；旧任务无标记时继续按原冻结秒数结算。 */
 export function parseSubmitResponse(ctx, response) {
   const body = response && response.body;
   if (response && response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300))
@@ -391,6 +403,8 @@ export function parseSubmitResponse(ctx, response) {
   if (!["processing", "completed", "failed"].includes(body.status)) throw new Error("Image2Pro returned an unrecognized video status");
   if (body.status !== "failed" && body.error) throw new Error("Image2Pro video creation failed");
   const state = { seconds: requestedSeconds(ctx.requestBody || {}) };
+  const model = ctx.upstreamModel || ctx.model;
+  if (model && modelSpec(model).upstream === "Seedance2.0") state.billingUnit = "count";
   const result = { taskId: body.id, taskData: body, state };
   if (body.status !== "processing") {
     const immediate = parseTaskResult({ state }, body);
@@ -400,16 +414,20 @@ export function parseSubmitResponse(ctx, response) {
   return result;
 }
 
-/** 返回有界的请求秒数；旧倍率入口不叠加用量或上游积分。 */
+/** Seedance 每个任务计一次，Flash 使用请求秒数；旧倍率入口不叠加用量或上游积分。 */
 export function extractUsage(ctx) {
-  const request = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model, ctx.files || []);
-  return ctx.usagePurpose === "billing_ratios" ? {} : { seconds: request.duration };
+  const model = ctx.upstreamModel || ctx.model;
+  const request = normalizeRequest(ctx.requestBody, model, ctx.files || []);
+  if (ctx.usagePurpose === "billing_ratios") return {};
+  return modelSpec(model).upstream === "Seedance2.0" ? { count: 1 } : { seconds: request.duration };
 }
 
-/** 完成时保留已冻结请求秒数，不把缺失实际时长解释为默认值或零用量。 */
+/** 新 Seedance 完成时仍计一次；没有按次标记的旧任务保留原冻结秒数。 */
 export function extractUsageOnComplete(task, result) {
   if (!result || result.status !== "SUCCESS") return null;
-  return { seconds: requestedSeconds(task.state || {}) };
+  const state = task.state || {};
+  const seconds = requestedSeconds(state);
+  return state.billingUnit === "count" ? { count: 1 } : { seconds };
 }
 
 /** 查询只接受供应商十六进制任务 ID，鉴权固定使用当前渠道。 */
@@ -505,7 +523,7 @@ function responsesRequest(ctx) {
   return normalizeRequest(request, ctx.upstreamModel || request.model);
 }
 
-/** 标准视频与 Responses 共用生成驱动、秒数计费和宿主管理的制品权限。 */
+/** 标准视频与 Responses 共用生成驱动、逐模型计费和宿主管理的制品权限。 */
 export const protocols = {
   openai_video: {
     /** 接收 JSON 或 multipart 引用素材，统一字段并保留客户端模型别名。 */

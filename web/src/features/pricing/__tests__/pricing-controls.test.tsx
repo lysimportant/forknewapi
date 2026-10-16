@@ -55,9 +55,9 @@ function toolbarProps(): PricingToolbarProps {
     hasActiveFilters: false,
     activeFilterCount: 0,
     onClearFilters: vi.fn(),
-    hasYuanliuModels: false,
-    isReloadingYuanliuAvailability: false,
-    onReloadYuanliuAvailability: vi.fn(),
+    hasCatalogModels: false,
+    isReloadingCatalogAvailability: false,
+    onReloadCatalogAvailability: vi.fn(),
   }
 }
 
@@ -93,28 +93,28 @@ describe('pricing controls', () => {
     )
   })
 
-  it('offers a gateway status reload only when Yuanliu models are present', async () => {
+  it('offers a gateway status reload only when catalog-backed models are present', async () => {
     const props = toolbarProps()
     const user = userEvent.setup()
     const { rerender } = render(<PricingToolbar {...props} />)
     expect(
       screen.queryByRole('button', {
-        name: 'Reload Yuanliu status from gateway',
+        name: 'Reload upstream status from gateway',
       })
     ).toBeNull()
 
-    rerender(<PricingToolbar {...props} hasYuanliuModels />)
+    rerender(<PricingToolbar {...props} hasCatalogModels />)
     const reload = screen.getByRole('button', {
-      name: 'Reload Yuanliu status from gateway',
+      name: 'Reload upstream status from gateway',
     })
     await user.click(reload)
-    expect(props.onReloadYuanliuAvailability).toHaveBeenCalledOnce()
+    expect(props.onReloadCatalogAvailability).toHaveBeenCalledOnce()
 
     rerender(
       <PricingToolbar
         {...props}
-        hasYuanliuModels
-        isReloadingYuanliuAvailability
+        hasCatalogModels
+        isReloadingCatalogAvailability
       />
     )
     expect(reload).toBeDisabled()

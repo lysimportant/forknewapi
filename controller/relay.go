@@ -767,6 +767,7 @@ func executeTaskSubmissionWith(
 	if !hasPending {
 		task = model.InitTask(result.Platform, relayInfo)
 	}
+	previousStatus := task.Status
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource
@@ -824,7 +825,7 @@ func executeTaskSubmissionWith(
 		task.PrivateData.Submission.Body = nil
 		task.PrivateData.Submission.Headers = nil
 		task.PrivateData.Submission.Context = nil
-		if won, updateErr := task.UpdateWithStatus(task.Status); updateErr != nil || !won {
+		if won, updateErr := task.UpdateWithStatus(previousStatus); updateErr != nil || !won {
 			if updateErr != nil {
 				common.SysError("update task after submission error: " + updateErr.Error())
 			}

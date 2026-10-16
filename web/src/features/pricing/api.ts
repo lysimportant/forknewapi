@@ -18,7 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import type { PricingData, YuanliuAvailabilityResponse } from './types'
+import type {
+  PricingData,
+  SeedanceAvailabilityResponse,
+  YuanliuAvailabilityResponse,
+} from './types'
 
 // ----------------------------------------------------------------------------
 // Pricing APIs
@@ -33,5 +37,11 @@ export async function getPricing(): Promise<PricingData> {
 /** 查询当前用户可见的源流模型供给状态；结果可能来自网关短期缓存。 */
 export async function getYuanliuAvailability(): Promise<YuanliuAvailabilityResponse> {
   const res = await api.get('/api/pricing/yuanliu-availability')
+  return res.data
+}
+
+/** 查询当前用户可见的 Seedance Unified Video 模型目录状态。 */
+export async function getSeedanceAvailability(): Promise<SeedanceAvailabilityResponse> {
+  const res = await api.get('/api/pricing/seedance-availability')
   return res.data
 }

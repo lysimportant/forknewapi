@@ -623,6 +623,16 @@ export async function getAllModels(): Promise<{
   return res.data
 }
 
+/** Built-in model lists grouped by channel type; this does not query upstream. */
+export async function getChannelTypeModels(): Promise<{
+  success: boolean
+  message?: string
+  data?: Record<number, string[]>
+}> {
+  const res = await api.get('/api/models')
+  return res.data
+}
+
 /**
  * Get all enabled models
  */

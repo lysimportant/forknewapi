@@ -16,19 +16,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { Row, PaginationState } from '@tanstack/react-table'
-import { useState, useCallback } from 'react'
+import type { Row } from '@tanstack/react-table'
+import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
-  DataTablePagination,
   DataTableRow,
   DataTableView,
   useDataTable,
 } from '@/components/data-table'
 
-import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { PricingModel, TokenUnit, YuanliuAvailabilityMap } from '../types'
+import { DEFAULT_TOKEN_UNIT } from '../constants'
+import { useInfiniteModels } from '../hooks/use-infinite-models'
+import type {
+  PricingModel,
+  TokenUnit,
+  YuanliuAvailabilityMap,
+  SeedanceAvailabilityMap,
+} from '../types'
+import { ModelListFooter } from './model-list-footer'
 import { usePricingColumns } from './pricing-columns'
 
 export interface PricingTableProps {
@@ -42,6 +48,8 @@ export interface PricingTableProps {
   onModelClick?: (modelName: string) => void
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }
 
 export function PricingTable(props: PricingTableProps) {
@@ -56,13 +64,12 @@ export function PricingTable(props: PricingTableProps) {
     selectedGroup,
     yuanliuAvailability,
     isYuanliuAvailabilityUnavailable,
+    seedanceAvailability,
+    isSeedanceAvailabilityUnavailable,
     onModelClick,
   } = props
 
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: DEFAULT_PRICING_PAGE_SIZE,
-  })
+  const modelList = useInfiniteModels(models, !isLoading)
 
   const columns = usePricingColumns({
     tokenUnit,
@@ -72,15 +79,15 @@ export function PricingTable(props: PricingTableProps) {
     selectedGroup,
     yuanliuAvailability,
     isYuanliuAvailabilityUnavailable,
+    seedanceAvailability,
+    isSeedanceAvailabilityUnavailable,
   })
 
   const { table } = useDataTable({
-    data: models,
+    data: modelList.visibleModels,
     columns,
-    pageCount: Math.ceil(models.length / pagination.pageSize),
-    pagination,
-    onPaginationChange: setPagination,
     manualPagination: false,
+    withPaginationRowModel: false,
     withFilteredRowModel: false,
     withSortedRowModel: false,
     withFacetedRowModel: false,
@@ -109,13 +116,22 @@ export function PricingTable(props: PricingTableProps) {
           <DataTableRow
             key={row.id}
             row={row}
+            cellRenderColumns={columns}
             className='hover:bg-muted/30 cursor-pointer transition-colors'
             onClick={() => handleRowClick(row.original)}
           />
         )}
       />
 
-      {!isLoading && models.length > 0 && <DataTablePagination table={table} />}
+      {!isLoading && models.length > 0 && (
+        <ModelListFooter
+          count={modelList.visibleCount}
+          total={models.length}
+          hasMore={modelList.hasMore}
+          onLoadMore={modelList.loadMore}
+          sentinelRef={modelList.sentinelRef}
+        />
+      )}
     </div>
   )
 }

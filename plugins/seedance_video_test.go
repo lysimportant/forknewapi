@@ -36,6 +36,10 @@ func TestSeedanceVideoPluginContracts(t *testing.T) {
 	assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["count"].Unit)
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
+	require.Len(t, plugin.Meta.UsageExamples, 4)
+	for i, label := range []string{"480p", "720p", "1080p", "2K"} {
+		assert.Equal(t, label, plugin.Meta.UsageExamples[i].Label)
+	}
 
 	alias := "我的 Seedance 渠道名"
 	upstream := "Xseadanco2.0"

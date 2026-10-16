@@ -164,6 +164,12 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       models: 'Models',
     },
   },
+  62: {
+    id: 62,
+    name: CHANNEL_TYPES[62],
+    icon: 'globalstore',
+    defaultBaseUrl: 'https://saas.globalstore.ai/kyyReactApiServer',
+  },
 }
 
 /**

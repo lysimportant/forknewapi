@@ -64,6 +64,7 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useBillingTime } from '../hooks/use-billing-time'
 import { usePricingData } from '../hooks/use-pricing-data'
+import { useSeedanceAvailability } from '../hooks/use-seedance-availability'
 import { useYuanliuAvailability } from '../hooks/use-yuanliu-availability'
 import type { ParsedTaskTier } from '../lib/billing-expr'
 import { formatBillingCondition } from '../lib/billing-expression/condition-display'
@@ -100,12 +101,16 @@ import type {
   PricingModel,
   TokenUnit,
   YuanliuAvailabilityMap,
+  SeedanceAvailabilityMap,
 } from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
-import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
+import {
+  YuanliuAvailabilityBadge,
+  SeedanceAvailabilityBadge,
+} from './yuanliu-availability-badge'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -621,6 +626,8 @@ function ModelHeader(props: {
   model: PricingModel
   yuanliuAvailability: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }) {
   const { t } = useTranslation()
   const model = props.model
@@ -655,6 +662,13 @@ function ModelHeader(props: {
         model={model}
         availability={props.yuanliuAvailability}
         isUnavailable={props.isYuanliuAvailabilityUnavailable}
+        showCheckedAt
+        className='mt-2'
+      />
+      <SeedanceAvailabilityBadge
+        model={model}
+        availability={props.seedanceAvailability ?? {}}
+        isUnavailable={props.isSeedanceAvailabilityUnavailable}
         showCheckedAt
         className='mt-2'
       />
@@ -1494,6 +1508,8 @@ export interface ModelDetailsContentProps {
   showRechargePrice?: boolean
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
@@ -1519,6 +1535,10 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
       <ModelHeader
         model={props.model}
         yuanliuAvailability={props.yuanliuAvailability ?? {}}
+        seedanceAvailability={props.seedanceAvailability}
+        isSeedanceAvailabilityUnavailable={
+          props.isSeedanceAvailabilityUnavailable
+        }
         isYuanliuAvailabilityUnavailable={
           props.isYuanliuAvailabilityUnavailable ?? false
         }
@@ -1646,6 +1666,7 @@ export function ModelDetails() {
     usdExchangeRate,
   } = usePricingData()
   const yuanliuQuery = useYuanliuAvailability()
+  const seedanceQuery = useSeedanceAvailability()
 
   const tokenUnit: TokenUnit =
     search.tokenUnit === 'K' ? 'K' : DEFAULT_TOKEN_UNIT
@@ -1725,6 +1746,8 @@ export function ModelDetails() {
           tokenUnit={tokenUnit}
           showRechargePrice={search.rechargePrice ?? false}
           yuanliuAvailability={yuanliuQuery.data?.data?.models ?? {}}
+          seedanceAvailability={seedanceQuery.data?.data?.models ?? {}}
+          isSeedanceAvailabilityUnavailable={seedanceQuery.isError}
           isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
           endpointMap={
             (endpointMap as Record<

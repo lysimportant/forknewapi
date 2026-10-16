@@ -35,7 +35,9 @@ import {
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
+import { useSeedanceAvailability } from './hooks/use-seedance-availability'
 import { useYuanliuAvailability } from './hooks/use-yuanliu-availability'
+import { isSeedanceModel } from './lib/seedance-model'
 import { isYuanliuModel } from './lib/yuanliu-model'
 
 export function Pricing() {
@@ -56,9 +58,14 @@ export function Pricing() {
     usdExchangeRate,
   } = usePricingData()
   const yuanliuQuery = useYuanliuAvailability()
+  const seedanceQuery = useSeedanceAvailability()
+  const seedanceAvailability = seedanceQuery.data?.data?.models ?? {}
   const yuanliuAvailability = yuanliuQuery.data?.data?.models ?? {}
   const hasYuanliuModels = (models ?? []).some((model) =>
     isYuanliuModel(model, yuanliuAvailability)
+  )
+  const hasSeedanceModels = (models ?? []).some((model) =>
+    isSeedanceModel(model, seedanceAvailability)
   )
 
   const {
@@ -140,6 +147,8 @@ export function Pricing() {
           selectedGroup={groupFilter}
           yuanliuAvailability={yuanliuAvailability}
           isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
+          seedanceAvailability={seedanceAvailability}
+          isSeedanceAvailabilityUnavailable={seedanceQuery.isError}
         />
       )
     }
@@ -155,6 +164,8 @@ export function Pricing() {
         onModelClick={handleModelClick}
         yuanliuAvailability={yuanliuAvailability}
         isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
+        seedanceAvailability={seedanceAvailability}
+        isSeedanceAvailabilityUnavailable={seedanceQuery.isError}
       />
     )
   }
@@ -265,10 +276,13 @@ export function Pricing() {
                 hasActiveFilters={hasActiveFilters}
                 activeFilterCount={activeFilterCount}
                 onClearFilters={clearFilters}
-                hasYuanliuModels={hasYuanliuModels}
-                isReloadingYuanliuAvailability={yuanliuQuery.isFetching}
-                onReloadYuanliuAvailability={() => {
-                  void yuanliuQuery.refetch()
+                hasCatalogModels={hasYuanliuModels || hasSeedanceModels}
+                isReloadingCatalogAvailability={
+                  yuanliuQuery.isFetching || seedanceQuery.isFetching
+                }
+                onReloadCatalogAvailability={() => {
+                  if (hasYuanliuModels) void yuanliuQuery.refetch()
+                  if (hasSeedanceModels) void seedanceQuery.refetch()
                 }}
               />
 
@@ -298,6 +312,8 @@ export function Pricing() {
               showRechargePrice={showRechargePrice}
               yuanliuAvailability={yuanliuAvailability}
               isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
+              seedanceAvailability={seedanceAvailability}
+              isSeedanceAvailabilityUnavailable={seedanceQuery.isError}
             />
           )}
         </PageTransition>

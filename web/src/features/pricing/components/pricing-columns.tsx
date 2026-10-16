@@ -29,11 +29,18 @@ import { StatusBadge } from '@/components/status-badge'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
-import type { PricingModel, YuanliuAvailabilityMap } from '../types'
+import type {
+  PricingModel,
+  YuanliuAvailabilityMap,
+  SeedanceAvailabilityMap,
+} from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
-import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
+import {
+  YuanliuAvailabilityBadge,
+  SeedanceAvailabilityBadge,
+} from './yuanliu-availability-badge'
 
 // ----------------------------------------------------------------------------
 // Pricing Table Columns
@@ -42,6 +49,8 @@ import { YuanliuAvailabilityBadge } from './yuanliu-availability-badge'
 export type PricingColumnsOptions = ModelPriceCellOptions & {
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
+  seedanceAvailability?: SeedanceAvailabilityMap
+  isSeedanceAvailabilityUnavailable?: boolean
 }
 
 export function usePricingColumns(
@@ -73,6 +82,12 @@ export function usePricingColumns(
                 model={model}
                 availability={options.yuanliuAvailability ?? {}}
                 isUnavailable={options.isYuanliuAvailabilityUnavailable}
+                className='mt-1'
+              />
+              <SeedanceAvailabilityBadge
+                model={model}
+                availability={options.seedanceAvailability ?? {}}
+                isUnavailable={options.isSeedanceAvailabilityUnavailable}
                 className='mt-1'
               />
             </div>

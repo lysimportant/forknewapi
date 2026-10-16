@@ -1,12 +1,23 @@
 package plugins_test
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
+	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +100,11 @@ func TestImage2ProVideoContracts(t *testing.T) {
 					require.NoError(t, usageErr)
 					encoded, marshalErr = common.Marshal(usage)
 					require.NoError(t, marshalErr)
-					assert.JSONEq(t, `{"seconds":5}`, string(encoded))
+					if model.upstream == "Seedance2.0" {
+						assert.JSONEq(t, `{"count":1}`, string(encoded))
+					} else {
+						assert.JSONEq(t, `{"seconds":5}`, string(encoded))
+					}
 				})
 			}
 
@@ -342,6 +357,144 @@ func TestImage2ProVideoContracts(t *testing.T) {
 			require.NoError(t, marshalErr)
 			assert.JSONEq(t, `{"url":"https://cdn.example/result.mp4?signature=x%2By","method":"`+method+`","credentialless":true}`, string(encoded))
 			assert.NotContains(t, string(encoded), "credential-must-not-be-sent")
+		}
+	})
+}
+
+// TestImage2ProBillingLifecycle 验证宿主预扣、提交状态、轮询/即时完成与旧计费快照，全部使用合成响应。
+func TestImage2ProBillingLifecycle(t *testing.T) {
+	source, err := plugins.Source("image2pro")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "2.3.0", plugin.Meta.Version)
+	for _, tc := range []struct {
+		name, upstream, unit string
+		maximum              int
+	}{
+		{"Seedance2.0 0.9r", "Seedance2.0", "count", 15},
+		{"Seedance2.0", "Seedance2.0", "count", 15},
+		{"无限制-Flash-MAX-Video", "Flash视频-MAX", "seconds", 12},
+		{"Flash视频-MAX", "Flash视频-MAX", "seconds", 12},
+		{"custom-seedance-alias", "Seedance2.0", "count", 15},
+	} {
+		for _, duration := range []int{4, 5, tc.maximum} {
+			t.Run(fmt.Sprintf("%s/%ds", tc.name, duration), func(t *testing.T) {
+				schema, _ := plugin.Meta.UsageForModel(tc.upstream)
+				require.Len(t, schema, 1)
+				if tc.unit == "count" {
+					assert.Equal(t, "count", schema["count"].Unit)
+					assert.Equal(t, "次", schema["count"].UnitLabel["zh"])
+				} else {
+					assert.Equal(t, "second", schema["seconds"].Unit)
+				}
+				info := &relaycommon.RelayInfo{
+					OriginModelName: tc.name,
+					ChannelMeta: &relaycommon.ChannelMeta{
+						ChannelBaseUrl: "https://upstream.example", ApiKey: "synthetic-fixture", UpstreamModelName: tc.upstream,
+					},
+					TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_image2pro_billing_fixture"},
+				}
+				adaptor := taskplugin.New(plugin)
+				adaptor.Init(info)
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+				c.Set("task_request", map[string]any{"model": tc.name, "prompt": "ocean", "duration": duration})
+				require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+				facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+				require.NoError(t, err)
+				units := float64(duration)
+				if tc.unit == "count" {
+					units = 1
+				}
+				expected := map[string]any{tc.unit: units}
+				assert.Equal(t, expected, facts)
+				ratios, err := adaptor.EstimateBillingValidated(c, info)
+				require.NoError(t, err)
+				assert.Empty(t, ratios, "用量不重复叠加到旧倍率")
+				body, err := adaptor.BuildRequestBody(c, info)
+				require.NoError(t, err)
+				var sent map[string]any
+				require.NoError(t, common.DecodeJson(body, &sent))
+				assert.Equal(t, float64(duration), sent["duration"], "时长仍作为真实生成参数")
+				assert.Equal(t, tc.upstream, sent["model"])
+				expression := `u("` + tc.unit + `") * 0.2`
+				require.NoError(t, billing_setting.SmokeTestTaskExpr(expression, schema))
+				cost, _, err := billingexpr.RunExprWithRequest(expression, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+				require.NoError(t, err)
+				assert.InDelta(t, units*0.2, cost, 1e-10)
+				if tc.unit == "count" {
+					legacyExpression := `u("seconds") * 0.2`
+					assert.False(t, billing_setting.TaskExprCompatible(legacyExpression, schema))
+					require.Error(t, billing_setting.SmokeTestTaskExpr(legacyExpression, schema))
+					_, _, err = billingexpr.RunExprWithRequest(legacyExpression, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+					require.Error(t, err, "旧按秒表达式不能悄悄得到零费用")
+				}
+				snapshot := &billingexpr.BillingSnapshot{
+					ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 2,
+					QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true, UsageFacts: facts,
+				}
+				for _, status := range []string{"processing", "completed"} {
+					response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(
+						`{"id":"a1b2c3d4e5f6789012345678","status":"` + status + `","url":"https://cdn.example/result.mp4","duration":999}`,
+					))}
+					parsed, taskErr := adaptor.ParseResponse(c, response, info)
+					require.Nil(t, taskErr)
+					require.NoError(t, response.Body.Close())
+					if tc.unit == "count" {
+						assert.JSONEq(t, fmt.Sprintf(`{"seconds":%d,"billingUnit":"count"}`, duration), string(parsed.PluginState))
+					} else {
+						assert.JSONEq(t, fmt.Sprintf(`{"seconds":%d}`, duration), string(parsed.PluginState))
+					}
+					task := &model.Task{
+						Properties:  model.Properties{OriginModelName: tc.name, UpstreamModelName: tc.upstream},
+						PrivateData: model.TaskPrivateData{PluginState: parsed.PluginState},
+					}
+					completed, err := adaptor.ParseTaskResult(task, response, []byte(`{"status":"completed","url":"https://cdn.example/result.mp4","duration":999}`))
+					require.NoError(t, err)
+					assert.Equal(t, "SUCCESS", completed.Status)
+					assert.Equal(t, expected, completed.UsageFacts)
+					if status == "completed" {
+						require.NotNil(t, parsed.Immediate)
+						assert.Equal(t, expected, parsed.Immediate.UsageFacts)
+					}
+					settled, merged, err := service.EvaluateTaskCompletionUsage(snapshot, completed.UsageFacts)
+					require.NoError(t, err)
+					assert.Equal(t, expected, merged)
+					assert.Equal(t, common.QuotaRound(cost*1000000), settled.ActualQuotaAfterGroup)
+					assert.Nil(t, settled.Clamp)
+					failed, err := adaptor.ParseTaskResult(task, response, []byte(`{"status":"failed"}`))
+					require.NoError(t, err)
+					assert.Empty(t, failed.UsageFacts)
+				}
+			})
+		}
+	}
+
+	t.Run("旧任务保留原冻结秒数与价格", func(t *testing.T) {
+		adaptor := taskplugin.New(plugin)
+		adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://upstream.example"}})
+		for _, state := range []string{`{"seconds":12.5}`, `{"seconds":12.5,"billingUnit":"count"}`} {
+			task := &model.Task{
+				Properties:  model.Properties{OriginModelName: "Seedance2.0 0.9r", UpstreamModelName: "Seedance2.0"},
+				PrivateData: model.TaskPrivateData{PluginState: []byte(state)},
+			}
+			response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+			completed, err := adaptor.ParseTaskResult(task, response, []byte(`{"status":"completed","url":"https://cdn.example/result.mp4"}`))
+			require.NoError(t, err)
+			if state == `{"seconds":12.5}` {
+				assert.Equal(t, map[string]any{"seconds": 12.5}, completed.UsageFacts)
+			}
+			expression := `u("seconds") * 0.2`
+			snapshot := &billingexpr.BillingSnapshot{
+				ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1,
+				QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true, UsageFacts: map[string]any{"seconds": 12.5},
+			}
+			settled, merged, err := service.EvaluateTaskCompletionUsage(snapshot, completed.UsageFacts)
+			require.NoError(t, err)
+			assert.Equal(t, 12.5, merged["seconds"])
+			assert.Equal(t, 1250000, settled.ActualQuotaAfterGroup)
+			assert.Equal(t, map[string]any{"seconds": 12.5}, snapshot.UsageFacts)
 		}
 	})
 }

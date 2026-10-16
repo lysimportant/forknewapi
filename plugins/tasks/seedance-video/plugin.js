@@ -7,7 +7,7 @@ export const meta = {
     en: "Seedance video generation through the unified video API",
     zh: "通过统一视频 API 对接 Seedance 视频生成",
   },
-  version: "1.2.0",
+  version: "1.2.1",
   author: { name: "lysimportant/forknewapi" },
   baseUrl: "https://cnd-coo-new.pages.dev",
   models: [],
@@ -35,10 +35,10 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
-    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
-    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
-    { label: "2K · 5s", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
+    { label: "480p", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
+    { label: "720p", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
+    { label: "1080p", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
+    { label: "2K", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
   ],
 };
 
@@ -113,7 +113,10 @@ function frameURL(value, field) {
 /** 将画布的视频字段转换成平台公开字段，不向供应商透传画布专用结构。 */
 function normalizeCanvasRequest(request) {
   const source = { ...request };
-  for (const [alias, field] of [["image", "start_frame"], ["last_frame", "end_frame"]]) {
+  for (const [alias, field] of [
+    ["image", "start_frame"],
+    ["last_frame", "end_frame"],
+  ]) {
     if (source[alias] === undefined) continue;
     const url = frameURL(source[alias], alias);
     if (source[field] !== undefined && source[field] !== url) throw new Error(alias + " conflicts with " + field);
@@ -123,8 +126,7 @@ function normalizeCanvasRequest(request) {
   if (source.reference_images !== undefined) {
     if (!Array.isArray(source.reference_images)) throw new Error("reference_images must be an array of URL objects");
     for (const image of source.reference_images) {
-      if (!image || typeof image !== "object" || Array.isArray(image) ||
-          Object.keys(image).some((field) => !["url", "role"].includes(field)))
+      if (!image || typeof image !== "object" || Array.isArray(image) || Object.keys(image).some((field) => !["url", "role"].includes(field)))
         throw new Error("reference_images must contain URL objects with optional frame roles");
       const url = canvasMediaURL({ url: image.url }, "reference_images");
       if (image.role === undefined || image.role === "reference_image") appendReferenceURL(source, "images", url);
@@ -138,8 +140,12 @@ function normalizeCanvasRequest(request) {
   }
   if (source.metadata !== undefined) {
     const metadata = source.metadata;
-    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
-        Object.keys(metadata).some((field) => !["content", "resolution", "ratio", "aspect_ratio", "omni_reference_task_type"].includes(field)))
+    if (
+      !metadata ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata) ||
+      Object.keys(metadata).some((field) => !["content", "resolution", "ratio", "aspect_ratio", "omni_reference_task_type"].includes(field))
+    )
       throw new Error("unsupported video metadata field");
     if (metadata.omni_reference_task_type !== undefined && metadata.omni_reference_task_type !== "reference")
       throw new Error("video editing and extension are not supported by this API");
@@ -157,8 +163,7 @@ function normalizeCanvasRequest(request) {
             throw new Error("metadata.content text must match prompt");
           continue;
         }
-        if (!["image_url", "video_url", "audio_url"].includes(item.type) ||
-            Object.keys(item).some((field) => !["type", "role", item.type].includes(field)))
+        if (!["image_url", "video_url", "audio_url"].includes(item.type) || Object.keys(item).some((field) => !["type", "role", item.type].includes(field)))
           throw new Error("unsupported metadata.content item");
         const url = canvasMediaURL(item[item.type], "metadata.content " + item.type);
         if (item.type === "image_url") {

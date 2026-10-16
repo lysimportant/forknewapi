@@ -86,7 +86,7 @@ export const CHANNEL_TYPES = {
   59: 'Sub2API',
   60: 'New API',
   61: 'Task Plugin',
-  62: 'GlobalStore',
+  62: 'GlobalStore Images',
 } as const
 
 export type ChannelProviderPresentation = {

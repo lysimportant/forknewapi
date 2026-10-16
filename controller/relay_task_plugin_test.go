@@ -511,6 +511,11 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 			assert.Equal(t, want, stored.Quota)
 			assert.Equal(t, model.TaskStatus(tc.status), stored.Status)
 			assert.Positive(t, stored.FinishTime)
+			require.NotNil(t, stored.PrivateData.Submission)
+			assert.Equal(t, model.TaskSubmissionCompleted, stored.PrivateData.Submission.Status)
+			var taskCount int64
+			require.NoError(t, db.Model(&model.Task{}).Where("task_id = ?", info.PublicTaskID).Count(&taskCount).Error)
+			assert.Equal(t, int64(1), taskCount, "即时完成必须更新原待提交任务，不能另插入一条")
 			assert.Equal(t, float64(4), info.TieredBillingSnapshot.EstimatedQuotaBeforeGroup/(0.01*common.QuotaPerUnit))
 			if tc.status == "SUCCESS" {
 				assert.Equal(t, tc.count, stored.PrivateData.BillingContext.TieredSnapshot.UsageFacts["units"])
