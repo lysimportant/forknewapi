@@ -233,6 +233,12 @@ function asInteger(value, field) {
   throw new Error(field + " must be an integer");
 }
 
+/** 时长别名来自 OpenAI 兼容层时可能分别是数字与数字字符串，先统一比较口径。 */
+function normalizeDurationAlias(value) {
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value.trim());
+  return value;
+}
+
 /** 接受真实布尔或 "true"/"false" 字符串，保留 false 不当作缺省。 */
 function asBoolean(value, field) {
   if (typeof value === "boolean") return value;
@@ -424,8 +430,8 @@ function normalizeVideoRequest(request, metadata, modelId) {
   if (inputs.last.length > 1) throw new Error("last_image accepts at most one URL");
 
   const rawDuration = aliasValue([
-    { name: "seconds", value: parameter(request, metadata, "seconds"), conflict: "duration" },
-    { name: "duration", value: parameter(request, metadata, "duration"), conflict: "seconds" },
+    { name: "seconds", value: normalizeDurationAlias(parameter(request, metadata, "seconds")), conflict: "duration" },
+    { name: "duration", value: normalizeDurationAlias(parameter(request, metadata, "duration")), conflict: "seconds" },
   ]);
   const duration = rawDuration === undefined ? spec.defaultDuration : asInteger(rawDuration, "duration");
   if (spec.duration.only !== undefined && duration !== spec.duration.only) throw new Error("duration must be " + spec.duration.only + " for " + modelId);

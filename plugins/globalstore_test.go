@@ -174,6 +174,11 @@ func TestGlobalstoreVideoSubmit(t *testing.T) {
 		assert.JSONEq(t, `{"model":"sd_2.0_discount","prompt":"flower","duration":5,"resolution":"4k","aspect_ratio":"16:9","generate_audio":true}`, globalstoreJSON(t, request["body"]))
 	})
 
+	t.Run("normalizes equivalent duration aliases before upstream", func(t *testing.T) {
+		request := globalstoreObject(t, plugin, "buildSubmitRequest", globalstoreSubmitContext("sd_2.0_discount", map[string]any{"prompt": "flower", "seconds": "5", "duration": 5}))
+		assert.JSONEq(t, `{"model":"sd_2.0_discount","prompt":"flower","duration":5,"resolution":"4k","aspect_ratio":"16:9","generate_audio":true}`, globalstoreJSON(t, request["body"]))
+	})
+
 	t.Run("forwards frames, references and switches", func(t *testing.T) {
 		body := map[string]any{
 			"prompt": "flower", "seconds": 10, "resolution": "1080p", "aspect_ratio": "9:16",
