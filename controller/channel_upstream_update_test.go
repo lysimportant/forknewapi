@@ -461,8 +461,8 @@ func TestGetYuanliuAvailabilityKeepsVisibleMappedModels(t *testing.T) {
 	assert.Equal(t, int32(1), secretCalls.Load())
 }
 
-// TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping 验证新目录无需更新插件，获取操作不改写已保存旧别名。
-func TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping(t *testing.T) {
+// TestFetchYuanliuModelsSuggestsAliasesAndKeepsSavedMapping 验证新型号自动加前缀，获取操作不改写已有配置。
+func TestFetchYuanliuModelsSuggestsAliasesAndKeepsSavedMapping(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -474,7 +474,7 @@ func TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping(t *testing.T) {
 	}))
 	defer server.Close()
 	baseURL := server.URL + "/openapi/v1"
-	mapping := `{"Yuan-Seedance-2.5-LW":"yl_lwaigc_mf_sd2_5_v2"}`
+	mapping := `{"Yuan-Seedance-2.5-LW":"administrator-target"}`
 	channel := &model.Channel{
 		Type: constant.ChannelTypeTaskPlugin, Name: "Yuan dynamic discovery fixture", BaseURL: &baseURL,
 		Key: "synthetic-yuan-key", Models: "Yuan-Seedance-2.5-LW", ModelMapping: &mapping,
@@ -497,16 +497,95 @@ func TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping(t *testing.T) {
 		}
 		require.True(t, response.Success, response.Message)
 		assert.Equal(t, "upstream", response.Source)
-		assert.Equal(t, []string{"Future-Yuan-V3", "future-yuan-v3", "yl_lwaigc_mf_sd2_5_v2"}, response.Data)
+		assert.Equal(t, []string{"Yuan-Future-Yuan-V3", "Yuan-future-yuan-v3", "Yuan-Seedance-2.5-LW"}, response.Data)
 		assert.Empty(t, response.UnsupportedModels)
-		assert.Empty(t, response.ModelMapping)
+		assert.Equal(t, map[string]string{
+			"Yuan-Future-Yuan-V3": "Future-Yuan-V3", "Yuan-future-yuan-v3": "future-yuan-v3",
+			"Yuan-Seedance-2.5-LW": "yl_lwaigc_mf_sd2_5_v2",
+		}, response.ModelMapping)
 	}
+	ids, err := fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Future-Yuan-V3", "future-yuan-v3", "yl_lwaigc_mf_sd2_5_v2"}, ids, "自动更新检测仍使用精确上游 ID")
 	reloaded, err := model.GetChannelById(channel.Id, true)
 	require.NoError(t, err)
 	assert.Equal(t, channel.Models, reloaded.Models)
 	assert.Equal(t, channel.ModelMapping, reloaded.ModelMapping)
 	assert.Equal(t, channel.Key, reloaded.Key)
-	assert.Equal(t, int32(2), requests.Load())
+	assert.Equal(t, int32(3), requests.Load())
+}
+
+// TestFetchYuanliuModelAliasBoundaries 避免无效名称、重名或映射链变成可保存的建议。
+func TestFetchYuanliuModelAliasBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		ids   []string
+		valid bool
+	}{
+		{"新型号不带入未发现的旧别名", []string{"future-model"}, true},
+		{"名称字节上限", []string{strings.Repeat("a", 195)}, true},
+		{"名称超长", []string{strings.Repeat("a", 196)}, false},
+		{"名称按UTF8字节限制", []string{strings.Repeat("源", 66)}, false},
+		{"逗号", []string{"invalid,model"}, false},
+		{"控制字符", []string{"invalid\nmodel"}, false},
+		{"自动名称重名", []string{"yl_lwaigc_mf_sd2_5_v2", "Seedance-2.5-LW"}, false},
+		{"自动名称成为其他目标", []string{"future", "Yuan-future"}, false},
+		{"旧名称成为其他目标", []string{"yl_lwaigc_mf_sd2_5_v2", "Yuan-Seedance-2.5-LW"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			items := make([]map[string]string, len(test.ids))
+			for index, id := range test.ids {
+				items[index] = map[string]string{"id": id}
+			}
+			body, err := common.Marshal(map[string]any{"data": items})
+			require.NoError(t, err)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+			response := previewTaskPluginModels(t, map[string]any{
+				"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "yuanliu", "base_url": server.URL, "key": "synthetic-yuan-key",
+			})
+			if test.valid {
+				require.True(t, response.Success, response.Message)
+				assert.Equal(t, []string{"Yuan-" + test.ids[0]}, response.Data)
+				assert.Equal(t, map[string]string{"Yuan-" + test.ids[0]: test.ids[0]}, response.ModelMapping)
+			} else {
+				assert.False(t, response.Success)
+				assert.Contains(t, response.Message, "model discovery alias")
+				assert.Empty(t, response.Data)
+				assert.Empty(t, response.ModelMapping)
+			}
+		})
+	}
+}
+
+// TestTaskPluginDiscoveryAliasOptions 验证可选前缀和固定别名独立声明时的导入合同。
+func TestTaskPluginDiscoveryAliasOptions(t *testing.T) {
+	ids := []string{"known", "Future"}
+	for _, test := range []struct {
+		name      string
+		discovery jsplugin.ModelDiscovery
+		models    []string
+		mapping   map[string]string
+	}{
+		{"默认保持原始ID", jsplugin.ModelDiscovery{}, ids, nil},
+		{"仅前缀", jsplugin.ModelDiscovery{AliasPrefix: "Yuan-"}, []string{"Yuan-known", "Yuan-Future"}, map[string]string{"Yuan-known": "known", "Yuan-Future": "Future"}},
+		{"仅固定别名", jsplugin.ModelDiscovery{Aliases: map[string]string{"Yuan-Friendly": "known", "Yuan-Absent": "absent"}}, []string{"Yuan-Friendly", "Future"}, map[string]string{"Yuan-Friendly": "known"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			aliases, err := taskPluginDiscoveryAliases(ids, test.discovery)
+			require.NoError(t, err)
+			response := (channelUpstreamModelCatalog{Models: ids, ModelAliases: aliases}).discoveryResponse()
+			assert.Equal(t, test.models, response["data"])
+			if test.mapping == nil {
+				assert.NotContains(t, response, "model_mapping")
+			} else {
+				assert.Equal(t, test.mapping, response["model_mapping"])
+			}
+			assert.Equal(t, []string{"known", "Future"}, ids)
+		})
+	}
 }
 
 func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *testing.T) {

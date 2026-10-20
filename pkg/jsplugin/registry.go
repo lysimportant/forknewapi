@@ -118,8 +118,10 @@ type Meta struct {
 // ModelDiscovery 声明管理页读取上游目录的只读协议；未声明时使用插件模型列表。
 // Path 为渠道地址下的绝对路径，不含主机、查询参数或凭据，不改变生成路由和计费。
 type ModelDiscovery struct {
-	Protocol string `json:"protocol"` // openai、gemini 或 bailian，分别使用对应的目录与分页格式。
-	Path     string `json:"path"`     // 例如 /v1/models；宿主避免与渠道地址末尾的协议前缀重复。
+	Protocol    string            `json:"protocol"`              // openai、gemini 或 bailian，分别使用对应的目录与分页格式。
+	Path        string            `json:"path"`                  // 例如 /v1/models；宿主避免与渠道地址末尾的协议前缀重复。
+	AliasPrefix string            `json:"aliasPrefix,omitempty"` // 渠道模型导入的默认名称前缀，不注册路由。
+	Aliases     map[string]string `json:"aliases,omitempty"`     // 渠道模型导入的精确别名到上游 ID；不要求静态声明模型。
 }
 
 // UsageProfile replaces the plugin's default usage metadata for its models.
@@ -845,6 +847,7 @@ func (r *Registry) Snapshot() RegistrySnapshot {
 func cloneMeta(meta Meta) Meta {
 	if meta.ModelDiscovery != nil {
 		discovery := *meta.ModelDiscovery
+		discovery.Aliases = maps.Clone(discovery.Aliases)
 		meta.ModelDiscovery = &discovery
 	}
 	meta.SubmitResponseTypes = slices.Clone(meta.SubmitResponseTypes)
@@ -1053,7 +1056,7 @@ func decodeMeta(value any) (Meta, error) {
 			return Meta{}, fmt.Errorf("plugin meta modelDiscovery must be an object")
 		}
 		for field := range discovery {
-			if field != "protocol" && field != "path" {
+			if field != "protocol" && field != "path" && field != "aliasPrefix" && field != "aliases" {
 				return Meta{}, fmt.Errorf("plugin meta modelDiscovery has unknown field %q", field)
 			}
 		}
@@ -1063,6 +1066,27 @@ func decodeMeta(value any) (Meta, error) {
 			return Meta{}, fmt.Errorf("plugin meta modelDiscovery protocol and path must be strings")
 		}
 		meta.ModelDiscovery = &ModelDiscovery{Protocol: protocol, Path: path}
+		if _, present := discovery["aliasPrefix"]; present {
+			prefix, prefixErr := stringMetaField(discovery, "aliasPrefix")
+			if prefixErr != nil || prefix == "" {
+				return Meta{}, fmt.Errorf("plugin meta modelDiscovery aliasPrefix must be a non-empty string")
+			}
+			meta.ModelDiscovery.AliasPrefix = prefix
+		}
+		if rawAliases, present := discovery["aliases"]; present {
+			aliases, ok := rawAliases.(map[string]any)
+			if !ok {
+				return Meta{}, fmt.Errorf("plugin meta modelDiscovery aliases must be an object")
+			}
+			meta.ModelDiscovery.Aliases = make(map[string]string, len(aliases))
+			for alias, value := range aliases {
+				target, ok := value.(string)
+				if !ok {
+					return Meta{}, fmt.Errorf("plugin meta modelDiscovery aliases targets must be strings")
+				}
+				meta.ModelDiscovery.Aliases[alias] = target
+			}
+		}
 	}
 	if _, exists := object["channelType"]; exists {
 		return Meta{}, fmt.Errorf("plugin meta channelType is no longer supported; declare channelTypes instead")
@@ -1304,6 +1328,44 @@ func normalizeV1Meta(meta *Meta) error {
 			if segment == "." || segment == ".." {
 				return fmt.Errorf("plugin meta modelDiscovery path must not contain dot segments")
 			}
+		}
+		if (discovery.AliasPrefix != "" || discovery.Aliases != nil) && meta.ModelRouting != "channel" {
+			return fmt.Errorf("plugin meta modelDiscovery aliasPrefix and aliases require modelRouting channel")
+		}
+		if prefix := discovery.AliasPrefix; prefix != "" {
+			if len(prefix) > 50 || !utf8.ValidString(prefix) || strings.Contains(prefix, ",") {
+				return fmt.Errorf("plugin meta modelDiscovery aliasPrefix must be canonical and at most 50 bytes")
+			}
+			for _, character := range prefix {
+				if unicode.IsSpace(character) || unicode.IsControl(character) {
+					return fmt.Errorf("plugin meta modelDiscovery aliasPrefix must not contain whitespace or control characters")
+				}
+			}
+		}
+		aliasNames := make(map[string]bool, len(discovery.Aliases))
+		aliasTargets := make(map[string]bool, len(discovery.Aliases))
+		for alias, target := range discovery.Aliases {
+			if alias == "" || strings.TrimSpace(alias) != alias || len(alias) > 200 || !utf8.ValidString(alias) || strings.Contains(alias, ",") {
+				return fmt.Errorf("plugin meta modelDiscovery aliases names must be canonical and at most 200 bytes")
+			}
+			if target == "" || strings.TrimSpace(target) != target || !utf8.ValidString(target) || strings.Contains(target, ",") {
+				return fmt.Errorf("plugin meta modelDiscovery aliases targets must be non-empty exact IDs without commas")
+			}
+			for _, value := range []string{alias, target} {
+				for _, character := range value {
+					if unicode.IsControl(character) {
+						return fmt.Errorf("plugin meta modelDiscovery aliases names and targets must not contain control characters")
+					}
+				}
+			}
+			folded := asciiFold(alias)
+			if aliasNames[folded] {
+				return fmt.Errorf("plugin meta modelDiscovery aliases names must be unique case-insensitively")
+			}
+			if aliasTargets[target] {
+				return fmt.Errorf("plugin meta modelDiscovery aliases must declare only one alias per exact ID")
+			}
+			aliasNames[folded], aliasTargets[target] = true, true
 		}
 	}
 	if len(meta.Key) > 30 {

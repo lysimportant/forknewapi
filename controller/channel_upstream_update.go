@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -375,13 +377,14 @@ type channelUpstreamModelCatalog struct {
 func (catalog channelUpstreamModelCatalog) discoveryResponse() gin.H {
 	models := append([]string{}, catalog.Models...)
 	mapping := make(map[string]string)
+	byTarget := make(map[string]string, len(catalog.ModelAliases))
+	for alias, target := range catalog.ModelAliases {
+		byTarget[target] = alias
+	}
 	for index, upstream := range models {
-		for alias, target := range catalog.ModelAliases {
-			if upstream == target {
-				models[index] = alias
-				mapping[alias] = upstream
-				break
-			}
+		if alias, found := byTarget[upstream]; found {
+			models[index] = alias
+			mapping[alias] = upstream
 		}
 	}
 	response := gin.H{"success": true, "message": "", "data": models}
@@ -393,6 +396,48 @@ func (catalog channelUpstreamModelCatalog) discoveryResponse() gin.H {
 		response["model_mapping"] = mapping
 	}
 	return response
+}
+
+// taskPluginDiscoveryAliases 仅为本次目录生成导入建议：固定别名优先，其他型号加前缀。
+// 拒绝名称冲突和映射链，不截断或改写精确目标；目录读取不修改渠道配置。
+func taskPluginDiscoveryAliases(models []string, discovery jsplugin.ModelDiscovery) (map[string]string, error) {
+	if discovery.AliasPrefix == "" && len(discovery.Aliases) == 0 {
+		return nil, nil
+	}
+	byTarget := make(map[string]string, len(discovery.Aliases))
+	for alias, target := range discovery.Aliases {
+		byTarget[target] = alias
+	}
+	upstreamIDs := make(map[string]bool, len(models))
+	for _, id := range models {
+		upstreamIDs[id] = true
+	}
+	aliases := make(map[string]string, len(models))
+	for _, id := range models {
+		alias, found := byTarget[id]
+		if !found {
+			if discovery.AliasPrefix == "" {
+				continue
+			}
+			alias = discovery.AliasPrefix + id
+		}
+		for _, name := range []string{alias, id} {
+			if name == "" || strings.TrimSpace(name) != name || !utf8.ValidString(name) || strings.Contains(name, ",") || strings.ContainsFunc(name, unicode.IsControl) {
+				return nil, errors.New("model discovery alias contains an invalid model name")
+			}
+		}
+		if len(alias) > 200 {
+			return nil, errors.New("model discovery alias exceeds 200 UTF-8 bytes")
+		}
+		if previous, exists := aliases[alias]; exists && previous != id {
+			return nil, errors.New("model discovery alias conflicts with another discovered model")
+		}
+		if alias != id && upstreamIDs[alias] {
+			return nil, errors.New("model discovery alias conflicts with an exact upstream ID")
+		}
+		aliases[alias] = id
+	}
+	return aliases, nil
 }
 
 // fetchChannelUpstreamModelCatalog 为管理页面读取模型及其来源；普通渠道保留既有获取规则。
@@ -611,10 +656,17 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 				models = intersectModelNames(ids, plugin.Meta.Models)
 				unsupportedModels = subtractModelNames(ids, plugin.Meta.Models)
 			}
+			aliases := plugin.Meta.ModelAliases
+			if plugin.Meta.ModelRouting == "channel" {
+				aliases, err = taskPluginDiscoveryAliases(models, discovery)
+				if err != nil {
+					return catalog, err
+				}
+			}
 			return channelUpstreamModelCatalog{
 				Models: models, Source: "upstream",
 				UnsupportedModels: unsupportedModels,
-				ModelAliases:      plugin.Meta.ModelAliases,
+				ModelAliases:      aliases,
 			}, nil
 		}
 	}

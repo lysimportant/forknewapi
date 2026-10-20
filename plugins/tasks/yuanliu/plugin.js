@@ -301,7 +301,7 @@ const USAGE_SCHEMA = {
   },
 };
 
-/** 旧展示别名仅在已绑定渠道内部解析，不注册全局模型路由。 */
+/** 获取目录时优先建议旧展示别名；生成仍由渠道保存的模型和映射授权。 */
 const MODEL_ALIASES = Object.fromEntries(Object.entries(MODEL_SPECS).map(([model, spec]) => [spec.alias, model]));
 
 /** 通用协议边界，不代表上游模型能力；具体型号限制由上游校验。 */
@@ -322,14 +322,19 @@ export const meta = {
   key: "yuanliu",
   name: "Yuanliu Video",
   icon: "text:源流",
-  version: "1.3.0",
+  version: "1.3.1",
   author: { name: "Yuanliu" },
   description: {
     en: "Yuanliu Seedance and Wan video generation with public URL references",
     zh: "源流 Seedance 与 Wan 视频生成，支持公网 URL 参考素材",
   },
   baseUrl: "https://test.yuanliuai.tsyzai.com/openapi/v1",
-  modelDiscovery: { protocol: "openai", path: "/openapi/v1/models" },
+  modelDiscovery: {
+    protocol: "openai",
+    path: "/openapi/v1/models",
+    aliasPrefix: "Yuan-",
+    aliases: MODEL_ALIASES,
+  },
   models: [],
   modelRouting: "channel",
   fetchMode: "per_task",

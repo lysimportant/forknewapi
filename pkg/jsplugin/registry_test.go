@@ -1055,6 +1055,90 @@ func TestRegistryModelDiscovery(t *testing.T) {
 	}
 }
 
+// TestRegistryModelDiscoveryAliases 目录别名只用于渠道导入，不扩大模型生成权限。
+func TestRegistryModelDiscoveryAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		valid        bool
+	}{
+		{"前缀和精确别名", `aliasPrefix: "Yuan-", aliases: {"Yuan-Video": "dynamic-exact-id"}`, true},
+		{"仅前缀", `aliasPrefix: "源流-"`, true},
+		{"仅别名", `aliases: {"Yuan-Video": "dynamic-exact-id"}`, true},
+		{"空别名映射", `aliases: {}`, true},
+		{"前缀字节上限", `aliasPrefix: "` + strings.Repeat("a", 50) + `"`, true},
+		{"别名字节上限", `aliases: {"` + strings.Repeat("a", 200) + `": "dynamic-id"}`, true},
+		{"前缀类型", `aliasPrefix: 1`, false},
+		{"前缀空值", `aliasPrefix: null`, false},
+		{"前缀空串", `aliasPrefix: ""`, false},
+		{"前缀空白", `aliasPrefix: "Yuan -"`, false},
+		{"前缀Unicode空白", `aliasPrefix: "Yuan\u00a0-"`, false},
+		{"前缀控制字符", `aliasPrefix: "Yuan\u0000-"`, false},
+		{"前缀逗号", `aliasPrefix: "Yuan,-"`, false},
+		{"前缀超长", `aliasPrefix: "` + strings.Repeat("a", 51) + `"`, false},
+		{"前缀按UTF8字节限制", `aliasPrefix: "` + strings.Repeat("源", 17) + `"`, false},
+		{"别名类型", `aliases: 1`, false},
+		{"别名空值", `aliases: null`, false},
+		{"别名数组", `aliases: []`, false},
+		{"别名目标类型", `aliases: {"Yuan-Video": 1}`, false},
+		{"空别名", `aliases: {"": "dynamic-id"}`, false},
+		{"别名前后空白", `aliases: {" Yuan-Video": "dynamic-id"}`, false},
+		{"别名逗号", `aliases: {"Yuan,Video": "dynamic-id"}`, false},
+		{"别名控制字符", `aliases: {"Yuan\u007fVideo": "dynamic-id"}`, false},
+		{"别名超长", `aliases: {"` + strings.Repeat("a", 201) + `": "dynamic-id"}`, false},
+		{"别名按UTF8字节限制", `aliases: {"` + strings.Repeat("源", 67) + `": "dynamic-id"}`, false},
+		{"目标空串", `aliases: {"Yuan-Video": ""}`, false},
+		{"目标全空白", `aliases: {"Yuan-Video": " "}`, false},
+		{"目标前后空白", `aliases: {"Yuan-Video": " dynamic-id"}`, false},
+		{"目标逗号", `aliases: {"Yuan-Video": "dynamic,id"}`, false},
+		{"目标控制字符", `aliases: {"Yuan-Video": "dynamic\n-id"}`, false},
+		{"大小写重复别名", `aliases: {"Yuan-Video": "id-one", "yuan-video": "id-two"}`, false},
+		{"重复目标", `aliases: {"Yuan-One": "dynamic-id", "Yuan-Two": "dynamic-id"}`, false},
+		{"未知属性", `aliasPrefix: "Yuan-", extra: true`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := `modelRouting: "channel", protocols: ["openai_video"], modelDiscovery: {protocol: "openai", path: "/v1/models", ` + tc.fields + `},`
+			_, err := CompilePlugin(routingTestPluginSource("discovery-aliases", 0, `[]`, fields, routingProtocolExport("openai_video")), Options{})
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "modelDiscovery")
+			}
+		})
+	}
+	for _, fields := range []string{`aliasPrefix: "Yuan-"`, `aliases: {"Yuan-Video": "model"}`, `aliases: {}`} {
+		t.Run("非渠道模式禁止"+fields, func(t *testing.T) {
+			_, err := CompilePlugin(routingTestPluginSource("discovery-aliases", 0, `["model"]`,
+				`modelDiscovery: {protocol: "openai", path: "/v1/models", `+fields+`},`, ""), Options{})
+			require.ErrorContains(t, err, "modelDiscovery")
+		})
+	}
+
+	registry := NewRegistry()
+	loaded, err := registry.Register(routingTestPluginSource("discovery-aliases", 0, `["suggested"]`,
+		`modelRouting: "channel", protocols: ["openai_video"], modelDiscovery: {protocol: "openai", path: "/v1/models", aliasPrefix: "Yuan-", aliases: {"Yuan-Video": "dynamic-exact-id"}},`,
+		routingProtocolExport("openai_video")), Options{})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(loaded.Meta.ModelDiscovery)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"protocol":"openai","path":"/v1/models","aliasPrefix":"Yuan-","aliases":{"Yuan-Video":"dynamic-exact-id"}}`, string(encoded))
+	assert.Empty(t, loaded.Meta.ModelAliases, "目录别名不转换为顶层全局别名")
+	for _, model := range []string{"suggested", "dynamic-exact-id", "Yuan-Video", "Yuan-dynamic-exact-id"} {
+		_, globallyBound := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
+		assert.False(t, globallyBound, model)
+	}
+	_, channelBound := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", "discovery-aliases")
+	assert.True(t, channelBound)
+	assert.Equal(t, "Yuan-", loaded.Meta.ModelDiscovery.AliasPrefix)
+	assert.Equal(t, map[string]string{"Yuan-Video": "dynamic-exact-id"}, loaded.Meta.ModelDiscovery.Aliases)
+	snapshot := registry.Snapshot()
+	require.Len(t, snapshot.Override, 1)
+	snapshot.Override[0].ModelDiscovery.AliasPrefix = "Changed-"
+	snapshot.Override[0].ModelDiscovery.Aliases["Yuan-Video"] = "changed-id"
+	assert.Equal(t, "Yuan-", loaded.Meta.ModelDiscovery.AliasPrefix)
+	assert.Equal(t, "dynamic-exact-id", loaded.Meta.ModelDiscovery.Aliases["Yuan-Video"])
+	assert.Equal(t, "dynamic-exact-id", registry.Snapshot().Override[0].ModelDiscovery.Aliases["Yuan-Video"])
+}
+
 // TestRegistryModelAliases 验证别名只指向已适配模型，拒绝歧义、链式和非法映射。
 func TestRegistryModelAliases(t *testing.T) {
 	for _, tc := range []struct {

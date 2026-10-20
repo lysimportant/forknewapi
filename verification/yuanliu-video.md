@@ -188,3 +188,36 @@
 1. 在 Yuan 渠道中点击“获取模型”，选择需要的上游精确 ID 并保存渠道。
 2. 在模型定价中选择“按次”或“清晰度 × 秒数”，填写本站单价后保存；需要时也可为 Yuan 提供方配置独立价格。
 3. 已有 `Yuan-` 别名、渠道映射和表达式继续使用；新型号无需更新插件，但仍需管理员选择保存并配置售价，不自动导入供应商报价。
+
+## 2026-10-20：获取目录时自动建议 Yuan 名称
+
+本次按新增要求取代上一检查点“新获取不再生成新的 `Yuan-` 别名”的行为，动态型号与计费 Tab 保留。
+
+- Yuanliu 更新为 `1.3.1`，在 `modelDiscovery` 内声明 `aliasPrefix: "Yuan-"` 和 22 个既有友好名称。已知型号仍显示如 `Yuan-Seedance-2.5-LW`，未知型号显示 `Yuan-上游ID`，映射目标保留精确大小写。未出现在本次上游目录中的旧型号不会获得建议映射。
+- 管理员在渠道“获取模型 → 勾选 → 保存”后应用建议；只获取不修改数据库，已有自定义同名映射优先。内部上游自动更新检测继续返回原始 ID，不把公开名称当作上游新增或下架依据。
+- 新增元数据只用于渠道模式目录导入，含严格字段、类型、规范名称、重复目标和深拷贝校验，不放开顶层 `meta.modelAliases` 或注册全局生成路由。未声明新字段的旧插件与静态别名导入保持原行为；旧宿主会拒绝新字段，因此部署时需一起更新宿主与 Yuan 插件。
+- 生成名称上限为 200 UTF-8 字节；非法名称、建议名称冲突或映射目标链冲突会使本次目录整体失败，避免保存错配或不完整结果。不会截断或猜测上游 ID。无价格改写、数据库迁移、新增依赖或前端界面修改。
+
+### 本轮分工与文件
+
+- A1：复用 `yuan_dynamic`，完成 `pkg/jsplugin/registry.go`、`registry_test.go` 的元数据合同、验证和快照隔离；最终回报已接收并集成验收。
+- A2：主 Agent，完成 `plugins/tasks/yuanliu/plugin.js`、`plugins/yuanliu_video_test.go`、`controller/channel_upstream_update.go`、`channel_upstream_update_test.go` 的目录映射与回归；依赖 A1 字段验收后实施。
+- A3：主 Agent，维护 `docs/plugin-api/v1.md` 和本记录，执行集成验证；没有重新派发上一轮的价格示例任务。
+- A1、A2、A3 均已完成验收，无遗留 active/blocked 任务；主 Agent 已对最终差异做一次有界自审，未发现其他阻断项。
+- 本轮基线工作区干净，未覆盖用户既有内容；前一轮已提交的动态型号、计费 Tab 和广场调整保持在当前基线。没有提交、推送或部署。
+
+### 本轮验证
+
+- 新增插件及获取入口回归先失败：缺少前缀、固定别名和建议映射；实现后通过。覆盖新建与已保存渠道、大小写不同的动态 ID、旧名称恢复、已有自定义映射原值保留、原始 ID 更新检测及只读获取。
+- `go test -mod=readonly ./pkg/jsplugin ./plugins ./controller ./relay/channel/task/jsplugin -count=1 -timeout=20m`：四包全部通过，controller 217.762 秒，日志 `.local-tests/yuan-alias-20261020/go-tests.log`。目录输出改为反向索引后补跑 `go test -mod=readonly ./controller -run 'TestTaskPluginDiscoveryAliasOptions|TestFetch.*(Yuanliu|TaskPlugin|ChannelRoutedTaskPlugin)' -count=1 -timeout=5m` 通过，包含仅前缀、仅固定别名和默认不改名合同。
+- 最终 `go vet -mod=readonly ./pkg/jsplugin ./plugins ./controller ./relay/channel/task/jsplugin`、`go build -mod=readonly -o .local-tests/yuan-alias-20261020/new-api.exe .`、构建程序 `plugin lint plugins/tasks/yuanliu/plugin.js` 均通过，插件加载为 `yuanliu@1.3.1`。
+- 定向插件 oxlint、oxfmt、Go 文件 gofmt 检查及 `git diff --check` 通过；新增行高可信密钥/私钥扫描未匹配，人工检查差异中的凭据均为合成测试值。
+- 前端真实组件回归：`node node_modules/vitest/vitest.mjs run src/features/channels/components/__tests__/upstream-model-selection.test.tsx src/features/channels/components/__tests__/channel-configuration.test.tsx --maxWorkers=1 --testTimeout=60000 -t 'alias|discovery keeps a selected upstream ID'`，13 项通过、70 项因本轮筛选跳过；覆盖新建/编辑/独立获取入口、仅保存所选映射、同名自定义目标优先和失败保留草稿。耗时 173.77 秒，其中依赖导入 152.50 秒，测试执行 6.74 秒；日志 `.local-tests/yuan-alias-20261020/frontend-tests-retry.log`。
+- 首次前端运行在测试执行前因系统临时目录 `EPERM: mkdir .../client` 失败；改为进程级 `TEMP/TMP=D:/newapi/.local-tests/yuan-alias-20261020/vitest-temp` 并直接使用现有 Node/Vitest 后通过，未修改全局环境、项目配置或测试断言。
+- 所有后端网络均为回环模拟，数据库为测试创建的独立临时 SQLite；未读取生产数据或调用真实供应商。未重跑全仓 Go 套件，也未重跑前端全量测试、类型检查、页面构建或浏览器视口检查；本轮没有修改前端源码或类型。
+
+### 应用步骤
+
+1. 更新宿主程序和 Yuanliu `1.3.1` 插件。
+2. 在 Yuan 渠道重新获取上游模型，确认 `Yuan-` 名称、勾选所需型号并保存；已有映射原值优先保留。
+3. 新型号仍使用通用视频协议并单独配置本站价格，原有按次/按秒计费 Tab 继续使用。真实上游新型号的能力与成片质量不在本轮模拟验证范围。

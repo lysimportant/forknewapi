@@ -36,11 +36,14 @@ func yuanliuHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string,
 // TestYuanliuModelContracts 核对旧型号参数、内部别名兼容和渠道模型路由边界。
 func TestYuanliuModelContracts(t *testing.T) {
 	plugin := loadYuanliuPlugin(t)
-	assert.Equal(t, "1.3.0", plugin.Meta.Version)
+	assert.Equal(t, "1.3.1", plugin.Meta.Version)
 	assert.Equal(t, "https://test.yuanliuai.tsyzai.com/openapi/v1", plugin.Meta.BaseURL)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
 	assert.Equal(t, "/openapi/v1/models", plugin.Meta.ModelDiscovery.Path)
+	assert.Equal(t, "Yuan-", plugin.Meta.ModelDiscovery.AliasPrefix)
+	assert.Len(t, plugin.Meta.ModelDiscovery.Aliases, 22)
+	assert.Equal(t, "yl_lwaigc_mf_sd2_5_v2", plugin.Meta.ModelDiscovery.Aliases["Yuan-Seedance-2.5-LW"])
 	assert.Contains(t, plugin.Meta.RequiredCapabilities, "task-submit-no-retry@1")
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
 	assert.Equal(t, "channel", plugin.Meta.ModelRouting)
@@ -77,6 +80,7 @@ func TestYuanliuModelContracts(t *testing.T) {
 	}
 	for _, model := range models {
 		t.Run(model.alias, func(t *testing.T) {
+			assert.Equal(t, model.id, plugin.Meta.ModelDiscovery.Aliases[model.alias])
 			registry := jsplugin.NewRegistry()
 			source, err := plugins.Source("yuanliu")
 			require.NoError(t, err)
