@@ -671,6 +671,71 @@ func TestTaskAdaptorPreservesOpenAIVideoFailureSlotsAndOwnsLifecycle(t *testing.
 	assert.JSONEq(t, `{"id":"task_public","object":"video","model":"origin-model","status":"failed","progress":0,"created_at":10,"error":{"message":"provider rejected request","code":"provider_error"}}`, string(rendered))
 }
 
+func TestTaskAdaptorRendersOpenAIImageTaskWithHostLifecycle(t *testing.T) {
+	source := strings.Replace(mockPlugin, `protocols: ["openai_video"],`, `protocols: ["openai_video", "openai_image_tasks"],`, 1)
+	source = strings.Replace(source, `export const protocols = {openai_video: {
+  decodeRequest: function(ctx) { return {kind: "submit", model: ctx.model, requestBody: ctx.body.value}; },
+  render: function(ctx, task) { return {id: task.task_id, status: "completed"}; }
+}};`, `export const protocols = {openai_video: {
+  decodeRequest: function(ctx) { return {kind: "submit", model: ctx.model, requestBody: ctx.body.value}; },
+  render: function(ctx, task) { return {id: task.task_id, status: "completed"}; }
+}, openai_image_tasks: {decodeRequest:function(ctx) { return {kind:"submit",model:ctx.model,requestBody:ctx.body.value}; },render:function(_ctx,task) {
+  return {id:"upstream-private",task_id:"upstream-private",object:"provider-task",status:"failed",progress:99,created_at:999,updated_at:999,completed_at:999,model:"provider-model",data:task.data};
+}}};`, 1)
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+
+	for _, tc := range []struct {
+		name          string
+		status        model.TaskStatus
+		wantStatus    string
+		wantCompleted int64
+	}{
+		{name: "pending", status: model.TaskStatusQueued, wantStatus: "queued"},
+		{name: "processing", status: model.TaskStatusInProgress, wantStatus: "processing"},
+		{name: "completed", status: model.TaskStatusSuccess, wantStatus: "completed", wantCompleted: 80},
+		{name: "failed", status: model.TaskStatusFailure, wantStatus: "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.Task{
+				TaskID: "task_public", Status: tc.status, Progress: "42%", SubmitTime: 50,
+				UpdatedAt: 70, FinishTime: tc.wantCompleted,
+				Properties:  model.Properties{OriginModelName: "public-model"},
+				PrivateData: model.TaskPrivateData{UpstreamTaskID: "upstream-private"},
+				Data:        []byte(`{"id":"upstream-private","task_id":"upstream-private","nested":{"taskId":"upstream-private"}}`),
+			}
+
+			rendered, err := adaptor.ConvertToOpenAIImageTask(task)
+
+			require.NoError(t, err)
+			var fields map[string]any
+			require.NoError(t, common.Unmarshal(rendered, &fields))
+			assert.Equal(t, "task_public", fields["id"])
+			assert.NotContains(t, fields, "task_id")
+			assert.NotContains(t, string(rendered), "upstream-private")
+			assert.Equal(t, "image.task", fields["object"])
+			assert.Equal(t, tc.wantStatus, fields["status"])
+			assert.Equal(t, float64(42), fields["progress"])
+			assert.Equal(t, float64(50), fields["created_at"])
+			assert.Equal(t, float64(70), fields["updated_at"])
+			assert.Equal(t, "public-model", fields["model"])
+			if tc.wantCompleted > 0 {
+				assert.Equal(t, float64(tc.wantCompleted), fields["completed_at"])
+			} else {
+				assert.NotContains(t, fields, "completed_at")
+			}
+		})
+	}
+}
+
+func TestTaskAdaptorRequiresOpenAIImageTaskClaim(t *testing.T) {
+	plugin, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
+	require.NoError(t, err)
+	_, err = New(plugin).ConvertToOpenAIImageTask(&model.Task{TaskID: "task_public"})
+	require.ErrorContains(t, err, "plugin does not claim openai_image_tasks")
+}
+
 func TestTaskAdaptorBoundsNativeUsageBeforeQuotaCalculation(t *testing.T) {
 	source := `
 export const meta = {

@@ -936,6 +936,79 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	return common.Marshal(rendered)
 }
 
+func (a *TaskAdaptor) ConvertToOpenAIImageTask(task *model.Task) ([]byte, error) {
+	if task == nil {
+		return nil, fmt.Errorf("task is required")
+	}
+	claimed := slices.ContainsFunc(a.plugin.Meta.Protocols, func(claim pluginruntime.ProtocolClaim) bool {
+		return claim.Name == "openai_image_tasks"
+	})
+	if !claimed {
+		return nil, fmt.Errorf("plugin does not claim openai_image_tasks")
+	}
+	view, err := service.BuildTaskPluginView(task)
+	if err != nil {
+		return nil, err
+	}
+	value, err := a.plugin.Engine.CallPath(context.Background(), "protocols", []string{"openai_image_tasks", "render"}, map[string]any{"protocol": "openai_image_tasks", "operation": "retrieve"}, jsonValue(view))
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := common.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var rendered map[string]any
+	if err = common.Unmarshal(encoded, &rendered); err != nil || rendered == nil {
+		return nil, fmt.Errorf("plugin returned an invalid OpenAI image task object")
+	}
+	// Provider extensions remain available, while task identity and lifecycle
+	// fields always come from the host's persisted task record.
+	createdAt := view.CreatedAt
+	status := "unknown"
+	switch task.Status {
+	case model.TaskStatusNotStart, model.TaskStatusSubmitted, model.TaskStatusQueued:
+		status = "queued"
+	case model.TaskStatusInProgress:
+		status = "processing"
+	case model.TaskStatusSuccess:
+		status = "completed"
+	case model.TaskStatusFailure:
+		status = "failed"
+	}
+	rendered["id"] = task.TaskID
+	rendered["object"] = "image.task"
+	delete(rendered, "task_id")
+	rendered["status"] = status
+	rendered["progress"] = progressPercent(task.Progress)
+	rendered["created_at"] = createdAt
+	rendered["model"] = task.Properties.OriginModelName
+	if task.UpdatedAt > 0 {
+		rendered["updated_at"] = task.UpdatedAt
+	} else {
+		delete(rendered, "updated_at")
+	}
+	if task.Status == model.TaskStatusSuccess {
+		completedAt := task.FinishTime
+		if completedAt == 0 {
+			completedAt = task.UpdatedAt
+		}
+		if completedAt > 0 {
+			rendered["completed_at"] = completedAt
+		} else {
+			delete(rendered, "completed_at")
+		}
+	} else {
+		delete(rendered, "completed_at")
+	}
+	return common.Marshal(rendered)
+}
+
+func progressPercent(progress string) int {
+	parsed, _ := strconv.Atoi(strings.TrimSuffix(progress, "%"))
+	return parsed
+}
+
 func (a *TaskAdaptor) ListArtifacts(task *model.Task) ([]channel.TaskArtifact, error) {
 	if !a.hasHook(context.Background(), "listArtifacts") {
 		return nil, nil
@@ -1775,6 +1848,7 @@ func positiveInt(value any) int {
 var _ channel.TaskAdaptor = (*TaskAdaptor)(nil)
 var _ channel.TaskSubmitRetryPolicy = (*TaskAdaptor)(nil)
 var _ channel.OpenAIVideoConverter = (*TaskAdaptor)(nil)
+var _ channel.OpenAIImageTaskConverter = (*TaskAdaptor)(nil)
 var _ channel.TaskArtifactProvider = (*TaskAdaptor)(nil)
 var _ channel.TaskContentRequestProvider = (*TaskAdaptor)(nil)
 var _ channel.TaskUsageFactsProvider = (*TaskAdaptor)(nil)

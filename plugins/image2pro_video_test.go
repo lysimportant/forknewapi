@@ -39,7 +39,14 @@ func TestImage2ProVideoContracts(t *testing.T) {
 		{client: "Seedance2.0", upstream: "Seedance2.0", maximum: 15},
 		{client: "Flash视频-MAX", upstream: "Flash视频-MAX", maximum: 12},
 	}
-	assert.Equal(t, []string{"Seedance2.0 0.9r", "无限制-Flash-MAX-Video", "Seedance2.0", "Flash视频-MAX"}, plugin.Meta.Models)
+	assert.Equal(t, []string{
+		"Seedance2.0 0.9r", "无限制-Flash-MAX-Video", "Seedance2.0", "Flash视频-MAX",
+		"无限制-Seedream-5-Pro", "无限制-Seedream-5-Pro-2K", "无限制-Qwen-2.1NEW", "完全无限制-Z-Image",
+		"无限制-NovelAI-V5", "无限制-NovelAI-V4.5", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+		"gpt-image-2.0", "gpt-image-2.0-原生4K", "gpt-image-2.5-不超分", "gpt-image-2.0-不超分",
+		"Nano-banana-2.1", "Nano-banana-Pro", "Nano-banana-2", "Grok-image-2.0", "Flash会员专属",
+		"Kolors-极速生图", "无限制-Z-Image",
+	}, plugin.Meta.Models)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
 	assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
@@ -497,4 +504,231 @@ func TestImage2ProBillingLifecycle(t *testing.T) {
 			assert.Equal(t, map[string]any{"seconds": 12.5}, snapshot.UsageFacts)
 		}
 	})
+}
+
+// TestImage2ProImageTaskContracts validates the asynchronous image protocol with synthetic data only.
+func TestImage2ProImageTaskContracts(t *testing.T) {
+	imageModels := []string{
+		"无限制-Seedream-5-Pro", "无限制-Seedream-5-Pro-2K", "无限制-Qwen-2.1NEW", "完全无限制-Z-Image",
+		"无限制-NovelAI-V5", "无限制-NovelAI-V4.5", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+		"gpt-image-2.0", "gpt-image-2.0-原生4K", "gpt-image-2.5-不超分", "gpt-image-2.0-不超分",
+		"Nano-banana-2.1", "Nano-banana-Pro", "Nano-banana-2", "Grok-image-2.0", "Flash会员专属",
+		"Kolors-极速生图", "无限制-Z-Image",
+	}
+	videoModels := []string{"Seedance2.0 0.9r", "无限制-Flash-MAX-Video", "Seedance2.0", "Flash视频-MAX"}
+	source, err := plugins.Source("image2pro")
+	require.NoError(t, err)
+	registry := jsplugin.NewRegistry()
+	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, append(append([]string{}, videoModels...), imageModels...), plugin.Meta.Models)
+	require.Len(t, plugin.Meta.Protocols, 3)
+	assert.Equal(t, videoModels, plugin.Meta.Protocols[0].Models)
+	assert.Equal(t, videoModels, plugin.Meta.Protocols[1].Models)
+	assert.Equal(t, imageModels, plugin.Meta.Protocols[2].Models)
+	for _, modelName := range imageModels {
+		binding, found := registry.Generation().LookupEndpoint(http.MethodPost, "/v1/images/tasks", modelName)
+		require.True(t, found, "image model %q must route to async image tasks", modelName)
+		assert.Same(t, plugin, binding.Plugin)
+		_, found = registry.Generation().LookupEndpoint(http.MethodPost, "/v1/videos", modelName)
+		assert.False(t, found, "image model %q must not route to video generation", modelName)
+	}
+	for _, modelName := range videoModels {
+		_, found := registry.Generation().LookupEndpoint(http.MethodPost, "/v1/images/tasks", modelName)
+		assert.False(t, found, "video model %q must not route to image tasks", modelName)
+		_, found = registry.Generation().LookupEndpoint(http.MethodPost, "/v1/videos", modelName)
+		assert.True(t, found, "video route must remain available for %q", modelName)
+	}
+
+	modelName := imageModels[8]
+	requestBody := map[string]any{
+		"model": modelName, "prompt": "A quiet coastal town", "n": 2, "size": "1024x1024",
+		"aspect_ratio": "1:1", "ratio": "1:1", "resolution": "2k", "image_size": "1024",
+		"input_image": "https://cdn.example/input.png", "reference_image": "https://cdn.example/reference.png",
+		"image": "https://cdn.example/image.png", "images": []string{"https://cdn.example/a.png", "https://cdn.example/b.png"},
+		"mask": "https://cdn.example/mask.png", "response_format": "url",
+	}
+	decodedValue, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "decodeRequest"}, map[string]any{
+		"model": modelName, "body": map[string]any{"kind": "json", "value": requestBody},
+	})
+	require.NoError(t, err)
+	decodedBytes, err := common.Marshal(decodedValue)
+	require.NoError(t, err)
+	var intent map[string]any
+	require.NoError(t, common.Unmarshal(decodedBytes, &intent))
+	assert.Equal(t, "submit", intent["kind"])
+	assert.Equal(t, modelName, intent["model"])
+	requestJSON, err := common.Marshal(requestBody)
+	require.NoError(t, err)
+	intentRequestJSON, err := common.Marshal(intent["requestBody"])
+	require.NoError(t, err)
+	assert.JSONEq(t, string(requestJSON), string(intentRequestJSON))
+
+	build := func(taskID string) (map[string]any, error) {
+		value, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+			"model": modelName, "upstreamModel": modelName, "requestBody": intent["requestBody"],
+			"baseUrl": "https://upstream.example/v1", "apiKey": "synthetic-fixture", "publicTaskId": taskID,
+		})
+		if callErr != nil {
+			return nil, callErr
+		}
+		encoded, marshalErr := common.Marshal(value)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		var descriptor map[string]any
+		marshalErr = common.Unmarshal(encoded, &descriptor)
+		return descriptor, marshalErr
+	}
+	descriptor, err := build("task_public-123")
+	require.NoError(t, err)
+	assert.Equal(t, "https://upstream.example/v1/images/tasks", descriptor["url"])
+	assert.Equal(t, http.MethodPost, descriptor["method"])
+	assert.Equal(t, true, descriptor["noRetry"])
+	assert.Equal(t, "task_public-123", descriptor["headers"].(map[string]any)["Idempotency-Key"])
+	assert.Equal(t, "Bearer synthetic-fixture", descriptor["headers"].(map[string]any)["Authorization"])
+	descriptorBodyJSON, err := common.Marshal(descriptor["body"])
+	require.NoError(t, err)
+	assert.JSONEq(t, string(requestJSON), string(descriptorBodyJSON))
+	for _, forbidden := range []string{"quality", "background", "output_format", "output_compression", "stream", "client_request_id"} {
+		_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "decodeRequest"}, map[string]any{
+			"model": modelName, "body": map[string]any{"kind": "json", "value": map[string]any{"model": modelName, "prompt": "a picture", forbidden: "invalid"}},
+		})
+		require.Error(t, err, "forbidden field %q must be rejected", forbidden)
+	}
+	_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "decodeRequest"}, map[string]any{
+		"model": modelName, "body": map[string]any{"kind": "multipart", "fields": map[string]any{}},
+	})
+	require.Error(t, err, "multipart image requests are unsupported")
+	for _, invalid := range []map[string]any{
+		{"model": modelName, "prompt": "a picture", "n": 0},
+		{"model": modelName, "prompt": "a picture", "n": 5},
+		{"model": modelName, "prompt": "a picture", "n": 1.5},
+		{"model": modelName, "prompt": "a picture", "response_format": "b64_json"},
+		{"model": modelName, "prompt": "   "},
+		{"prompt": "a picture"},
+	} {
+		_, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "decodeRequest"}, map[string]any{
+			"model": modelName, "body": map[string]any{"kind": "json", "value": invalid},
+		})
+		require.Error(t, err, "invalid request %#v must be rejected", invalid)
+	}
+	_, err = build("bad/task-id")
+	require.Error(t, err, "unsafe public task ID cannot be used as an idempotency key")
+
+	usageValue, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"model": modelName, "upstreamModel": modelName, "requestBody": intent["requestBody"], "usagePurpose": "facts",
+	})
+	require.NoError(t, err)
+	usageBytes, err := common.Marshal(usageValue)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"count":2}`, string(usageBytes))
+	schema, _ := plugin.Meta.UsageForModel(modelName)
+	require.Contains(t, schema, "count")
+	assert.Equal(t, "count", schema["count"].Unit)
+	completeUsage, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{
+		"model": modelName, "upstreamModel": modelName, "state": map[string]any{"n": 2},
+	}, map[string]any{"status": "SUCCESS"})
+	require.NoError(t, err)
+	usageBytes, err = common.Marshal(completeUsage)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"count":2}`, string(usageBytes))
+
+	created := map[string]any{
+		"id": "upstream-job:123", "object": "image.task", "model": modelName, "status": "queued",
+		"created_at": 1700000000, "updated_at": 1700000001, "expires_at": 1700003600, "n": 2,
+		"accounting_status": "pending",
+	}
+	parsedValue, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{
+		"model": modelName, "upstreamModel": modelName, "requestBody": intent["requestBody"],
+	}, map[string]any{"statusCode": http.StatusAccepted, "body": created})
+	require.NoError(t, err)
+	parsedBytes, err := common.Marshal(parsedValue)
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, common.Unmarshal(parsedBytes, &parsed))
+	assert.Equal(t, "upstream-job:123", parsed["taskId"])
+	createdJSON, err := common.Marshal(created)
+	require.NoError(t, err)
+	parsedTaskDataJSON, err := common.Marshal(parsed["taskData"])
+	require.NoError(t, err)
+	assert.JSONEq(t, string(createdJSON), string(parsedTaskDataJSON))
+	assert.Equal(t, map[string]any{"n": float64(2)}, parsed["state"])
+
+	queryValue, err := plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{
+		"model": modelName, "upstreamModel": modelName, "taskId": "upstream-job:123",
+		"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example/v1",
+	})
+	require.NoError(t, err)
+	queryBytes, err := common.Marshal(queryValue)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"url":"https://upstream.example/v1/images/tasks/upstream-job%3A123","method":"GET","headers":{"Authorization":"Bearer synthetic-fixture"}}`, string(queryBytes))
+	for _, taskID := range []string{"../escape", "a/b", "id?query", "id#fragment", ".."} {
+		_, err = plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{
+			"model": modelName, "upstreamModel": modelName, "taskId": taskID,
+			"apiKey": "synthetic-fixture", "baseUrl": "https://upstream.example",
+		})
+		require.Error(t, err, "unsafe task ID %q must be rejected", taskID)
+	}
+
+	for _, tc := range []struct{ upstream, want string }{
+		{"queued", "QUEUED"}, {"processing", "IN_PROGRESS"}, {"completed", "SUCCESS"}, {"failed", "FAILURE"}, {"unknown", "UNKNOWN"},
+	} {
+		body := map[string]any{"status": tc.upstream, "n": 2}
+		if tc.upstream == "completed" {
+			body["data"] = []any{map[string]any{"url": "https://cdn.example/a.png"}, map[string]any{"url": "https://cdn.example/b.png"}}
+		}
+		if tc.upstream == "failed" {
+			body["error"] = map[string]any{"message": "provider secret must not leak"}
+		}
+		value, callErr := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{
+			"model": modelName, "upstreamModel": modelName, "state": map[string]any{"n": 2},
+		}, body)
+		require.NoError(t, callErr)
+		encoded, marshalErr := common.Marshal(value)
+		require.NoError(t, marshalErr)
+		var result map[string]any
+		require.NoError(t, common.Unmarshal(encoded, &result))
+		assert.Equal(t, tc.want, result["status"])
+		assert.NotContains(t, string(encoded), "provider secret")
+	}
+	for _, unsafeURL := range []string{"file:///etc/passwd", "https://user:password@cdn.example/a.png", "https://cdn.example/a b.png"} {
+		value, callErr := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"model": modelName}, map[string]any{
+			"status": "completed", "data": []any{map[string]any{"url": unsafeURL}},
+		})
+		require.NoError(t, callErr)
+		encoded, marshalErr := common.Marshal(value)
+		require.NoError(t, marshalErr)
+		var result map[string]any
+		require.NoError(t, common.Unmarshal(encoded, &result))
+		assert.Equal(t, "UNKNOWN", result["status"])
+	}
+
+	view := map[string]any{
+		"task_id": "newapi-public-task", "status": "SUCCESS", "created_at": 1700000000, "updated_at": 1700000020,
+		"data": map[string]any{
+			"id": "upstream-job:123", "model": modelName, "status": "completed", "n": 2,
+			"data":  []any{map[string]any{"url": "https://cdn.example/a.png"}, map[string]any{"url": "https://cdn.example/b.png"}},
+			"error": map[string]any{"message": "must not leak"},
+		},
+	}
+	renderedValue, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "render"},
+		map[string]any{"protocol": "openai_image_tasks", "operation": "retrieve"}, view)
+	require.NoError(t, err)
+	renderedBytes, err := common.Marshal(renderedValue)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"id":"newapi-public-task","object":"image.task","model":"`+modelName+`","status":"completed","created_at":1700000000,"updated_at":1700000020,"n":2,"data":[{"url":"https://cdn.example/a.png"},{"url":"https://cdn.example/b.png"}]}`, string(renderedBytes))
+	assert.NotContains(t, string(renderedBytes), "upstream-job")
+	assert.NotContains(t, string(renderedBytes), "must not leak")
+
+	failedValue, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image_tasks", "render"},
+		map[string]any{"protocol": "openai_image_tasks", "operation": "retrieve"}, map[string]any{
+			"task_id": "newapi-public-task", "status": "FAILURE", "created_at": 1700000000,
+			"data": map[string]any{"status": "failed", "error": "provider credential leak"},
+		})
+	require.NoError(t, err)
+	failedBytes, err := common.Marshal(failedValue)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"id":"newapi-public-task","object":"image.task","model":"","status":"failed","created_at":1700000000,"error":{"code":"image_generation_failed","message":"Image2Pro image generation failed"}}`, string(failedBytes))
+	assert.NotContains(t, string(failedBytes), "provider credential")
 }

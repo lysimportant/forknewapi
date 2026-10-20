@@ -459,6 +459,17 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = midjourneyModel
 		}
 		c.Set("relay_mode", relayMode)
+	} else if c.Request.Method == http.MethodGet && strings.HasPrefix(c.Request.URL.Path, "/v1/images/tasks/") {
+		c.Set("relay_mode", relayconstant.RelayModeOpenAIImageTaskFetch)
+		shouldSelectChannel = false
+		modelRequest.Model = getTaskOriginModelName(c)
+	} else if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/v1/images/tasks" {
+		c.Set("relay_mode", relayconstant.RelayModeVideoSubmit)
+		req, err := getModelFromRequest(c)
+		if err != nil {
+			return nil, false, err
+		}
+		modelRequest.Model = req.Model
 	} else if strings.Contains(c.Request.URL.Path, "/v1/videos/") && strings.HasSuffix(c.Request.URL.Path, "/remix") {
 		relayMode := relayconstant.RelayModeVideoSubmit
 		c.Set("relay_mode", relayMode)

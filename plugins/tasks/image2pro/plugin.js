@@ -2,7 +2,30 @@
 const SEEDANCE_MODEL = "Seedance2.0 0.9r";
 const FLASH_MODEL = "无限制-Flash-MAX-Video";
 /** 保留既有展示名路由，并允许模型目录导入真实 ID；两组名称最终发送同一真实 ID。 */
-const MODELS = [SEEDANCE_MODEL, FLASH_MODEL, "Seedance2.0", "Flash视频-MAX"];
+const VIDEO_MODELS = [SEEDANCE_MODEL, FLASH_MODEL, "Seedance2.0", "Flash视频-MAX"];
+/** 公开目录中的图片候选；文档未逐项保证其均已接入异步图片接口。 */
+const IMAGE_MODELS = [
+  "无限制-Seedream-5-Pro",
+  "无限制-Seedream-5-Pro-2K",
+  "无限制-Qwen-2.1NEW",
+  "完全无限制-Z-Image",
+  "无限制-NovelAI-V5",
+  "无限制-NovelAI-V4.5",
+  "gpt-image-2.5-sunburst",
+  "gpt-image-2.5-flare",
+  "gpt-image-2.0",
+  "gpt-image-2.0-原生4K",
+  "gpt-image-2.5-不超分",
+  "gpt-image-2.0-不超分",
+  "Nano-banana-2.1",
+  "Nano-banana-Pro",
+  "Nano-banana-2",
+  "Grok-image-2.0",
+  "Flash会员专属",
+  "Kolors-极速生图",
+  "无限制-Z-Image",
+];
+const MODELS = VIDEO_MODELS.concat(IMAGE_MODELS);
 const MODEL_SPECS = {
   [SEEDANCE_MODEL]: { upstream: "Seedance2.0", durationMax: 15, imageLimit: 9 },
   "Seedance2.0": { upstream: "Seedance2.0", durationMax: 15, imageLimit: 9 },
@@ -88,7 +111,11 @@ export const meta = {
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
   fetchMode: "per_task",
   requiredCapabilities: ["task-submit-no-retry@1"],
-  protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }],
+  protocols: [
+    { name: "openai_video", models: VIDEO_MODELS },
+    { name: "openai_responses", models: VIDEO_MODELS, supports: ["stream", "sync", "background"] },
+    { name: "openai_image_tasks", models: IMAGE_MODELS },
+  ],
   usageSchema: {
     seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   },
@@ -101,6 +128,17 @@ export const meta = {
           unit: "count",
           unitLabel: { en: "request", zh: "次" },
           description: { en: "Video generation unit price", zh: "视频生成单价" },
+        },
+      },
+    },
+    {
+      models: IMAGE_MODELS,
+      schema: {
+        count: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "image", zh: "张" },
+          description: { en: "Image generation unit price", zh: "图片生成单价" },
         },
       },
     },
@@ -119,6 +157,49 @@ function apiBase(ctx) {
   const base = typeof ctx.baseUrl === "string" ? ctx.baseUrl.replace(/\/+$/, "") : "";
   if (!isHTTPURL(base) || /[?#]/.test(base)) throw new Error("Image2Pro channel base URL must be an HTTP(S) URL without credentials, query, or fragment");
   return base.endsWith("/v1") ? base : base + "/v1";
+}
+
+function isImageModel(model) {
+  return typeof model === "string" && IMAGE_MODELS.includes(model);
+}
+
+const IMAGE_REQUEST_FIELDS = [
+  "model", "prompt", "n", "size", "aspect_ratio", "ratio", "resolution", "image_size",
+  "input_image", "reference_image", "image", "images", "mask", "response_format",
+];
+
+/** 图片异步接口仅接受公开 JSON 字段；不接收 multipart 或兼容性透传参数。 */
+function normalizeImageRequest(source, model) {
+  if (!isImageModel(model)) throw new Error("unsupported Image2Pro image model");
+  if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro image request body must be an object");
+  for (const key of Object.keys(source)) if (!IMAGE_REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro image field: " + key);
+  if (source.model !== model) throw new Error("Image2Pro image model does not match the selected model");
+  if (typeof source.prompt !== "string" || !source.prompt.trim()) throw new Error("Image2Pro image prompt is required");
+  if (source.n !== undefined && (!Number.isInteger(source.n) || source.n < 1 || source.n > 4))
+    throw new Error("Image2Pro image n must be an integer from 1 to 4");
+  if (source.response_format !== undefined && source.response_format !== "url")
+    throw new Error("Image2Pro image response_format must be url");
+  return { ...source };
+}
+
+function requestedImageCount(request) {
+  const count = request && request.n !== undefined ? request.n : 1;
+  if (!Number.isInteger(count) || count < 1 || count > 4) throw new Error("Image2Pro image n must be an integer from 1 to 4");
+  return count;
+}
+
+function validTaskId(value) {
+  return typeof value === "string" && value !== "." && value !== ".." && /^[A-Za-z0-9_.:-]{1,200}$/.test(value);
+}
+
+function imageResultURLs(body) {
+  if (!body || !Array.isArray(body.data) || body.data.length === 0) return null;
+  const urls = [];
+  for (const item of body.data) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || !isHTTPURL(item.url)) return null;
+    urls.push(item.url);
+  }
+  return urls;
 }
 
 /** 读取有界秒数并兼容旧任务冻结的小数时长；新建请求另按精确模型范围校验。 */
@@ -375,6 +456,19 @@ function providerVideoBody(request) {
 /** 构造单次 JSON 提交，上传占位符由宿主替换；幂等键与禁止重试避免未知结果重复扣费。 */
 export function buildSubmitRequest(ctx) {
   const model = ctx.upstreamModel || ctx.model;
+  if (isImageModel(model)) {
+    const request = normalizeImageRequest(ctx.requestBody, model);
+    const key = ctx.publicTaskId;
+    if (typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(key))
+      throw new Error("a valid NewAPI public task ID is required for Image2Pro image generation");
+    return {
+      url: apiBase(ctx) + "/images/tasks",
+      method: "POST",
+      headers: { Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json", "Idempotency-Key": key },
+      body: request,
+      noRetry: true,
+    };
+  }
   const request = normalizeRequest(ctx.requestBody, model, ctx.files || []);
   request.model = model;
   const key = request.client_request_id === undefined ? ctx.publicTaskId : request.client_request_id;
@@ -396,6 +490,19 @@ export function buildSubmitRequest(ctx) {
 /** 保存请求时长和新 Seedance 的按次标记；旧任务无标记时继续按原冻结秒数结算。 */
 export function parseSubmitResponse(ctx, response) {
   const body = response && response.body;
+  const model = ctx.upstreamModel || ctx.model;
+  if (isImageModel(model)) {
+    if (response && response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300))
+      throw new Error("Image2Pro image task creation failed");
+    if (!body || typeof body !== "object" || Array.isArray(body) || !validTaskId(body.id))
+      throw new Error("Image2Pro image task response is invalid");
+    if (!["queued", "processing", "completed", "failed"].includes(body.status))
+      throw new Error("Image2Pro returned an unrecognized image task status");
+    if (body.status === "completed" && !imageResultURLs(body)) throw new Error("Image2Pro completed image task response is invalid");
+    const result = { taskId: body.id, taskData: body, state: { n: requestedImageCount(ctx.requestBody || {}) } };
+    if (body.status === "completed" || body.status === "failed") result.immediate = imageTaskResult(ctx, body);
+    return result;
+  }
   if (response && response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300))
     throw new Error("Image2Pro video creation failed");
   if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.id !== "string" || !/^[a-f0-9]{16,80}$/.test(body.id))
@@ -403,7 +510,6 @@ export function parseSubmitResponse(ctx, response) {
   if (!["processing", "completed", "failed"].includes(body.status)) throw new Error("Image2Pro returned an unrecognized video status");
   if (body.status !== "failed" && body.error) throw new Error("Image2Pro video creation failed");
   const state = { seconds: requestedSeconds(ctx.requestBody || {}) };
-  const model = ctx.upstreamModel || ctx.model;
   if (model && modelSpec(model).upstream === "Seedance2.0") state.billingUnit = "count";
   const result = { taskId: body.id, taskData: body, state };
   if (body.status !== "processing") {
@@ -417,6 +523,10 @@ export function parseSubmitResponse(ctx, response) {
 /** Seedance 每个任务计一次，Flash 使用请求秒数；旧倍率入口不叠加用量或上游积分。 */
 export function extractUsage(ctx) {
   const model = ctx.upstreamModel || ctx.model;
+  if (isImageModel(model)) {
+    if (ctx.usagePurpose === "billing_ratios") return {};
+    return { count: requestedImageCount(ctx.requestBody || {}) };
+  }
   const request = normalizeRequest(ctx.requestBody, model, ctx.files || []);
   if (ctx.usagePurpose === "billing_ratios") return {};
   return modelSpec(model).upstream === "Seedance2.0" ? { count: 1 } : { seconds: request.duration };
@@ -426,12 +536,21 @@ export function extractUsage(ctx) {
 export function extractUsageOnComplete(task, result) {
   if (!result || result.status !== "SUCCESS") return null;
   const state = task.state || {};
+  if (isImageModel(task.upstreamModel || task.model)) return { count: requestedImageCount(state) };
   const seconds = requestedSeconds(state);
   return state.billingUnit === "count" ? { count: 1 } : { seconds };
 }
 
 /** 查询只接受供应商十六进制任务 ID，鉴权固定使用当前渠道。 */
 export function buildQueryRequest(ctx) {
+  if (isImageModel(ctx.upstreamModel || ctx.model)) {
+    if (!validTaskId(ctx.taskId)) throw new Error("Image2Pro image task ID is invalid");
+    return {
+      url: apiBase(ctx) + "/images/tasks/" + encodeURIComponent(ctx.taskId),
+      method: "GET",
+      headers: { Authorization: "Bearer " + ctx.apiKey },
+    };
+  }
   if (typeof ctx.taskId !== "string" || !/^[a-f0-9]{16,80}$/.test(ctx.taskId))
     throw new Error("Image2Pro task ID must contain 16 to 80 hexadecimal characters");
   return { url: apiBase(ctx) + "/videos/" + ctx.taskId, method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
@@ -439,6 +558,7 @@ export function buildQueryRequest(ctx) {
 
 /** 映射文档明确状态；完成须有安全视频地址，未知状态不伪装为处理中。 */
 export function parseTaskResult(ctx, body) {
+  if (isImageModel(ctx.upstreamModel || ctx.model)) return imageTaskResult(ctx, body);
   if (!body || typeof body !== "object" || Array.isArray(body)) return { status: "UNKNOWN", reason: "invalid Image2Pro task response" };
   const status = { processing: "IN_PROGRESS", completed: "SUCCESS", failed: "FAILURE" }[body.status];
   if (typeof status !== "string") return { status: "UNKNOWN", reason: "unrecognized Image2Pro task status" };
@@ -452,6 +572,57 @@ export function parseTaskResult(ctx, body) {
   } else if (typeof body.progress === "number" && Number.isFinite(body.progress) && body.progress >= 0 && body.progress <= 100)
     result.progress = body.progress + "%";
   return result;
+}
+
+/** 仅把文档状态映射为宿主状态；供应商错误文本和凭据不进入任务记录。 */
+function imageTaskResult(ctx, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { status: "UNKNOWN", reason: "invalid Image2Pro image task response" };
+  const status = { queued: "QUEUED", processing: "IN_PROGRESS", completed: "SUCCESS", failed: "FAILURE" }[body.status];
+  if (!status) return { status: "UNKNOWN", reason: "unrecognized Image2Pro image task status" };
+  const result = { status };
+  if (status === "FAILURE") result.reason = "Image2Pro image generation failed";
+  else if (status === "SUCCESS") {
+    const urls = imageResultURLs(body);
+    if (!urls) return { status: "UNKNOWN", reason: "Image2Pro completed image task has invalid image URLs" };
+    result.url = urls[0];
+    result.progress = "100%";
+    result.state = { n: requestedImageCount((ctx && (ctx.state || ctx.requestBody)) || {}) };
+  } else if (status === "IN_PROGRESS") result.progress = "50%";
+  return result;
+}
+
+/** 输出 OpenAI image.task 外形；只选取宿主任务字段和已校验的图片 URL。 */
+function renderImageTask(_ctx, task) {
+  const data = task && task.data && typeof task.data === "object" && !Array.isArray(task.data) ? task.data : {};
+  const statuses = {
+    NOT_START: "queued", SUBMITTED: "queued", QUEUED: "queued",
+    IN_PROGRESS: "processing", SUCCESS: "completed", FAILURE: "failed",
+  };
+  const status = statuses[task && task.status] || "unknown";
+  const output = {
+    id: task && task.task_id || "",
+    object: "image.task",
+    model: typeof data.model === "string" ? data.model : "",
+    status,
+    created_at: task && task.created_at || 0,
+  };
+  if (task && Number.isFinite(task.updated_at) && task.updated_at > 0) output.updated_at = task.updated_at;
+  if (data.expires_at !== undefined &&
+    ((typeof data.expires_at === "number" && Number.isFinite(data.expires_at)) ||
+      (typeof data.expires_at === "string" && data.expires_at.length <= 64 && !/[\x00-\x1f\x7f]/.test(data.expires_at))))
+    output.expires_at = data.expires_at;
+  if (Number.isInteger(data.n) && data.n >= 1 && data.n <= 4) output.n = data.n;
+  if (typeof data.accounting_status === "string" && data.accounting_status.length <= 64 && !/[\x00-\x1f\x7f]/.test(data.accounting_status))
+    output.accounting_status = data.accounting_status;
+  if (status === "completed") {
+    const urls = imageResultURLs(data);
+    if (!urls) {
+      output.status = "failed";
+      output.error = { code: "image_generation_failed", message: "Image2Pro image generation failed" };
+    } else output.data = urls.map((url) => ({ url }));
+  } else if (status === "failed")
+    output.error = { code: "image_generation_failed", message: "Image2Pro image generation failed" };
+  return output;
 }
 
 /** 任务完成且有合法成片地址时声明视频制品，未完成不发布。 */
@@ -525,6 +696,25 @@ function responsesRequest(ctx) {
 
 /** 标准视频与 Responses 共用生成驱动、逐模型计费和宿主管理的制品权限。 */
 export const protocols = {
+  openai_image_tasks: {
+    /** 图片异步任务只接受文档定义的 JSON 请求和明确的图片模型候选。 */
+    decodeRequest: function (ctx) {
+      const body = ctx.body;
+      if (!body || body.kind !== "json") throw new Error("Image2Pro image tasks require a JSON body");
+      const source = body.value;
+      if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro image request body must be an object");
+      const model = ctx.model || source.model;
+      const upstreamModel = ctx.upstreamModel || model;
+      if (!isImageModel(upstreamModel)) throw new Error("unsupported Image2Pro image model");
+      if (source.model !== model) throw new Error("Image2Pro image model does not match the selected model");
+      const request = normalizeImageRequest(source, model);
+      request.model = upstreamModel;
+      return { kind: "submit", model, requestBody: request };
+    },
+    render: function (ctx, task) {
+      return renderImageTask(ctx, task);
+    },
+  },
   openai_video: {
     /** 接收 JSON 或 multipart 引用素材，统一字段并保留客户端模型别名。 */
     decodeRequest: function (ctx) {

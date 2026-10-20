@@ -123,6 +123,10 @@ type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }
 
+type OpenAIImageTaskConverter interface {
+	ConvertToOpenAIImageTask(task *model.Task) ([]byte, error)
+}
+
 type TaskArtifact = hosttypes.TaskArtifact
 
 type TaskArtifactClientRequest struct {

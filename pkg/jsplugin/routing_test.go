@@ -81,7 +81,30 @@ func TestRegistryIndexesSharedEndpointCandidatesForDistinctLegacyProviders(t *te
 func TestSupportsRegisteredHostProtocols(t *testing.T) {
 	assert.True(t, SupportsHostProtocol("openai_responses"))
 	assert.True(t, SupportsHostProtocol("openai_video"))
+	assert.True(t, SupportsHostProtocol("openai_image_tasks"))
 	assert.False(t, SupportsHostProtocol("plugin_owned_wire"))
+}
+
+func TestOpenAIImageTasksProtocolOperations(t *testing.T) {
+	protocol, operation, ok := LookupHostProtocolOperation(http.MethodPost, "/v1/images/tasks")
+	require.True(t, ok)
+	assert.Equal(t, "openai_image_tasks", protocol)
+	assert.Equal(t, "create", operation.Name)
+	assert.Equal(t, []BodyKind{BodyJSON}, operation.BodyKinds)
+	assert.Equal(t, "model", operation.ModelField)
+	assert.Equal(t, []string{"decodeRequest"}, operation.RequiredProtocolMembers)
+
+	definition, ok := HostProtocol("openai_image_tasks")
+	require.True(t, ok)
+	require.Len(t, definition.Operations, 2)
+	retrieve := definition.Operations[1]
+	assert.Equal(t, "retrieve", retrieve.Name)
+	assert.Equal(t, []string{http.MethodGet}, retrieve.Methods)
+	assert.Equal(t, "/v1/images/tasks/:task_id", retrieve.Path)
+	assert.Equal(t, []BodyKind{BodyNone}, retrieve.BodyKinds)
+	assert.Equal(t, []string{"render"}, retrieve.RequiredProtocolMembers)
+	_, _, ok = LookupHostProtocolOperation(http.MethodGet, "/v1/images/tasks/:task_id")
+	assert.False(t, ok, "retrieve operations do not participate in model endpoint lookup")
 }
 
 func TestLookupHostProtocolOperationExcludesRetrieveWithoutModelField(t *testing.T) {

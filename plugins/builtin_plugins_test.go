@@ -101,7 +101,42 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			}
 			// globalstore 的图片模型已迁到 fork 的原生图片渠道（ChannelTypeGlobalStore），
 			// 任务插件只剩视频入口，因此与其它仅视频插件走同一条断言分支。
-			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" {
+			if key == "image2pro" {
+				require.True(t, foundResponses, "openai_responses claim must be present for Image2Pro video models")
+				assert.Equal(t, []string{"stream", "sync", "background"}, responsesClaim.Supports)
+				for _, model := range responsesClaim.Models {
+					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
+					require.True(t, claimed, model)
+					assert.Same(t, plugin, binding.Plugin)
+				}
+				var imageClaim jsplugin.ProtocolClaim
+				foundImages := false
+				for _, claim := range plugin.Meta.Protocols {
+					if claim.Name == "openai_image_tasks" {
+						imageClaim = claim
+						foundImages = true
+						break
+					}
+				}
+				require.True(t, foundImages, "openai_image_tasks claim must be present for Image2Pro image models")
+				for _, model := range imageClaim.Models {
+					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/images/tasks", model)
+					require.True(t, claimed, model)
+					assert.Same(t, plugin, binding.Plugin)
+					_, claimed = registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
+					assert.False(t, claimed, "image model %q must not route to Responses", model)
+				}
+				for _, hook := range []string{"decodeRequest", "renderEvents", "renderFinal"} {
+					callable, callableErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_responses", hook)
+					require.NoError(t, callableErr)
+					assert.True(t, callable, hook)
+				}
+				for _, hook := range []string{"decodeRequest", "render"} {
+					callable, callableErr := plugin.Engine.HasCallablePath(t.Context(), "protocols", "openai_image_tasks", hook)
+					require.NoError(t, callableErr)
+					assert.True(t, callable, hook)
+				}
+			} else if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" {
 				assert.False(t, foundResponses, "仅视频插件未声明 Responses 协议，不应扩大入口")
 				if plugin.Meta.ModelRouting == "channel" {
 					binding, claimed := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", key)

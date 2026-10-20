@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,38 @@ func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T)
 	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-alpha"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-beta"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, ""))
+}
+
+func TestGetModelRequestOpenAIImageTaskRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name              string
+		method            string
+		path              string
+		body              string
+		wantModel         string
+		wantRelayMode     int
+		wantSelectChannel bool
+	}{
+		{name: "create", method: http.MethodPost, path: "/v1/images/tasks", body: `{"model":"image-model"}`, wantModel: "image-model", wantRelayMode: relayconstant.RelayModeVideoSubmit, wantSelectChannel: true},
+		{name: "retrieve", method: http.MethodGet, path: "/v1/images/tasks/task_123", wantRelayMode: relayconstant.RelayModeOpenAIImageTaskFetch, wantSelectChannel: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.body != "" {
+				c.Request.Header.Set("Content-Type", "application/json")
+			}
+
+			got, shouldSelectChannel, err := getModelRequest(c)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantModel, got.Model)
+			assert.Equal(t, tc.wantSelectChannel, shouldSelectChannel)
+			assert.Equal(t, tc.wantRelayMode, c.GetInt("relay_mode"))
+		})
+	}
 }
 
 func TestChannelMatchesExpectedTaskPluginUsesPinnedLegacyIndex(t *testing.T) {

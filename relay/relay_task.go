@@ -528,13 +528,15 @@ func noteTaskQuotaClamp(info *relaycommon.RelayInfo, clamp *common.QuotaClamp) {
 }
 
 var fetchRespBuilders = map[int]func(c *gin.Context) (respBody []byte, taskResp *dto.TaskError){
-	relayconstant.RelayModeVideoFetchByID: videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeVideoFetchByID:       videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeOpenAIImageTaskFetch: openAIImageTaskFetchByIDRespBodyBuilder,
 }
 
 func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
 	respBuilder, ok := fetchRespBuilders[relayMode]
 	if !ok {
 		taskResp = service.TaskErrorWrapperLocal(errors.New("invalid_relay_mode"), "invalid_relay_mode", http.StatusBadRequest)
+		return taskResp
 	}
 
 	respBody, taskErr := respBuilder(c)
@@ -550,6 +552,38 @@ func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
 	if err != nil {
 		taskResp = service.TaskErrorWrapper(err, "copy_response_body_failed", http.StatusInternalServerError)
 		return
+	}
+	return
+}
+
+func openAIImageTaskFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.TaskError) {
+	taskId := c.Param("task_id")
+	if taskId == "" {
+		taskId = c.GetString("task_id")
+	}
+	originTask, exist, err := model.GetByTaskId(c.GetInt("id"), taskId)
+	if err != nil {
+		taskResp = service.TaskErrorWrapper(err, "get_task_failed", http.StatusInternalServerError)
+		return
+	}
+	if !exist {
+		taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusBadRequest)
+		return
+	}
+
+	adaptor := GetTaskAdaptor(originTask.Platform)
+	if adaptor == nil {
+		taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid task platform: %s", originTask.Platform), "invalid_api_platform", http.StatusNotImplemented)
+		return
+	}
+	converter, ok := adaptor.(channel.OpenAIImageTaskConverter)
+	if !ok {
+		taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
+		return
+	}
+	respBody, err = converter.ConvertToOpenAIImageTask(originTask)
+	if err != nil {
+		taskResp = service.TaskErrorWrapper(err, "convert_to_openai_image_task_failed", http.StatusInternalServerError)
 	}
 	return
 }

@@ -131,6 +131,44 @@ func TestPresentTaskSubmissionUsesHostOpenAIVideoCreateReceipt(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "task_id")
 }
 
+func TestPresentTaskSubmissionUsesAcceptedOpenAIImageTaskReceipt(t *testing.T) {
+	plugin, err := pluginruntime.DefaultRegistry.Register(`
+export const meta = {
+  apiVersion: 1, key: "image-task-receipt-test", name: "Image task receipt", version: "1.0.0",
+  author: {name: "Test"}, models: ["image-model"], fetchMode: "per_task",
+  protocols: ["openai_image_tasks"],
+};
+export function buildSubmitRequest() { return {url: "https://example.com"}; }
+export function parseSubmitResponse() { return {taskId: "upstream"}; }
+export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+export const protocols = {openai_image_tasks: {
+  decodeRequest: function(ctx) { return {kind: "submit", model: ctx.model, requestBody: ctx.body.value}; },
+  render: function(_ctx, task) { return {id: task.task_id, object: "image.task", status: "queued", provider_field: "kept"}; },
+}};
+`, pluginruntime.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pluginruntime.DefaultRegistry.Unregister("image-task-receipt-test")) })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/tasks", strings.NewReader(`{"model":"image-model"}`))
+	c.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{
+		Plugin: plugin, Protocol: "openai_image_tasks", Operation: pluginruntime.HostProtocolOperation{Name: "create"},
+	})
+	task := &model.Task{
+		TaskID: "task_public", Status: model.TaskStatusQueued, SubmitTime: 456,
+		Platform:   constant.TaskPlatform("image-task-receipt-test"),
+		Properties: model.Properties{OriginModelName: "image-model"},
+	}
+	outcome := &taskSubmissionOutcome{Result: &relay.TaskSubmitResult{}, Task: task, RelayInfo: &relaycommon.RelayInfo{OriginModelName: "image-model"}}
+
+	presentTaskSubmission(c, outcome)
+
+	assert.Equal(t, http.StatusAccepted, recorder.Code)
+	assert.JSONEq(t, `{"id":"task_public","object":"image.task","status":"queued","progress":0,"created_at":456,"model":"image-model","provider_field":"kept"}`, recorder.Body.String())
+}
+
 func TestExecuteTaskSubmissionRefundsWhenInsertFails(t *testing.T) {
 	events := make([]string, 0, 3)
 	database := setupTaskSubmissionDatabase(t, false, &events)

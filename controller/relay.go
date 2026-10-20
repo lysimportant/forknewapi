@@ -18,6 +18,7 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -956,10 +957,38 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 		}
 	}
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Protocol == "openai_video" && pinned.Operation.Name == "create" {
-			diagnostics.present(outcome.Task, "openai_video_create")
-			c.JSON(http.StatusOK, outcome.Task.ToOpenAIVideo())
-			return
+		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Operation.Name == "create" {
+			switch pinned.Protocol {
+			case "openai_video":
+				diagnostics.present(outcome.Task, "openai_video_create")
+				c.JSON(http.StatusOK, outcome.Task.ToOpenAIVideo())
+				return
+			case "openai_image_tasks":
+				diagnostics.present(outcome.Task, "openai_image_task_create")
+				if adaptor := relay.GetTaskAdaptor(outcome.Task.Platform); adaptor != nil {
+					if converter, ok := adaptor.(channel.OpenAIImageTaskConverter); ok {
+						if body, err := converter.ConvertToOpenAIImageTask(outcome.Task); err == nil && len(body) > 0 {
+							c.Data(http.StatusAccepted, "application/json", body)
+							return
+						} else if err != nil {
+							logger.LogError(c, "convert image task creation response failed: "+err.Error())
+						}
+					}
+				}
+				createdAt := outcome.Task.CreatedAt
+				if createdAt == 0 {
+					createdAt = outcome.Task.SubmitTime
+				}
+				modelName := outcome.RelayInfo.OriginModelName
+				if modelName == "" {
+					modelName = outcome.Task.Properties.OriginModelName
+				}
+				c.JSON(http.StatusAccepted, map[string]any{
+					"id": outcome.Task.TaskID, "object": "image.task", "status": "queued",
+					"progress": 0, "created_at": createdAt, "model": modelName,
+				})
+				return
+			}
 		}
 	}
 	createdAt := outcome.Task.CreatedAt
