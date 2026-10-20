@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
@@ -36,6 +36,7 @@ import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
 import { useSeedanceAvailability } from './hooks/use-seedance-availability'
+import { useVisibleModels } from './hooks/use-visible-models'
 import { useYuanliuAvailability } from './hooks/use-yuanliu-availability'
 import { isSeedanceModel } from './lib/seedance-model'
 import { isYuanliuModel } from './lib/yuanliu-model'
@@ -67,6 +68,13 @@ export function Pricing() {
   const hasSeedanceModels = (models ?? []).some((model) =>
     isSeedanceModel(model, seedanceAvailability)
   )
+  const visibleModels = useVisibleModels(
+    models,
+    yuanliuAvailability,
+    yuanliuQuery.isError,
+    seedanceAvailability,
+    seedanceQuery.isError
+  )
 
   const {
     searchInput,
@@ -95,7 +103,7 @@ export function Pricing() {
     availableTags,
     clearFilters,
     clearSearch,
-  } = useFilters(models || [])
+  } = useFilters(visibleModels)
 
   const handleModelClick = useCallback((modelName: string) => {
     setSelectedModelName(modelName)
@@ -104,12 +112,17 @@ export function Pricing() {
   const selectedModel = useMemo(
     () =>
       selectedModelName
-        ? (models || []).find(
+        ? visibleModels.find(
             (model) => model.model_name === selectedModelName
           ) || null
         : null,
-    [models, selectedModelName]
+    [visibleModels, selectedModelName]
   )
+
+  // 模型隐藏后撤销用户的详情选择，恢复供给时不会意外重新打开。
+  useEffect(() => {
+    if (selectedModelName && !selectedModel) setSelectedModelName(null)
+  }, [selectedModelName, selectedModel])
 
   const availableGroups = useMemo(
     () =>
@@ -205,7 +218,7 @@ export function Pricing() {
             </h1>
             <p className='text-muted-foreground/80 mt-3 text-sm sm:mt-4 sm:text-base'>
               {t('This site currently has {{count}} models enabled', {
-                count: models?.length || 0,
+                count: visibleModels.length,
               })}
             </p>
             <p className='text-muted-foreground/60 mx-auto mt-2 max-w-2xl text-xs leading-relaxed sm:text-sm'>
@@ -240,7 +253,7 @@ export function Pricing() {
               groups={availableGroups}
               groupRatios={groupRatio}
               tags={availableTags}
-              models={models || []}
+              models={visibleModels}
               hasActiveFilters={hasActiveFilters}
               onClearFilters={clearFilters}
               className='hover-scrollbar sticky top-20 hidden max-h-[calc(100dvh-6rem)] self-start overflow-y-auto xl:block'
@@ -249,7 +262,7 @@ export function Pricing() {
             <main className='min-w-0 space-y-4'>
               <PricingToolbar
                 filteredCount={filteredModels.length}
-                totalCount={models?.length}
+                totalCount={visibleModels.length}
                 sortBy={sortBy}
                 onSortChange={setSortBy}
                 tokenUnit={tokenUnit}
@@ -272,7 +285,7 @@ export function Pricing() {
                 groups={availableGroups}
                 groupRatios={groupRatio}
                 tags={availableTags}
-                models={models || []}
+                models={visibleModels}
                 hasActiveFilters={hasActiveFilters}
                 activeFilterCount={activeFilterCount}
                 onClearFilters={clearFilters}

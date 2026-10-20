@@ -22,6 +22,7 @@ import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { toIntlLocale } from '@/i18n/languages'
 import { cn } from '@/lib/utils'
 
+import { getCatalogAvailabilityStatus } from '../lib/catalog-availability'
 import { isSeedanceModel } from '../lib/seedance-model'
 import { isYuanliuModel } from '../lib/yuanliu-model'
 import type {
@@ -37,9 +38,6 @@ const STATUS_VARIANTS: Record<YuanliuAvailability['status'], StatusVariant> = {
   disabled: 'danger',
   unknown: 'neutral',
 }
-
-/** 缓存状态超过三分钟后不再作为当前供给情况展示。 */
-const MAX_STATUS_AGE_MS = 3 * 60 * 1000
 
 type AvailabilityBadgeProps = {
   model: PricingModel
@@ -71,18 +69,7 @@ function CatalogAvailabilityBadge(
   const checkedAtMs = entry?.checked_at
     ? Date.parse(entry.checked_at)
     : Number.NaN
-  const now = Date.now()
-  const isRecent =
-    Number.isFinite(checkedAtMs) &&
-    checkedAtMs <= now + 60 * 1000 &&
-    now - checkedAtMs <= MAX_STATUS_AGE_MS
-  const status =
-    !props.isUnavailable &&
-    isRecent &&
-    entry?.status &&
-    Object.hasOwn(STATUS_VARIANTS, entry.status)
-      ? entry.status
-      : 'unknown'
+  const status = getCatalogAvailabilityStatus(entry, props.isUnavailable)
   const label = {
     available: t('Listed in catalog'),
     sold_out: t('Sold out'),

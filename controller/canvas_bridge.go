@@ -85,6 +85,14 @@ var canvasYuanVideoInputs = map[string]canvasVideoInputProfile{
 	"yl_video-30_76dbb7993f8e":                          {alias: "Yuan-Seedance-2.5-YL1", images: 9, total: 9},
 	"yl_api_hmstudio_seedance_v2_0_514a65db713b":        {alias: "Yuan-Seedance-2.0-YS", images: 9, total: 9},
 	"yl_lwaigc_mf_sd2_5_v2":                             {alias: "Yuan-Seedance-2.5-LW", images: 30, audios: 10, total: 40},
+	"yl_pp_md_sd25_900":                                 {alias: "Yuan-Seedance-2.5-QN-02", images: 9, total: 9},
+	"yl_pp_vg_sd25_wd":                                  {alias: "Yuan-Seedance-2.5-QN-03", images: 30, videos: 10, audios: 10, total: 40},
+	"yl_pp_md_sd25_30010":                               {alias: "Yuan-Seedance-2.5-QN-10", images: 30, audios: 10, total: 40},
+	"y_mjna_md_sd25_30010":                              {alias: "Yuan-Seedance-2.5-VX-01", images: 30, audios: 10, total: 40},
+	"yl_mjna_cd_seedance_25_720p":                       {alias: "Yuan-Seedance-2.5-VX-02", images: 9, total: 9},
+	"yl_xk_seedance2_0_903":                             {alias: "Yuan-Seedance-2.0-XK", images: 9, audios: 3, total: 12},
+	"yl_fuyao_wan3_0_video":                             {alias: "Yuan-Wan-3.0", images: 10, videos: 5, audios: 5, total: 20},
+	"yl_fuyao_wan3_0_video_prime":                       {alias: "Yuan-Wan-3.0-Prime", images: 10, videos: 5, audios: 5, total: 20},
 }
 
 // canvasCandidate 保存授权范围内的一条路由；Channel 从数据库读取时排除渠道凭据。

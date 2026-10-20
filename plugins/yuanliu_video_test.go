@@ -36,7 +36,7 @@ func yuanliuHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string,
 // TestYuanliuModelContracts 核对已适配模型、别名路由、计费单位及目录快照边界。
 func TestYuanliuModelContracts(t *testing.T) {
 	plugin := loadYuanliuPlugin(t)
-	assert.Equal(t, "1.1.0", plugin.Meta.Version)
+	assert.Equal(t, "1.2.0", plugin.Meta.Version)
 	assert.Equal(t, "https://test.yuanliuai.tsyzai.com/openapi/v1", plugin.Meta.BaseURL)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
@@ -189,7 +189,214 @@ func TestYuanliuModelContracts(t *testing.T) {
 			}
 		})
 	}
+	wantIDs = append(wantIDs,
+		"yl_pp_md_sd25_900", "yl_pp_vg_sd25_wd", "yl_pp_md_sd25_30010", "y_mjna_md_sd25_30010",
+		"yl_mjna_cd_seedance_25_720p", "yl_xk_seedance2_0_903", "yl_fuyao_wan3_0_video", "yl_fuyao_wan3_0_video_prime",
+	)
 	assert.ElementsMatch(t, wantIDs, plugin.Meta.Models)
+}
+
+// TestYuanliuOctoberModelContracts 覆盖 2026-10-19 目录新线路，保留旧模型独立回归合同。
+func TestYuanliuOctoberModelContracts(t *testing.T) {
+	plugin := loadYuanliuPlugin(t)
+	fixedRatios := []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"}
+	adaptiveRatios := append([]string{"adaptive"}, fixedRatios...)
+	models := []struct {
+		id, alias              string
+		min, max, images       int
+		videos, audios, prompt int
+		perSecond              bool
+		resolutions, ratios    []string
+		durations              []int
+	}{
+		{"yl_pp_md_sd25_900", "Yuan-Seedance-2.5-QN-02", 5, 30, 9, 0, 0, 5000, false, []string{"720p"}, []string{"16:9", "9:16", "1:1", "4:3", "3:4"}, []int{5, 10, 15, 30}},
+		{"yl_pp_vg_sd25_wd", "Yuan-Seedance-2.5-QN-03", 4, 30, 30, 10, 10, 5000, true, []string{"720p"}, []string{"16:9", "9:16"}, nil},
+		{"yl_pp_md_sd25_30010", "Yuan-Seedance-2.5-QN-10", 4, 30, 30, 0, 10, 5000, false, []string{"480p"}, []string{"16:9", "9:16"}, nil},
+		{"y_mjna_md_sd25_30010", "Yuan-Seedance-2.5-VX-01", 4, 30, 30, 0, 10, 5000, true, []string{"720p"}, fixedRatios, nil},
+		{"yl_mjna_cd_seedance_25_720p", "Yuan-Seedance-2.5-VX-02", 15, 30, 9, 0, 0, 5000, false, []string{"720p"}, adaptiveRatios, []int{15, 30}},
+		{"yl_xk_seedance2_0_903", "Yuan-Seedance-2.0-XK", 4, 15, 9, 0, 3, 5000, false, []string{"720p"}, fixedRatios, nil},
+		{"yl_fuyao_wan3_0_video", "Yuan-Wan-3.0", 2, 30, 10, 5, 5, 16000, true, []string{"480p", "720p", "1080p"}, adaptiveRatios, nil},
+		{"yl_fuyao_wan3_0_video_prime", "Yuan-Wan-3.0-Prime", 2, 30, 10, 5, 5, 16000, true, []string{"480p", "720p", "1080p"}, adaptiveRatios, nil},
+	}
+	registry := jsplugin.NewRegistry()
+	source, err := plugins.Source("yuanliu")
+	require.NoError(t, err)
+	_, err = registry.RegisterFactory(source, jsplugin.Options{})
+	require.NoError(t, err)
+	for _, model := range models {
+		t.Run(model.alias, func(t *testing.T) {
+			assert.Equal(t, model.id, plugin.Meta.ModelAliases[model.alias])
+			_, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", model.id)
+			require.True(t, found)
+			body := func() map[string]any {
+				request := map[string]any{"model": model.alias, "prompt": "ocean", "duration": model.min}
+				if model.id == "yl_pp_md_sd25_30010" {
+					request["images"] = []string{"https://cdn.example/image.png"}
+				}
+				return request
+			}
+			ctx := func(request map[string]any) map[string]any {
+				return map[string]any{
+					"model": model.alias, "upstreamModel": model.id, "requestBody": request,
+					"publicTaskId": "stable-task", "baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+				}
+			}
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model.alias, "upstreamModel": model.id, "body": map[string]any{"kind": "json", "value": body()},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(decoded)
+			require.NoError(t, err)
+			var command map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &command))
+			assert.Equal(t, model.alias, command["model"])
+			request := yuanliuHookObject(t, plugin, "buildSubmitRequest", ctx(command["requestBody"].(map[string]any)))
+			assert.Equal(t, true, request["noRetry"])
+			assert.Equal(t, "https://yuanliu.example/openapi/v1/videos", request["url"])
+			payload := request["body"].(map[string]any)
+			assert.Equal(t, model.id, payload["model"])
+			assert.Equal(t, "stable-task", payload["client_request_id"])
+			assert.Equal(t, model.resolutions[0], payload["resolution"])
+			assert.Equal(t, "16:9", payload["aspect_ratio"])
+			wantUsage := map[string]any{"count": float64(1)}
+			if model.perSecond {
+				wantUsage = map[string]any{"seconds": float64(model.min), "resolution": model.resolutions[0]}
+			}
+			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsage", ctx(body())))
+			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsageOnComplete",
+				map[string]any{"upstreamModel": model.id, "state": map[string]any{"duration": model.min, "resolution": model.resolutions[0]}},
+				map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"charged": 99999}},
+			))
+			for duration := model.min - 1; duration <= model.max+1; duration++ {
+				request := body()
+				request["duration"] = duration
+				valid := duration >= model.min && duration <= model.max
+				if len(model.durations) > 0 {
+					valid = false
+					for _, allowed := range model.durations {
+						valid = valid || duration == allowed
+					}
+				}
+				_, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx(request))
+				if valid {
+					require.NoError(t, err, "duration=%d", duration)
+				} else {
+					require.ErrorContains(t, err, "duration", "duration=%d", duration)
+				}
+			}
+			for field, values := range map[string][]string{"resolution": model.resolutions, "aspect_ratio": model.ratios} {
+				candidates := []string{"480p", "720p", "1080p", "4k"}
+				if field == "aspect_ratio" {
+					candidates = append(append([]string{"adaptive", "auto", "2:1"}, fixedRatios...), "unsupported")
+				}
+				for _, value := range candidates {
+					request := body()
+					request[field] = value
+					valid := false
+					for _, allowed := range values {
+						valid = valid || value == allowed
+					}
+					_, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx(request))
+					if valid {
+						require.NoError(t, err, "%s=%s", field, value)
+					} else {
+						require.ErrorContains(t, err, field, "%s=%s", field, value)
+					}
+				}
+			}
+			for field, limit := range map[string]int{"images": model.images, "videos": model.videos, "audios": model.audios} {
+				urls := make([]string, limit)
+				for i := range urls {
+					urls[i] = "https://cdn.example/reference"
+				}
+				request := body()
+				request[field] = urls
+				assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", ctx(request)))
+				request[field] = append(urls, "https://cdn.example/extra")
+				_, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx(request))
+				require.ErrorContains(t, err, "too many reference "+field)
+			}
+			requestBody := body()
+			requestBody["prompt"] = strings.Repeat("猫", model.prompt)
+			assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", ctx(requestBody)))
+			requestBody["prompt"] = strings.Repeat("猫", model.prompt+1)
+			_, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx(requestBody))
+			require.ErrorContains(t, err, "prompt")
+		})
+	}
+}
+
+// TestYuanliuOctoberReferenceRequirements 验证 QN-10 必填 HTTPS 图片及 Wan 素材独立输入。
+func TestYuanliuOctoberReferenceRequirements(t *testing.T) {
+	plugin := loadYuanliuPlugin(t)
+	const qn10 = "yl_pp_md_sd25_30010"
+	qnBody := map[string]any{"prompt": "ocean", "reference_images": []any{map[string]any{"url": "https://cdn.example/image.png"}}}
+	request := yuanliuHookObject(t, plugin, "buildSubmitRequest", map[string]any{
+		"upstreamModel": qn10, "requestBody": qnBody, "publicTaskId": "stable-task",
+		"baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+	})
+	assert.Equal(t, float64(30), request["body"].(map[string]any)["duration"])
+	for _, reference := range []any{nil, "http://cdn.example/image.png"} {
+		body := map[string]any{"prompt": "ocean", "duration": 4}
+		if reference != nil {
+			body["input_reference"] = reference
+		}
+		_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": qn10, "requestBody": body})
+		require.ErrorContains(t, err, "reference image")
+	}
+	images := make([]string, 30)
+	for i := range images {
+		images[i] = "https://cdn.example/image.png"
+	}
+	audios := make([]string, 10)
+	for i := range audios {
+		audios[i] = "https://cdn.example/audio.mp3"
+	}
+	assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+		"upstreamModel": qn10, "requestBody": map[string]any{"prompt": "ocean", "duration": 4, "images": images, "audios": audios},
+	}))
+	for _, model := range []string{"yl_fuyao_wan3_0_video", "yl_fuyao_wan3_0_video_prime"} {
+		t.Run(model, func(t *testing.T) {
+			for _, prompt := range []string{"", "  "} {
+				assert.NotEmpty(t, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+					"upstreamModel": model, "requestBody": map[string]any{
+						"duration": 2, "prompt": prompt, "images": []string{"https://cdn.example/image.png"},
+					},
+				}))
+			}
+			for _, field := range []string{"images", "videos", "audios"} {
+				decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": model, "body": map[string]any{"kind": "json", "value": map[string]any{
+						"model": model, "seconds": 2, field: []string{"https://cdn.example/reference"},
+					}},
+				})
+				require.NoError(t, err)
+				encoded, err := common.Marshal(decoded)
+				require.NoError(t, err)
+				var command map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &command))
+				normalized := command["requestBody"].(map[string]any)
+				assert.Equal(t, "", normalized["prompt"])
+				request := yuanliuHookObject(t, plugin, "buildSubmitRequest", map[string]any{
+					"upstreamModel": model, "requestBody": normalized, "publicTaskId": "stable-task",
+					"baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+				})
+				assert.Equal(t, true, request["noRetry"])
+			}
+			for _, body := range []map[string]any{
+				{"duration": 2}, {"duration": 2, "prompt": "  "},
+				{"duration": 2, "prompt": nil, "images": []string{"https://cdn.example/image.png"}},
+			} {
+				_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": model, "requestBody": body})
+				require.ErrorContains(t, err, "prompt")
+			}
+		})
+	}
+	_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"upstreamModel": "yl_seedance-2-5_0fab2f1b1f10",
+		"requestBody":   map[string]any{"duration": 10, "images": []string{"https://cdn.example/image.png"}},
+	})
+	require.ErrorContains(t, err, "prompt", "旧 Seedance 模型仍然必须提供提示词")
 }
 
 // TestYuanliuReferenceContracts 验证 URL 顺序、Canvas 普通角色桥接和所有拒绝边界在计费前生效。

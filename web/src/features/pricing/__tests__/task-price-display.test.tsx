@@ -42,8 +42,6 @@ import {
 } from '../lib/task-price-display'
 import type { PricingModel, BillingUsageSchema } from '../types'
 
-vi.mock('@visactor/react-vchart', () => ({ VChart: () => null }))
-
 it('shows an explicit free request price alongside token prices with distinct units', () => {
   render(
     <DynamicPricingBreakdown
@@ -444,7 +442,7 @@ it('uses the same recharge conversion and token unit in task condition prices', 
   expect(screen.getAllByText('$3/1M token')).toHaveLength(2)
 })
 
-it('switches provider group prices, localized conditions and examples, and shows unconfigured providers', async () => {
+it('switches provider group prices and localized conditions without examples, and shows unconfigured providers', async () => {
   vi.spyOn(api, 'get').mockResolvedValue({ data: { data: { groups: [] } } })
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -526,7 +524,8 @@ it('switches provider group prices, localized conditions and examples, and shows
   const alpha = screen.getByRole('tab', { name: 'Alpha' })
   expect(alpha).toHaveAttribute('aria-selected', 'true')
   let panel = screen.getByRole('tabpanel', { name: 'Alpha' })
-  expect(within(panel).getByText('Alpha sample')).toBeVisible()
+  expect(within(panel).queryByText('Alpha sample')).not.toBeInTheDocument()
+  expect(within(panel).queryByText('Price examples')).not.toBeInTheDocument()
   expect(within(panel).getByText('$0.8')).toBeVisible()
   await user.click(alpha)
   await user.keyboard('{ArrowRight}')
@@ -537,7 +536,8 @@ it('switches provider group prices, localized conditions and examples, and shows
     'true'
   )
   panel = screen.getByRole('tabpanel', { name: 'Beta' })
-  expect(within(panel).getByText('Beta sample')).toBeVisible()
+  expect(within(panel).queryByText('Beta sample')).not.toBeInTheDocument()
+  expect(within(panel).queryByText('Price examples')).not.toBeInTheDocument()
   expect(within(panel).queryByText('Alpha sample')).not.toBeInTheDocument()
   expect(within(panel).getByText('Professional mode')).toBeVisible()
   expect(within(panel).getByText('$3')).toBeVisible()

@@ -593,7 +593,7 @@ describe('model cards', () => {
     expect(screen.queryByText('Input')).not.toBeInTheDocument()
   })
 
-  it('shows a spaced task token range with its unit when an example price is present', () => {
+  it('preserves the task token range and unit while hiding a supplied example price', () => {
     render(
       <ModelCard
         model={pricingModel({
@@ -615,7 +615,8 @@ describe('model cards', () => {
     expect(screen.getByText('$42 – $70').parentElement).toHaveTextContent(
       '$42 – $70 / 1M token'
     )
-    expect(screen.getByText(/480p · 5s ≈/)).toBeVisible()
+    expect(screen.queryByText(/480p · 5s/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/≈/)).not.toBeInTheDocument()
   })
 
   it('keeps an unrecognized expression visible with the special billing message', () => {

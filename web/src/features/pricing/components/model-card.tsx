@@ -30,7 +30,6 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useBillingTime } from '../hooks/use-billing-time'
 import {
-  getCardExamplePrice,
   getDynamicDisplayGroupRatio,
   getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
@@ -114,12 +113,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [props.model, dynamicPriceOptions, currency]
   )
-  const cardExamplePrice = useMemo(
-    () => getCardExamplePrice(props.model, dynamicPriceOptions),
-    // Currency is read indirectly by the price formatter.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.model, dynamicPriceOptions, currency]
-  )
   let priceSummary: ReactNode
   if (dynamicSummary) {
     if (dynamicSummary.isSpecialExpression) {
@@ -186,11 +179,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           {dynamicSummary.isMixedBilling && (
             <span className='text-muted-foreground col-span-full text-xs'>
               {t('Token or per-call pricing')}
-            </span>
-          )}
-          {cardExamplePrice && (
-            <span className='text-muted-foreground col-span-full text-xs break-words'>
-              {cardExamplePrice.label} ≈ {cardExamplePrice.formatted}
             </span>
           )}
           {dynamicSummary.isTaskUsage &&

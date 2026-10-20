@@ -1,5 +1,40 @@
 # Yuanliu 视频插件与模型别名
 
+## 2026-10-19：补齐目录模型并隐藏不可用供给
+
+- 本轮基线工作区干净。依据北京时间 2026-10-19 15:40:40 的脱敏目录快照：当前 Key 可见 12 个视频模型，其中 8 个尚未适配、4 个历史 HD 型号名称包含“资源告罄”。该结果仅代表此 Key 的目录，不证明旧模型全局永久下架；历史 14 个型号继续兼容。
+- 插件升级为 `1.2.0`，共登记 22 个精确模型和固定别名；同步补齐 New API 的 Canvas bridge 媒体能力及模型广场识别。所有新型号沿用现有创建、查询、下载、稳定任务 ID 和禁止未知结果自动重发的协议。
+
+| 新增固定别名 | 精确上游 ID | 时长（秒） | 分辨率 | 计费 |
+| --- | --- | --- | --- | --- |
+| `Yuan-Seedance-2.5-QN-02` | `yl_pp_md_sd25_900` | 仅 5/10/15/30 | 720p | 按次 |
+| `Yuan-Seedance-2.5-QN-03` | `yl_pp_vg_sd25_wd` | 4–30 | 720p | 按秒 |
+| `Yuan-Seedance-2.5-QN-10` | `yl_pp_md_sd25_30010` | 4–30，默认 30 | 480p | 按次 |
+| `Yuan-Seedance-2.5-VX-01` | `y_mjna_md_sd25_30010` | 4–30 | 720p | 按秒 |
+| `Yuan-Seedance-2.5-VX-02` | `yl_mjna_cd_seedance_25_720p` | 仅 15/30 | 720p | 按次 |
+| `Yuan-Seedance-2.0-XK` | `yl_xk_seedance2_0_903` | 4–15 | 720p | 按次 |
+| `Yuan-Wan-3.0` | `yl_fuyao_wan3_0_video` | 2–30 | 480p/720p/1080p | 按秒 |
+| `Yuan-Wan-3.0-Prime` | `yl_fuyao_wan3_0_video_prime` | 2–30 | 480p/720p/1080p | 按秒 |
+
+- QN-10 必须有 1–30 张 HTTPS 图片，可选最多 10 个音频，总数最多 40。Wan 两型号接受仅素材生成，提示词和素材至少一项；各型提示词字符、比例和参考数量按目录合同校验。Canvas 保留既有 40 项总上限及可执行渠道能力交集。
+- 广场只隐藏 Yuan 新鲜状态中的 `sold_out` 和 `disabled`；卡片、表格、页面计数、侧栏筛选及已打开详情使用同一可见模型集合。状态失败、缺失、未知或过期保留展示；状态仍从原始模型集合刷新，可用后恢复展示。其他供应商行为不变。
+- 状态沿用既有上游目录判断：名称含“售罄/告罄”为 `sold_out`，成功目录中缺少精确 ID 为 `disabled`，失败或多 Key 抽样不确定为 `unknown`。不通过真实生成探测库存。成功目录缓存 90 秒，前端每 60 秒刷新，超过 3 分钟或未来偏差超过 60 秒视为未知。
+- 不改生产数据、渠道映射、管理员售价、依赖或全局配置。更新应用后，新型号仍需由管理员在渠道获取/启用模型并配置本站售价；上游人民币成本不会自动写入价格。Wan 的上游参考视频额外成本不新增为本站计费字段，仍按输出秒数和分辨率计量。
+- 素材仍只传 URL，不下载探测文件；素材大小、视频单段和总时长等由上游校验。无数据库迁移；回滚时先停新请求、等待在途任务，再回退应用代码并保留渠道、价格及历史任务。
+
+### 本轮验收
+
+- A1（插件/合同测试）、A2（Canvas 能力/隔离测试）、A3（广场过滤/前端回归）均已完成并由协调者验收；协调者完成最终差异审阅、跨模块验证、构建及 A4 测试配置收尾。前端沿用既有卡片、表格、筛选、详情及状态徽标；只增加共享可见性逻辑，没有替代通用 UI 封装。
+- 修改范围：`plugins/tasks/yuanliu/plugin.js`、`plugins/yuanliu_video_test.go`、`controller/canvas_bridge.go`、`controller/canvas_bridge_test.go`、`web/src/features/pricing/` 下 5 个实现及 3 个新增测试文件、`web/vitest.config.ts` 和本记录。无公共 API、数据库或配置数据格式变化。
+- `go test -mod=readonly -p=2 -json -count=1 ./...`：45 个测试包通过，5452 条测试通过事件、83 条条件跳过、0 失败；日志 `.local-tests/yuanliu/oct19-go-all.jsonl`。运行时在子进程清除外部数据库及 Redis 连接配置，使用独立临时 SQLite；未运行的外部 MySQL/PostgreSQL 矩阵不计为通过。
+- `go test -mod=readonly ./plugins ./pkg/jsplugin -count=1`、`go test ./controller -run TestCanvas -count=1` 及三个受影响包的 `go vet` 通过；22 个模型的插件、Canvas 与广场识别集合一致，新增参数、素材、计量和跨路由能力交集测试通过。
+- 在 `web` 运行 `npm run test -- src/features/pricing --maxWorkers=1 --no-isolate --pool=threads --reporter=default --reporter=json --outputFile.json=../.local-tests/yuanliu/pricing-standard-final-20261019.json`：18 文件、319 用例通过，0 失败/跳过，22.77 秒；新增 25 项覆盖模型识别、时效边界、降级恢复和真实页面交互。日志 `.local-tests/yuanliu/pricing-standard-final-20261019.log`，JSON 报告同名。`npm run typecheck`、改动文件 oxlint/oxfmt 全部通过。
+- 为让新增真实页面测试通过常规命令复跑，测试配置补齐 VisActor ESM 解析，预打包现有图标/图表依赖，并为其中真实 CJS 模块保留 Node `require`；无依赖变更、模块替身或产品构建配置变化。此前临时测试参数的通过结果不代替上述最终常规命令；JSDOM canvas/reduced-motion 提示为非阻塞环境提示，真实浏览器无控制台错误。
+- 测试配置持久化后，额外运行 `npm run test -- src/features/channels/components/__tests__/channel-configuration.test.tsx src/features/channels/components/__tests__/upstream-model-selection.test.tsx --maxWorkers=1 --no-isolate --pool=threads --testTimeout=60000`：2 文件、83 用例通过，退出码 0；日志 `.local-tests/yuanliu/channels-standard-final-20261019.log`，现有渠道获取和模型选择回归正常。
+- `npm run build` 通过，日志 `.local-tests/yuanliu/oct19-web-build.log`。随后 `go build -mod=readonly -o .local-tests/yuanliu/new-api-oct19.exe .`、最终二进制插件 lint（`yuanliu@1.2.0`）及独立临时 SQLite 启动通过；首页、状态接口和 5 个内嵌入口脚本均 HTTP 200，专用进程已退出。启动报告 `.local-tests/yuanliu/startup-1792398221584/startup-report.json`，二进制 SHA256 为 `e39343ceefa0ab0ce87882c28ac388d6ea4f4adb1ada4d2557de52bc3d4d66e1`。
+- 构建产物在 1440×1000 桌面和 390×844 手机浏览器通过 7 个场景：卡片/表格隐藏与计数筛选一致、恢复可用、详情自动关闭、全部隐藏后仍能刷新、失败/过期降级，以及手机筛选、Escape 和无水平溢出。合成数据、22 次本地 API 请求全部为 GET，无页面或控制台错误；截图已实际查看，服务已退出。报告 `.local-tests/yuanliu/catalog-ui-20261019-s4aCBD/report.json`。
+- 改动文件格式、lint、`git diff --check` 和秘密模式扫描通过；没有覆盖用户既有改动，未提交、推送或部署。未调用真实付费生成，目录状态不构成真实成片验收；图片目录未返回有效模型 JSON，本轮仅适配已核对的视频合同。
+
 ## 2026-10-10：LW 适配
 
 - P1 目标：将 `yl_lwaigc_mf_sd2_5_v2` 适配为 `Yuan-Seedance-2.5-LW`。仅增加渠道映射不能绕过插件的精确模型注册与校验。

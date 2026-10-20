@@ -1,7 +1,7 @@
 /** 源流开放 API 已核对的固定画幅；自适应名称按各渠道目录保留。 */
 const FIXED_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"];
 
-/** 已核对的模型目录合同；LW 于 2026-10-10 补入，其余保留 2026-10-08 快照，不复制人民币报价。 */
+/** 已核对的模型目录合同；新线路于 2026-10-19 补入，旧型号保留原快照，不复制人民币报价。 */
 const MODEL_SPECS = {
   "seedance-2.5-guanfang-anmiao": {
     alias: "Yuan-Seedance-2.5-Official",
@@ -175,6 +175,110 @@ const MODEL_SPECS = {
     prompt: 16000,
     billing: "per_second",
   },
+  yl_pp_md_sd25_900: {
+    alias: "Yuan-Seedance-2.5-QN-02",
+    min: 5,
+    max: 30,
+    durations: [5, 10, 15, 30],
+    resolutions: ["720p"],
+    ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    images: 9,
+    videos: 0,
+    audios: 0,
+    prompt: 5000,
+    billing: "per_call",
+  },
+  yl_pp_vg_sd25_wd: {
+    alias: "Yuan-Seedance-2.5-QN-03",
+    min: 4,
+    max: 30,
+    resolutions: ["720p"],
+    ratios: ["16:9", "9:16"],
+    images: 30,
+    videos: 10,
+    audios: 10,
+    prompt: 5000,
+    billing: "per_second",
+  },
+  yl_pp_md_sd25_30010: {
+    alias: "Yuan-Seedance-2.5-QN-10",
+    min: 4,
+    max: 30,
+    defaultDuration: 30,
+    resolutions: ["480p"],
+    ratios: ["16:9", "9:16"],
+    images: 30,
+    minImages: 1,
+    httpsImages: true,
+    videos: 0,
+    audios: 10,
+    total: 40,
+    prompt: 5000,
+    billing: "per_call",
+  },
+  y_mjna_md_sd25_30010: {
+    alias: "Yuan-Seedance-2.5-VX-01",
+    min: 4,
+    max: 30,
+    resolutions: ["720p"],
+    ratios: FIXED_RATIOS,
+    images: 30,
+    videos: 0,
+    audios: 10,
+    prompt: 5000,
+    billing: "per_second",
+  },
+  yl_mjna_cd_seedance_25_720p: {
+    alias: "Yuan-Seedance-2.5-VX-02",
+    min: 15,
+    max: 30,
+    durations: [15, 30],
+    resolutions: ["720p"],
+    ratios: ["adaptive", ...FIXED_RATIOS],
+    images: 9,
+    videos: 0,
+    audios: 0,
+    prompt: 5000,
+    billing: "per_call",
+  },
+  yl_xk_seedance2_0_903: {
+    alias: "Yuan-Seedance-2.0-XK",
+    min: 4,
+    max: 15,
+    resolutions: ["720p"],
+    ratios: FIXED_RATIOS,
+    images: 9,
+    videos: 0,
+    audios: 3,
+    prompt: 5000,
+    billing: "per_call",
+  },
+  yl_fuyao_wan3_0_video: {
+    alias: "Yuan-Wan-3.0",
+    min: 2,
+    max: 30,
+    resolutions: ["480p", "720p", "1080p"],
+    ratios: ["adaptive", ...FIXED_RATIOS],
+    images: 10,
+    videos: 5,
+    audios: 5,
+    prompt: 16000,
+    promptOrReferences: true,
+    billing: "per_second",
+  },
+  yl_fuyao_wan3_0_video_prime: {
+    alias: "Yuan-Wan-3.0-Prime",
+    min: 2,
+    max: 30,
+    resolutions: ["480p", "720p", "1080p"],
+    ratios: ["adaptive", ...FIXED_RATIOS],
+    images: 10,
+    videos: 5,
+    audios: 5,
+    prompt: 16000,
+    promptOrReferences: true,
+    billing: "per_second",
+  },
 };
 
 /** 按次模型每次请求只生成一个视频；单价由管理员以宿主货币配置。 */
@@ -193,11 +297,11 @@ export const meta = {
   key: "yuanliu",
   name: "Yuanliu Video",
   icon: "text:源流",
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "Yuanliu" },
   description: {
-    en: "Yuanliu Seedance video generation with public URL references",
-    zh: "源流 Seedance 视频生成，支持公网 URL 参考素材",
+    en: "Yuanliu Seedance and Wan video generation with public URL references",
+    zh: "源流 Seedance 与 Wan 视频生成，支持公网 URL 参考素材",
   },
   baseUrl: "https://test.yuanliuai.tsyzai.com/openapi/v1",
   modelDiscovery: { protocol: "openai", path: "/openapi/v1/models" },
@@ -315,7 +419,10 @@ function normalizeRequest(source, model) {
     throw new Error("Yuanliu supports ordinary references, not video editing or extension");
 
   const durations = [source.duration, source.seconds].filter((value) => value !== undefined).map((value) => validDuration(value, spec));
-  if (!durations.length) throw new Error("duration or seconds is required");
+  if (!durations.length) {
+    if (spec.defaultDuration === undefined) throw new Error("duration or seconds is required");
+    durations.push(validDuration(spec.defaultDuration, spec));
+  }
   const duration = consistentValue(durations, "duration", undefined);
   const rawResolutions = [source.resolution, source.size, metadata.resolution].map((value) => (typeof value === "string" ? value.toLowerCase() : value));
   const resolution = consistentValue(rawResolutions, "resolution", spec.resolutions[0]);
@@ -382,15 +489,22 @@ function normalizeRequest(source, model) {
     }
   }
   if (texts.length) request.prompt = consistentValue([source.prompt, texts.join("\n")], "prompt", undefined);
-  if (typeof request.prompt !== "string" || !request.prompt.trim() || Array.from(request.prompt).length > spec.prompt)
+  const hasReferences = request.images.length + request.videos.length + request.audios.length > 0;
+  if (spec.promptOrReferences && request.prompt === undefined) request.prompt = "";
+  if (
+    typeof request.prompt !== "string" ||
+    (!request.prompt.trim() && !(spec.promptOrReferences && hasReferences)) ||
+    Array.from(request.prompt).length > spec.prompt
+  )
     throw new Error("prompt is required and must fit the model limit");
   for (const type of ["images", "videos", "audios"])
     if (request[type].length > spec[type]) throw new Error("too many reference " + type + " for Yuanliu model");
+  if (spec.minImages && request.images.length < spec.minImages) throw new Error("Yuanliu model requires at least one reference image");
+  if (spec.httpsImages && request.images.some((url) => !url.startsWith("https://"))) throw new Error("Yuanliu model requires HTTPS reference images");
   if (spec.audioRequiresImage && request.audios.length && !request.images.length)
     throw new Error("Yuanliu LW audio references require at least one reference image");
   if (spec.total && request.images.length + request.videos.length + request.audios.length > spec.total) throw new Error("too many total Yuanliu references");
   const mode = consistentValue([source.mode, metadata.mode], "mode", undefined);
-  const hasReferences = request.images.length + request.videos.length + request.audios.length > 0;
   if (mode !== undefined && !["text_to_video", "image_to_video", "reference_to_video", "omni_reference"].includes(mode))
     throw new Error("unsupported Yuanliu video mode");
   if (

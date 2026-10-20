@@ -940,6 +940,7 @@ func canvasReferenceInputs(images, videos, audios int) []canvasInputMedium {
 // TestCanvasBridgeYuanReferenceInputs 验证源流精确 ID 和别名的目录、参考边界及真实插件校验，全程不发送生成请求。
 func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 	const lwModel, lwAlias = "yl_lwaigc_mf_sd2_5_v2", "Yuan-Seedance-2.5-LW"
+	const qn10Model = "yl_pp_md_sd25_30010"
 	db := setupCanvasBridgeDB(t, "sqlite")
 	transport := blockCanvasEstimateNetwork(t)
 	plugin, found := jsplugin.DefaultRegistry.Generation().Get("yuanliu")
@@ -1000,6 +1001,13 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 			if upstream == "yl_video-30_76dbb7993f8e" {
 				seconds = 30
 			}
+			if upstream == "yl_mjna_cd_seedance_25_720p" {
+				seconds = 15
+			}
+			resolution := "720p"
+			if upstream == qn10Model {
+				resolution = "480p"
+			}
 			types := []string{"text", "image"}
 			if input.videos > 0 {
 				types = append(types, "video")
@@ -1026,7 +1034,7 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 				media := canvasReferenceInputs(input.images, input.videos, min(input.audios, input.total-input.images-input.videos))
 				response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
 					Model: name, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
-					Parameters: map[string]any{"seconds": seconds, "resolution": "720p", "mode": "omni_reference"}, InputMedia: media,
+					Parameters: map[string]any{"seconds": seconds, "resolution": resolution, "mode": "omni_reference"}, InputMedia: media,
 				})
 				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 				var estimate canvasEstimatePayload
@@ -1046,7 +1054,7 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 						urls[i] = fmt.Sprintf("https://canvas-estimate.invalid/%d", i)
 					}
 					body := map[string]any{"model": upstream, "seconds": seconds, "prompt": "Animate the supplied references", bound.kind + "s": urls}
-					if upstream == lwModel && bound.kind == "audio" && count > 0 {
+					if (upstream == lwModel && bound.kind == "audio" && count > 0) || (upstream == qn10Model && bound.kind != "image") {
 						media = append(canvasReferenceInputs(1, 0, 0), media...)
 						body["images"] = []string{"https://canvas-estimate.invalid/image.png"}
 					}
@@ -1069,6 +1077,34 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 			}
 		})
 	}
+	t.Run("new-model-specific-limits", func(t *testing.T) {
+		for _, test := range []struct {
+			name, upstream, alias string
+			parameters            map[string]any
+			media                 []canvasInputMedium
+			status                int
+		}{
+			{"QN-02-discrete-duration", "yl_pp_md_sd25_900", "Yuan-Seedance-2.5-QN-02", map[string]any{"seconds": 6}, canvasReferenceInputs(1, 0, 0), http.StatusBadRequest},
+			{"QN-03-total-40", "yl_pp_vg_sd25_wd", "Yuan-Seedance-2.5-QN-03", map[string]any{"seconds": 4}, canvasReferenceInputs(20, 10, 10), http.StatusOK},
+			{"QN-03-total-41", "yl_pp_vg_sd25_wd", "Yuan-Seedance-2.5-QN-03", map[string]any{"seconds": 4}, canvasReferenceInputs(21, 10, 10), http.StatusBadRequest},
+			{"QN-10-requires-image", qn10Model, "Yuan-Seedance-2.5-QN-10", map[string]any{"seconds": 4}, nil, http.StatusBadRequest},
+			{"QN-10-480p", qn10Model, "Yuan-Seedance-2.5-QN-10", map[string]any{"seconds": 4, "resolution": "480p"}, canvasReferenceInputs(1, 0, 0), http.StatusOK},
+			{"QN-10-rejects-720p", qn10Model, "Yuan-Seedance-2.5-QN-10", map[string]any{"seconds": 4, "resolution": "720p"}, canvasReferenceInputs(1, 0, 0), http.StatusBadRequest},
+			{"VX-02-rejects-10-seconds", "yl_mjna_cd_seedance_25_720p", "Yuan-Seedance-2.5-VX-02", map[string]any{"seconds": 10}, canvasReferenceInputs(1, 0, 0), http.StatusBadRequest},
+			{"Wan-1080p", "yl_fuyao_wan3_0_video", "Yuan-Wan-3.0", map[string]any{"seconds": 2, "resolution": "1080p"}, canvasReferenceInputs(1, 0, 0), http.StatusOK},
+			{"Wan-Prime-1080p", "yl_fuyao_wan3_0_video_prime", "Yuan-Wan-3.0-Prime", map[string]any{"seconds": 2, "resolution": "1080p"}, canvasReferenceInputs(1, 0, 0), http.StatusOK},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				for _, name := range []string{test.upstream, test.alias} {
+					response := canvasBridgeRequest(t, router, http.MethodPost, "/v1/canvas/estimate", "", canvasEstimateRequest{
+						Model: name, Contract: "newapi-video-v1", InputText: "Animate the supplied references",
+						Parameters: test.parameters, InputMedia: test.media,
+					})
+					assert.Equal(t, test.status, response.Code, "%s: %s", name, response.Body.String())
+				}
+			})
+		}
+	})
 	t.Run("LW-metadata-content", func(t *testing.T) {
 		const prompt = "@Image2 moves to @Audio1"
 		for _, name := range []string{lwModel, lwAlias} {
@@ -1177,6 +1213,8 @@ func TestCanvasBridgeYuanRouteIntersection(t *testing.T) {
 		{"mapped-image-only", full, []string{"yl_g7zy_seedance_v2_5"}, "", false, []string{"text", "image"}, 30, 0, 0, true, true},
 		{"intersection-counts", full, []string{full, ysFull}, "", false, []string{"text", "image", "video", "audio"}, 10, 10, 10, true, true},
 		{"intersection-types", full, []string{full, "yl_g7zy_seedance_v2_0_std"}, "", false, []string{"text", "image"}, 9, 0, 0, true, true},
+		{"new-model-intersection-types", "yl_pp_md_sd25_900", []string{"yl_pp_md_sd25_900", "yl_pp_md_sd25_30010"}, "", false, []string{"text", "image"}, 9, 0, 0, true, true},
+		{"new-model-intersection-counts", "yl_pp_vg_sd25_wd", []string{"yl_pp_vg_sd25_wd", "yl_fuyao_wan3_0_video"}, "", false, []string{"text", "image", "video", "audio"}, 10, 5, 5, true, true},
 		{"unpriced-route-ignored", full, []string{full, full}, "canvas-yuan-unpriced", false, []string{"text", "image", "video", "audio"}, 30, 5, 5, true, true},
 		{"unknown-mapping", full, []string{"unadapted-upstream"}, "", false, nil, 1, 0, 0, false, false},
 		{"unknown-public-alias", "Yuan-Seedance-2.5-HD-Full-v2", []string{full}, "", false, []string{"text"}, 1, 0, 0, true, false},
@@ -1224,7 +1262,11 @@ export function buildContentRequest(){throw new Error("must never query");}
 				require.NoError(t, db.Model(channel).Updates(values).Error)
 			}
 			model.InitChannelCache()
-			withTieredBillingConfig(t, map[string]string{test.public: "tiered_expr"}, map[string]string{test.public: `u("count") * 0.2`})
+			quantity := "count"
+			if test.public == "yl_pp_vg_sd25_wd" {
+				quantity = "seconds"
+			}
+			withTieredBillingConfig(t, map[string]string{test.public: "tiered_expr"}, map[string]string{test.public: fmt.Sprintf(`u(%q) * 0.2`, quantity)})
 			router := gin.New()
 			router.Use(func(c *gin.Context) {
 				common.SetContextKey(c, constant.ContextKeyUserGroup, "default")

@@ -32,7 +32,27 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     server: {
-      deps: { inline: [/@lobehub\//, /antd-style/] },
+      deps: { inline: [/@lobehub\//, /antd-style/, /@visactor\//] },
+    },
+    deps: {
+      optimizer: {
+        client: {
+          enabled: true,
+          include: [
+            '@lobehub/icons',
+            'antd-style',
+            '@visactor/react-vchart',
+            '@visactor/vchart',
+          ],
+          rolldownOptions: {
+            output: {
+              // 真实 CJS 依赖在 Vitest 的 ESM 预打包产物中仍需 Node require。
+              intro:
+                'import { createRequire as __testCreateRequire } from "node:module"; const require = __testCreateRequire(import.meta.url);',
+            },
+          },
+        },
+      },
     },
     setupFiles: ['./src/test-setup.ts'],
     clearMocks: true,

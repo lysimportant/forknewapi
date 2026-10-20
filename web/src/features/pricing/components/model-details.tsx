@@ -69,7 +69,6 @@ import { useYuanliuAvailability } from '../hooks/use-yuanliu-availability'
 import type { ParsedTaskTier } from '../lib/billing-expr'
 import { formatBillingCondition } from '../lib/billing-expression/condition-display'
 import {
-  formatTaskUsageUnitPrice,
   getDynamicPriceEntries,
   getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
@@ -83,11 +82,7 @@ import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { withPluginPricing } from '../lib/plugin-pricing'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
-import {
-  evaluateTaskUsageExamples,
-  getTaskEnumFields,
-  getTaskNumberFields,
-} from '../lib/task-expr'
+import { getTaskEnumFields, getTaskNumberFields } from '../lib/task-expr'
 import { getTaskPricingDisplayTiers } from '../lib/task-matrix-display'
 import {
   hasSimpleTaskPricing,
@@ -1192,11 +1187,6 @@ function ProviderGroupPricingSection(
       )
     }
 
-    const usageExampleRows = evaluateTaskUsageExamples(
-      props.model.billing_expr,
-      props.model.billing_usage_schema,
-      props.model.billing_usage_examples
-    )
     const priceFields = getDynamicPriceFields(dynamicTiers, {
       tokenUnit: props.tokenUnit,
       showRechargePrice,
@@ -1325,46 +1315,6 @@ function ProviderGroupPricingSection(
                     }),
                   ]}
                 />
-                {usageExampleRows.length > 0 ? (
-                  <div className='border-t'>
-                    <div className='text-muted-foreground px-3 pt-2 text-[10px] font-medium tracking-wider uppercase'>
-                      {t('Price examples')}
-                    </div>
-                    <StaticDataTable
-                      className='rounded-none border-0'
-                      tableClassName='text-sm'
-                      headerRowClassName='hover:bg-transparent'
-                      data={usageExampleRows}
-                      getRowKey={(row) => `${group}-${row.label}`}
-                      columns={[
-                        {
-                          id: 'spec',
-                          header: t('Spec'),
-                          className: thClass,
-                          cellClassName: 'text-muted-foreground py-2.5',
-                          cell: (row) => row.label,
-                        },
-                        {
-                          id: 'price',
-                          header: t('Example price'),
-                          className: `${thClass} text-right`,
-                          cellClassName: 'py-2.5 text-right font-mono',
-                          cell: (row) =>
-                            `≈ ${formatTaskUsageUnitPrice(row.total, {
-                              tokenUnit: props.tokenUnit,
-                              showRechargePrice,
-                              priceRate: props.priceRate,
-                              usdExchangeRate: props.usdExchangeRate,
-                              groupRatioMultiplier: ratio,
-                            })}`,
-                        },
-                      ]}
-                    />
-                    <p className='text-muted-foreground/40 px-3 pb-2 text-[10px]'>
-                      {t('Approximate prices for common specs.')}
-                    </p>
-                  </div>
-                ) : null}
               </div>
             )
           })}

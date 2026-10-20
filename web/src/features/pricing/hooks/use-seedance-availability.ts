@@ -22,7 +22,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getSeedanceAvailability } from '../api'
 
-/** 定期刷新目录；失败时由界面显示未知，保留模型及最近的目录身份信息。 */
+/** 定期刷新目录，保留最近的目录身份信息供广场判断模型可见性。 */
 export function useSeedanceAvailability() {
   return useQuery({
     queryKey: ['pricing', 'seedance-availability'],
