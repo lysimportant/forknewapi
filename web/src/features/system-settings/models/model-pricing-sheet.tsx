@@ -335,10 +335,12 @@ export const ModelPricingEditorPanel = forwardRef<
   )
   const livePluginVariants =
     pluginVariants?.filter((variant) => !variant.stale) ?? []
-  const seedanceDefault =
+  const unifiedVideoDefault =
     taskPluginKey === 'seedance-video' ||
+    taskPluginKey === 'yuanliu' ||
     (livePluginVariants.length === 1 &&
-      livePluginVariants[0].plugin_key === 'seedance-video')
+      (livePluginVariants[0].plugin_key === 'seedance-video' ||
+        livePluginVariants[0].plugin_key === 'yuanliu'))
   const taskUsageSchema =
     usageSchema ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??
@@ -347,18 +349,18 @@ export const ModelPricingEditorPanel = forwardRef<
     usageExamplesByModel.get(watchedValues.name.trim()) ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_examples
   const defaultTaskBillingExpr = useMemo(() => {
-    if (seedanceDefault) return DEFAULT_SEEDANCE_BILLING_EXPR
+    if (unifiedVideoDefault) return DEFAULT_SEEDANCE_BILLING_EXPR
     if (!taskUsageSchema) return ''
     return generateTaskExprFromConfig(
       createDefaultTaskVisualConfig(taskUsageSchema),
       taskUsageSchema
     )
-  }, [taskUsageSchema, seedanceDefault])
+  }, [taskUsageSchema, unifiedVideoDefault])
   const resolvedBillingExpr =
     taskUsageSchema &&
     (!billingExpr ||
       (billingExpr === DEFAULT_TOKEN_BILLING_EXPR &&
-        (!seedanceDefault || !editData?.billingExpr)))
+        (!unifiedVideoDefault || !editData?.billingExpr)))
       ? defaultTaskBillingExpr
       : billingExpr
 
@@ -821,7 +823,7 @@ export const ModelPricingEditorPanel = forwardRef<
     [form, validatePricingValues, buildSubmitData]
   )
 
-  const UsagePricingEditor = seedanceDefault
+  const UsagePricingEditor = unifiedVideoDefault
     ? SeedanceUsagePricingEditor
     : TaskUsagePricingEditor
   const expressionEditor = taskUsageSchema ? (
@@ -960,14 +962,18 @@ export const ModelPricingEditorPanel = forwardRef<
                     className='gap-4'
                   >
                     <TabsList className='grid w-full grid-cols-3'>
-                      <TabsTrigger value='tiered_expr'>
-                        {t('Expression')}
+                      <TabsTrigger value='tiered_expr' className='min-w-0'>
+                        <span className='truncate'>{t('Expression')}</span>
                       </TabsTrigger>
-                      <TabsTrigger value='per-token'>
-                        {t('Per-token (deprecated)')}
+                      <TabsTrigger value='per-token' className='min-w-0'>
+                        <span className='truncate'>
+                          {t('Per-token (deprecated)')}
+                        </span>
                       </TabsTrigger>
-                      <TabsTrigger value='per-request'>
-                        {t('Per-request (deprecated)')}
+                      <TabsTrigger value='per-request' className='min-w-0'>
+                        <span className='truncate'>
+                          {t('Per-request (deprecated)')}
+                        </span>
                       </TabsTrigger>
                     </TabsList>
 

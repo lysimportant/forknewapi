@@ -147,10 +147,11 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
       </TabsContent>
       {props.variants.map((variant) => {
         const key = variant.plugin_key
-        const UsagePricingEditor =
-          key === 'seedance-video'
-            ? SeedanceUsagePricingEditor
-            : TaskUsagePricingEditor
+        const usesUnifiedVideoPricing =
+          key === 'seedance-video' || key === 'yuanliu'
+        const UsagePricingEditor = usesUnifiedVideoPricing
+          ? SeedanceUsagePricingEditor
+          : TaskUsagePricingEditor
         const separate = Object.hasOwn(props.expressions, key)
         if (variant.stale) {
           return (
@@ -229,7 +230,7 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
                   }
                   if (usesExpression && modelCompatible) {
                     next[key] = props.modelExpression
-                  } else if (key === 'seedance-video') {
+                  } else if (usesUnifiedVideoPricing) {
                     next[key] = DEFAULT_SEEDANCE_BILLING_EXPR
                   } else {
                     next[key] = generateTaskExprFromConfig(

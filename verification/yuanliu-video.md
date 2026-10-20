@@ -146,3 +146,45 @@
 - 规划与双边合同核对、插件与别名导入实现、完整 Go/前端回归及 HTTP/浏览器验证完成；主代理和原负责子代理已审查最终差异，没有其他阻断项。
 - 本地映射校验提示已复用现有七语言翻译；供应商错误保持原文。最终类型检查、构建及隔离启动通过；真实密钥扫描和差异检查通过，源码无用户提供凭据。
 - 交付引用为 `fork/main` 和附注 Tag `v2026.10.08-yuanliu-video`，任务提交主题 `feat(yuanliu): 新增视频插件与模型别名自动映射`。提交与远端同步状态以 Git 引用核验；不部署生产、不请求真实付费生成。
+
+## 2026-10-20：动态型号与可切换计费
+
+- Yuanliu 插件更新为 `1.3.0`，采用现有 `modelRouting: "channel"`：渠道获取目录时保留上游精确 ID，新型号无需逐个加入插件清单。新获取不再生成新的 `Yuan-` 别名；已经保存的渠道映射和插件内部旧别名解析继续保留，不自动改写配置。
+- 新型号沿用 Yuanliu 统一视频协议，仅校验通用参数边界；旧型号仍按已核对的参数快照校验。动态发现不等于确认上游能力，Canvas 对未知型号仅声明文生能力，不按名称推测全能参考限制。
+- 插件在预估和成功结算时统一报告 `count=1`、`seconds`、`resolution`，管理员在模型定价的“按次 / 清晰度 × 秒数 / 表达式编辑器”Tab 中选择站点计费方式。按秒模式提供 480p、720p、1080p、2K 四档独立单价，保存使用 Yuan 的 `resolution`，Seedance 仍使用其原有 `video_resolution`。
+- 复用现有 Seedance 编辑器和模型定价保存接口；切换计费方式保留各自草稿，打开页面不写回配置。旧表达式和请求规则保持原值，复杂公式继续在表达式编辑器打开，切换为简易模式须确认。上游报价不自动导入本站售价，旧价格无需迁移。
+- 目录状态仍保持 Yuan 原有边界：空目录按查询失败处理，缺名称保持未知，明确售罄或停用才隐藏；动态 ID 不再被静态清单过滤。其他插件的全局型号名称冲突保护保持不变。
+- 改动无数据库迁移、公共 API 或配置格式变更。回滚应用代码前停止新建请求并等待在途任务结束；保留渠道映射、价格及任务记录。新动态型号是否支持某个参数仍以供应商响应为准。
+
+### 验证范围
+
+- 插件、宿主运行时、model、service、middleware 全包测试通过：`go test -mod=readonly ./plugins ./pkg/jsplugin ./model ./service ./middleware -count=1`。
+- controller 全包测试通过：`go test -mod=readonly ./controller -count=1 -timeout=20m`，耗时 420.454 秒，日志 `.local-tests/yuan-tabs-20261020/controller-tests.log`。首轮在无关安全模块 SQLite 初始化中触及 Go 默认 10 分钟上限；调整本次运行上限后整包通过，未修改测试配置和断言。
+- `go vet -mod=readonly ./plugins ./pkg/jsplugin ./controller ./model ./service ./middleware`、Go 构建和 `plugin lint plugins/tasks/yuanliu/plugin.js` 通过。
+- 前端真实组件回归 Yuan 7/7、既有插件定价 19/19 通过；串行运行并将本次单项等待上限设为 30 秒。首次默认 5 秒上限下部分既有用例超时，之后未修改项目超时配置、未删减用例或放宽业务断言。
+- `npm run typecheck`、`npm run build -- --dist-path ../.local-tests/yuan-tabs-20261020/dist`、涉及文件 oxlint/保护版权头的 oxfmt 检查和 `git diff --check` 通过。Bun 不在当前 PATH，直接使用已有 Node/npm 和已安装依赖；构建写入独立忽略目录，未覆盖现有 `web/dist`。
+- 本地浏览器 1440px、390px 两种视口通过：按次/按秒切换、四档清晰度独立单价、键盘切换、模型默认与提供方独立草稿、PATCH 保存及刷新恢复。保存使用 `resolution` 且不含 `video_resolution`；未发现页面横向溢出、页面异常或控制台错误。手机端旧计费标签改为省略显示，标签边界检查及实际截图通过。
+- 浏览器使用随机回环静态服务、合成管理员和模拟定价接口，所有网络均本地拦截。站点侧栏 GitHub 版本查询也返回本地合成列表，未访问真实外部接口。脚本 `.local-tests/yuan-tabs-20261020/browser-check.cjs`、结果 `browser-results.json`、截图 `1440-seconds.png`、`390-seconds.png`、`390-provider.png`；检查后专用服务和浏览器均已退出。
+- 本轮使用独立临时 SQLite、合成数据和回环模拟；目录获取保留精确 ID 和旧映射，Canvas 的按次/按秒估价和目录查询不调用上游。没有读取生产数据库、部署应用、提交或推送，也没有执行真实供应商付费生成。
+- 本轮执行了上述相关 Go 包全量和前端定向回归，未重跑整个仓库的全部 Go/前端测试；未验证真实供应商新型号的参数能力和成片质量。
+
+### 分工与兼容性
+
+- Y1（`yuan_dynamic`）：插件动态型号与完整用量事实、插件回归，已完成。
+- Y2（`hide_price_examples`，复用既有 Agent 名）：共享定价 Tab 和 Yuan 组件回归，已完成；本轮未再次修改上一轮的广场价格示例。
+- 主 Agent：目录可用性、动态渠道与 Canvas 估价契约、模型默认编辑入口、移动端标签适配、构建和浏览器验收。
+- 所有必需任务均已完成并集成验收，无遗留 active/blocked 任务。
+- 本轮开始工作区干净；全部改动均在本任务范围，未覆盖用户其他工作。没有新增依赖、锁文件或翻译键；现有中英文等语言文案直接复用。
+
+### 改动文件
+
+- 插件与用量契约：`plugins/tasks/yuanliu/plugin.js`、`plugins/yuanliu_video_test.go`。
+- 动态目录和估价回归：`controller/pricing_yuanliu_availability.go`、`controller/channel_upstream_update_test.go`、`controller/canvas_bridge_test.go`、`controller/canvas_bridge_yuanliu_test.go`。
+- 定价界面：`web/src/features/system-settings/models/model-pricing-sheet.tsx`、`seedance-usage-pricing-editor.tsx`、`task-plugin-pricing-editor.tsx`，以及同模块 `__tests__/yuanliu-pricing.test.tsx`。
+- 本验证记录：`verification/yuanliu-video.md`。
+
+### 使用步骤
+
+1. 在 Yuan 渠道中点击“获取模型”，选择需要的上游精确 ID 并保存渠道。
+2. 在模型定价中选择“按次”或“清晰度 × 秒数”，填写本站单价后保存；需要时也可为 Yuan 提供方配置独立价格。
+3. 已有 `Yuan-` 别名、渠道映射和表达式继续使用；新型号无需更新插件，但仍需管理员选择保存并配置售价，不自动导入供应商报价。

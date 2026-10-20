@@ -945,26 +945,18 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 	transport := blockCanvasEstimateNetwork(t)
 	plugin, found := jsplugin.DefaultRegistry.Generation().Get("yuanliu")
 	require.True(t, found)
-	require.Contains(t, plugin.Meta.Models, lwModel)
-	require.Equal(t, lwModel, plugin.Meta.ModelAliases[lwAlias])
+	require.Equal(t, "channel", plugin.Meta.ModelRouting)
+	require.Equal(t, lwAlias, canvasYuanVideoInputs[lwModel].alias)
 	lwSchema, _ := plugin.Meta.UsageForModel(lwModel)
 	require.Contains(t, lwSchema, "seconds")
 	modes, expressions := make(map[string]string), make(map[string]string)
 	mapping := make(map[string]string)
-	names := make([]string, 0, len(plugin.Meta.Models)*2)
-	for _, upstream := range plugin.Meta.Models {
-		input, known := canvasYuanVideoInputs[upstream]
-		require.True(t, known, upstream)
-		require.Equal(t, upstream, plugin.Meta.ModelAliases[input.alias])
+	names := make([]string, 0, len(canvasYuanVideoInputs)*2)
+	for upstream, input := range canvasYuanVideoInputs {
 		mapping[input.alias] = upstream
-		schema, _ := plugin.Meta.UsageForModel(upstream)
-		quantity := "count"
-		if _, perSecond := schema["seconds"]; perSecond {
-			quantity = "seconds"
-		}
 		for _, name := range []string{upstream, input.alias} {
 			names = append(names, name)
-			modes[name], expressions[name] = "tiered_expr", fmt.Sprintf(`u(%q) * 0.2`, quantity)
+			modes[name], expressions[name] = "tiered_expr", `u("seconds") * 0.2`
 		}
 	}
 	encodedMapping, err := common.Marshal(mapping)
@@ -994,7 +986,7 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 	for _, item := range catalog.Models {
 		byID[item.ID] = item
 	}
-	for _, upstream := range plugin.Meta.Models {
+	for upstream := range canvasYuanVideoInputs {
 		t.Run(upstream, func(t *testing.T) {
 			input := canvasYuanVideoInputs[upstream]
 			seconds := 10
@@ -1019,11 +1011,7 @@ func TestCanvasBridgeYuanReferenceInputs(t *testing.T) {
 			for i := range types {
 				mentionTypes[i] = types[i]
 			}
-			schema, _ := plugin.Meta.UsageForModel(upstream)
-			quota := 100000
-			if _, perSecond := schema["seconds"]; perSecond {
-				quota *= seconds
-			}
+			quota := 100000 * seconds
 			for _, name := range []string{upstream, input.alias} {
 				item, exists := byID[name]
 				require.True(t, exists, name)
@@ -1215,11 +1203,11 @@ func TestCanvasBridgeYuanRouteIntersection(t *testing.T) {
 		{"intersection-types", full, []string{full, "yl_g7zy_seedance_v2_0_std"}, "", false, []string{"text", "image"}, 9, 0, 0, true, true},
 		{"new-model-intersection-types", "yl_pp_md_sd25_900", []string{"yl_pp_md_sd25_900", "yl_pp_md_sd25_30010"}, "", false, []string{"text", "image"}, 9, 0, 0, true, true},
 		{"new-model-intersection-counts", "yl_pp_vg_sd25_wd", []string{"yl_pp_vg_sd25_wd", "yl_fuyao_wan3_0_video"}, "", false, []string{"text", "image", "video", "audio"}, 10, 5, 5, true, true},
-		{"unpriced-route-ignored", full, []string{full, full}, "canvas-yuan-unpriced", false, []string{"text", "image", "video", "audio"}, 30, 5, 5, true, true},
-		{"unknown-mapping", full, []string{"unadapted-upstream"}, "", false, nil, 1, 0, 0, false, false},
+		{"globally-claimed-model-refuses-yuan-route", full, []string{full, full}, "canvas-yuan-unpriced", false, []string{"text"}, 1, 0, 0, false, false},
+		{"new-upstream-keeps-conservative-media", full, []string{"future-upstream"}, "", false, []string{"text"}, 1, 0, 0, true, false},
 		{"unknown-public-alias", "Yuan-Seedance-2.5-HD-Full-v2", []string{full}, "", false, []string{"text"}, 1, 0, 0, true, false},
 		{"mixed-plugins", full, []string{full, full}, "canvas-yuan-mixed", false, []string{"text"}, 1, 0, 0, true, false},
-		{"ambiguous-alias-in-hidden-group", "Yuan-Seedance-2.5-HD-Full", []string{full, ysFull}, "", true, nil, 1, 0, 0, false, false},
+		{"same-plugin-alias-in-hidden-group", "Yuan-Seedance-2.5-HD-Full", []string{full, ysFull}, "", true, []string{"text", "image", "video", "audio"}, 30, 10, 0, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := setupCanvasBridgeDB(t, "sqlite")

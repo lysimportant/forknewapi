@@ -1,7 +1,7 @@
 /** 源流开放 API 已核对的固定画幅；自适应名称按各渠道目录保留。 */
 const FIXED_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"];
 
-/** 已核对的模型目录合同；新线路于 2026-10-19 补入，旧型号保留原快照，不复制人民币报价。 */
+/** 已核对型号的参数兼容快照；动态新型号使用通用协议校验，不复制人民币报价。 */
 const MODEL_SPECS = {
   "seedance-2.5-guanfang-anmiao": {
     alias: "Yuan-Seedance-2.5-Official",
@@ -281,23 +281,48 @@ const MODEL_SPECS = {
   },
 };
 
-/** 按次模型每次请求只生成一个视频；单价由管理员以宿主货币配置。 */
-const CALL_SCHEMA = {
+/** 每次生成一个视频，同时报告时长和清晰度；管理员选择本站计价表达式。 */
+const USAGE_SCHEMA = {
   count: {
     type: "number",
     unit: "count",
     unitLabel: { en: "video", zh: "个" },
     description: { en: "Video generation unit price", zh: "视频生成单价" },
   },
+  seconds: {
+    type: "number",
+    unit: "second",
+    description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  resolution: {
+    enum: ["480p", "720p", "1080p", "2k"],
+    description: { en: "Output video resolution", zh: "输出视频分辨率" },
+    enumLabels: { "2k": { en: "2K", zh: "2K" } },
+  },
 };
 
-/** 源流任务插件元信息；声明目录与精确别名，不占用其他厂商的原生路由。 */
+/** 旧展示别名仅在已绑定渠道内部解析，不注册全局模型路由。 */
+const MODEL_ALIASES = Object.fromEntries(Object.entries(MODEL_SPECS).map(([model, spec]) => [spec.alias, model]));
+
+/** 通用协议边界，不代表上游模型能力；具体型号限制由上游校验。 */
+const GENERIC_SPEC = {
+  min: 1,
+  max: 3600,
+  resolutions: ["720p", "480p", "1080p", "2k"],
+  ratios: ["auto", "adaptive", ...FIXED_RATIOS],
+  images: Number.MAX_SAFE_INTEGER,
+  videos: Number.MAX_SAFE_INTEGER,
+  audios: Number.MAX_SAFE_INTEGER,
+  prompt: Number.MAX_SAFE_INTEGER,
+};
+
+/** 模型由渠道目录和映射授权；不占用其他厂商的原生路由。 */
 export const meta = {
   apiVersion: 1,
   key: "yuanliu",
   name: "Yuanliu Video",
   icon: "text:源流",
-  version: "1.2.0",
+  version: "1.3.0",
   author: { name: "Yuanliu" },
   description: {
     en: "Yuanliu Seedance and Wan video generation with public URL references",
@@ -305,35 +330,12 @@ export const meta = {
   },
   baseUrl: "https://test.yuanliuai.tsyzai.com/openapi/v1",
   modelDiscovery: { protocol: "openai", path: "/openapi/v1/models" },
-  models: Object.keys(MODEL_SPECS),
-  modelAliases: Object.fromEntries(Object.entries(MODEL_SPECS).map(([model, spec]) => [spec.alias, model])),
+  models: [],
+  modelRouting: "channel",
   fetchMode: "per_task",
   protocols: ["openai_video"],
   requiredCapabilities: ["task-submit-no-retry@1"],
-  usageSchema: CALL_SCHEMA,
-  usageProfiles: Object.entries(MODEL_SPECS).map(([model, spec]) => ({
-    models: [model],
-    schema:
-      spec.billing === "per_call"
-        ? CALL_SCHEMA
-        : {
-            seconds: {
-              type: "number",
-              unit: "second",
-              description: {
-                en: "Video generation unit price",
-                zh: "视频生成单价",
-              },
-            },
-            resolution: {
-              enum: spec.resolutions,
-              description: {
-                en: "Output video resolution",
-                zh: "输出视频分辨率",
-              },
-            },
-          },
-  })),
+  usageSchema: USAGE_SCHEMA,
 };
 
 /** 客户端字段仅覆盖已确认开放协议及 Canvas 普通参考桥接，未知语义必须显式拒绝。 */
@@ -355,11 +357,16 @@ const REQUEST_FIELDS = [
   "mode",
 ];
 
-/** 将精确展示别名解析为上游 ID；未知或未适配模型不继承相似型号能力。 */
+/** 只解析精确旧别名，未知型号不继承名称相似的型号能力或计费方式。 */
+function upstreamModel(model) {
+  if (typeof model !== "string" || !model.trim()) throw new Error("model is required");
+  return Object.prototype.hasOwnProperty.call(MODEL_ALIASES, model) ? MODEL_ALIASES[model] : model;
+}
+
+/** 已知型号保持参数限制，渠道动态型号使用通用协议边界。 */
 function modelSpec(model) {
-  const upstream = meta.modelAliases[model] || model;
-  if (!Object.prototype.hasOwnProperty.call(MODEL_SPECS, upstream)) throw new Error("unsupported Yuanliu model");
-  return MODEL_SPECS[upstream];
+  const upstream = upstreamModel(model);
+  return Object.prototype.hasOwnProperty.call(MODEL_SPECS, upstream) ? MODEL_SPECS[upstream] : GENERIC_SPEC;
 }
 
 /** 验证整秒范围和离散档位；数字字符串只用于 multipart/seconds 兼容，不接受自动时长。 */
@@ -526,7 +533,7 @@ function normalizeRequest(source, model) {
 export function buildSubmitRequest(ctx) {
   if ((ctx.files || []).length) throw new Error("Yuanliu references require public URLs; file uploads are unsupported");
   if (ctx.action && !["text_to_video", "image_to_video", "reference_to_video"].includes(ctx.action)) throw new Error("unsupported Yuanliu action");
-  const model = meta.modelAliases[ctx.upstreamModel || ctx.model] || ctx.upstreamModel || ctx.model;
+  const model = upstreamModel(ctx.upstreamModel || ctx.model);
   const body = normalizeRequest(ctx.requestBody, model);
   if (typeof ctx.publicTaskId !== "string" || !ctx.publicTaskId.trim() || ctx.publicTaskId.length > 100)
     throw new Error("gateway task ID is required for Yuanliu idempotency");
@@ -568,11 +575,11 @@ export function parseSubmitResponse(ctx, response) {
   return parsed;
 }
 
-/** 返回次数或整秒用量；不把目录人民币价格或 billing.charged 当成宿主用量。 */
+/** 返回三种计价维度供本站表达式选择；不读取上游金额，保留旧 seconds/resolution 字段。 */
 export function extractUsage(ctx) {
   const request = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  return modelSpec(ctx.upstreamModel || ctx.model).billing === "per_second" ? { seconds: request.duration, resolution: request.resolution } : { count: 1 };
+  return { count: 1, seconds: request.duration, resolution: request.resolution };
 }
 
 /** 查询同渠道上游任务，编码 ID 防止路径注入；不存在额外批量或取消接口。 */
@@ -620,7 +627,6 @@ export function extractUsageOnComplete(task, result, body) {
     state.duration
   );
   if (duration !== undefined) validDuration(duration, spec);
-  if (spec.billing === "per_call") return { count: 1 };
   if (duration === undefined) return null;
   const resolution = consistentValue(
     [data.resolution, data.size].map((value) => (typeof value === "string" ? value.toLowerCase() : value)),
@@ -628,7 +634,7 @@ export function extractUsageOnComplete(task, result, body) {
     state.resolution
   );
   if (!spec.resolutions.includes(resolution)) throw new Error("unsupported upstream Yuanliu resolution");
-  return { seconds: duration, resolution };
+  return { count: 1, seconds: duration, resolution };
 }
 
 /** 只有成功任务声明视频制品；制品始终由宿主鉴权代理交付。 */

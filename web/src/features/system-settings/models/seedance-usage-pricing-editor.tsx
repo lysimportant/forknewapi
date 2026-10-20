@@ -33,11 +33,12 @@ import type { ExpressionNode } from '@/features/pricing/lib/billing-expression/t
 import { RequestSimulation } from './request-simulation'
 import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
 
-/** 新建 Seedance 定价默认按次计费，零价仍读取用量事实。 */
+/** 新建 Seedance/Yuan 定价默认按次计费，零价仍读取用量事实。 */
 export const DEFAULT_SEEDANCE_BILLING_EXPR = 'tier("base", u("count") * 0)'
 
 /** 清晰度标识与插件事实一致；四档价格不会合并成通用兜底档。 */
 const RESOLUTIONS = ['480p', '720p', '1080p', '2k'] as const
+type VideoResolutionField = 'video_resolution' | 'resolution'
 /** 简易模式互斥，自定义模式沿用任务表达式编辑器。 */
 type SeedancePricingMode = 'per-call' | 'seconds-resolution' | 'custom'
 /** 单价以 USD 保存，保留按次及各清晰度的独立草稿。 */
@@ -75,7 +76,10 @@ function readSeedanceUnitPrice(
 }
 
 /** 保守识别按次或完整四档按秒模式；无法无损表达的公式返回 null。 */
-function readSeedancePricing(expression: string): {
+function readSeedancePricing(
+  expression: string,
+  resolutionField: VideoResolutionField
+): {
   mode: Exclude<SeedancePricingMode, 'custom'>
   prices: SeedancePrices
 } | null {
@@ -99,7 +103,7 @@ function readSeedancePricing(expression: string): {
       return null
     }
     const usage = condition.left.args[0]
-    if (usage?.kind !== 'literal' || usage.value !== 'video_resolution') {
+    if (usage?.kind !== 'literal' || usage.value !== resolutionField) {
       return null
     }
     if (
@@ -122,28 +126,33 @@ function readSeedancePricing(expression: string): {
 /** 生成互斥计费公式；保留零价 seconds 项，让缺少时长或清晰度的请求验证失败。 */
 function seedanceBillingExpression(
   mode: Exclude<SeedancePricingMode, 'custom'>,
-  prices: SeedancePrices
+  prices: SeedancePrices,
+  resolutionField: VideoResolutionField
 ): string {
   if (mode === 'per-call') {
     return `tier("base", u("count") * ${prices.count || '0'})`
   }
   return [
-    `u("video_resolution") == "480p" ? tier("480p", u("seconds") * ${prices['480p'] || '0'})`,
-    `u("video_resolution") == "720p" ? tier("720p", u("seconds") * ${prices['720p'] || '0'})`,
-    `u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * ${prices['1080p'] || '0'})`,
+    `u("${resolutionField}") == "480p" ? tier("480p", u("seconds") * ${prices['480p'] || '0'})`,
+    `u("${resolutionField}") == "720p" ? tier("720p", u("seconds") * ${prices['720p'] || '0'})`,
+    `u("${resolutionField}") == "1080p" ? tier("1080p", u("seconds") * ${prices['1080p'] || '0'})`,
     `tier("2k", u("seconds") * ${prices['2k'] || '0'})`,
   ].join('\n  : ')
 }
 
-/** Seedance 专用互斥价格表；只更新父级草稿，保存由现有模型定价流程完成。 */
+/** Seedance/Yuan 互斥价格表；按原始 schema 字段更新草稿，由现有流程保存。 */
 export function SeedanceUsagePricingEditor(
   props: ComponentProps<typeof TaskUsagePricingEditor>
 ) {
   const { t } = useTranslation()
   const id = useId()
   const currency = props.currency ?? USD_PRICING_CURRENCY
+  const resolutionField: VideoResolutionField = props.usageSchema
+    .video_resolution
+    ? 'video_resolution'
+    : 'resolution'
   const [draft, setDraft] = useState<SeedancePricingDraft>(() => {
-    const parsed = readSeedancePricing(props.billingExpr)
+    const parsed = readSeedancePricing(props.billingExpr, resolutionField)
     const prices = parsed?.prices ?? {
       count: '0',
       '480p': '0',
@@ -158,11 +167,15 @@ export function SeedanceUsagePricingEditor(
         'per-call':
           parsed?.mode === 'per-call'
             ? props.billingExpr
-            : seedanceBillingExpression('per-call', prices),
+            : seedanceBillingExpression('per-call', prices, resolutionField),
         'seconds-resolution':
           parsed?.mode === 'seconds-resolution'
             ? props.billingExpr
-            : seedanceBillingExpression('seconds-resolution', prices),
+            : seedanceBillingExpression(
+                'seconds-resolution',
+                prices,
+                resolutionField
+              ),
       },
       custom: parsed ? null : props.billingExpr,
     }
@@ -179,7 +192,9 @@ export function SeedanceUsagePricingEditor(
       return
     }
     const parsed =
-      draft.mode === 'custom' ? readSeedancePricing(props.billingExpr) : null
+      draft.mode === 'custom'
+        ? readSeedancePricing(props.billingExpr, resolutionField)
+        : null
     const prices = { ...draft.prices }
     if (parsed?.mode === 'per-call') prices.count = parsed.prices.count
     else if (parsed) {
@@ -197,7 +212,7 @@ export function SeedanceUsagePricingEditor(
     if (
       mode !== 'custom' &&
       draft.mode === 'custom' &&
-      !readSeedancePricing(props.billingExpr)
+      !readSeedancePricing(props.billingExpr, resolutionField)
     ) {
       setPendingMode(mode)
       return
@@ -207,7 +222,11 @@ export function SeedanceUsagePricingEditor(
   const changePrice = (field: keyof SeedancePrices, value: string): void => {
     if (draft.mode === 'custom') return
     const prices = { ...draft.prices, [field]: value }
-    const expression = seedanceBillingExpression(draft.mode, prices)
+    const expression = seedanceBillingExpression(
+      draft.mode,
+      prices,
+      resolutionField
+    )
     setDraft({
       ...draft,
       prices,
@@ -323,7 +342,7 @@ export function SeedanceUsagePricingEditor(
               props.usageExamples?.[0]?.facts ?? {
                 count: 1,
                 seconds: 5,
-                video_resolution: '480p',
+                [resolutionField]: '480p',
               }
             }
             usageSchema={props.usageSchema}

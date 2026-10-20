@@ -156,8 +156,8 @@ func TestFetchTaskPluginModelAliases(t *testing.T) {
 func TestFetchYuanliuModelNamesDistinguishesMissingModelsFromInvalidCatalog(t *testing.T) {
 	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
 	require.True(t, ok)
-	require.NotEmpty(t, plugin.Meta.Models)
-	upstreamID := plugin.Meta.Models[0]
+	require.Equal(t, "channel", plugin.Meta.ModelRouting)
+	const upstreamID = "future-yuan-model"
 	for _, test := range []struct {
 		name       string
 		statusCode int
@@ -166,7 +166,8 @@ func TestFetchYuanliuModelNamesDistinguishesMissingModelsFromInvalidCatalog(t *t
 		wantError  bool
 	}{
 		{name: "listed and named", body: fmt.Sprintf(`{"data":[{"id":%q,"name":"今日售罄"}]}`, upstreamID), wantNames: map[string]string{upstreamID: "今日售罄"}},
-		{name: "unadapted IDs only", body: `{"data":[{"id":"not-adapted","name":"Available"}]}`, wantNames: map[string]string{}},
+		{name: "new exact IDs", body: `{"data":[{"id":"New-Yuan-v3","name":"Available"}]}`, wantNames: map[string]string{"New-Yuan-v3": "Available"}},
+		{name: "blank name remains unknown", body: fmt.Sprintf(`{"data":[{"id":%q}]}`, upstreamID), wantNames: map[string]string{upstreamID: ""}},
 		{name: "empty catalog", body: `{"data":[]}`, wantError: true},
 		{name: "missing data", body: `{}`, wantError: true},
 		{name: "duplicate ID", body: fmt.Sprintf(`{"data":[{"id":%q},{"id":%q}]}`, upstreamID, upstreamID), wantError: true},
@@ -338,8 +339,8 @@ func TestGetYuanliuAvailabilityKeepsVisibleMappedModels(t *testing.T) {
 	db, userIDs := setupGroupVisibilityControllerTest(t)
 	plugin, ok := jsplugin.DefaultRegistry.Get("yuanliu")
 	require.True(t, ok)
-	require.GreaterOrEqual(t, len(plugin.Meta.Models), 8)
-	ids := plugin.Meta.Models
+	require.Equal(t, "channel", plugin.Meta.ModelRouting)
+	ids := []string{"future-active", "future-multi-channel", "future-missing", "future-unnamed", "future-mapped", "future-indeterminate", "future-sold", "future-secret"}
 
 	primaryBody, err := common.Marshal(map[string]any{"data": []map[string]string{
 		{"id": ids[0], "name": "可用"},
@@ -435,7 +436,7 @@ func TestGetYuanliuAvailabilityKeepsVisibleMappedModels(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"Yuan-active": "available", "Yuan-sold-plus-active": "available", "Yuan-disabled": "disabled",
 		"Yuan-name-missing": "unknown", "Yuan-chain": "available", "Yuan-indeterminate": "unknown",
-		"Yuan-sold-only": "sold_out",
+		"Yuan-sold-only": "sold_out", "Yuan-unmapped": "disabled",
 	}, statuses)
 	assert.Nil(t, commonResponse.Data.Models["Yuan-name-missing"].CheckedAt)
 	assert.Nil(t, commonResponse.Data.Models["Yuan-indeterminate"].CheckedAt)
@@ -458,6 +459,54 @@ func TestGetYuanliuAvailabilityKeepsVisibleMappedModels(t *testing.T) {
 	assert.Equal(t, int32(1), availableCalls.Load())
 	assert.Equal(t, int32(1), failedCalls.Load())
 	assert.Equal(t, int32(1), secretCalls.Load())
+}
+
+// TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping 验证新目录无需更新插件，获取操作不改写已保存旧别名。
+func TestFetchYuanliuModelsKeepsExactIDsAndSavedMapping(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/openapi/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer synthetic-yuan-key", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[{"id":"Future-Yuan-V3"},{"id":"future-yuan-v3"},{"id":"yl_lwaigc_mf_sd2_5_v2"}]}`))
+	}))
+	defer server.Close()
+	baseURL := server.URL + "/openapi/v1"
+	mapping := `{"Yuan-Seedance-2.5-LW":"yl_lwaigc_mf_sd2_5_v2"}`
+	channel := &model.Channel{
+		Type: constant.ChannelTypeTaskPlugin, Name: "Yuan dynamic discovery fixture", BaseURL: &baseURL,
+		Key: "synthetic-yuan-key", Models: "Yuan-Seedance-2.5-LW", ModelMapping: &mapping,
+	}
+	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: "yuanliu"})
+	require.NoError(t, db.Create(channel).Error)
+	for _, saved := range []bool{false, true} {
+		var response taskPluginDiscoveryResponse
+		if saved {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channel.Id)}}
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/api/channel/fetch_models/"+fmt.Sprint(channel.Id), nil)
+			FetchUpstreamModels(ctx)
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		} else {
+			response = previewTaskPluginModels(t, map[string]any{
+				"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "yuanliu", "base_url": baseURL, "key": channel.Key,
+			})
+		}
+		require.True(t, response.Success, response.Message)
+		assert.Equal(t, "upstream", response.Source)
+		assert.Equal(t, []string{"Future-Yuan-V3", "future-yuan-v3", "yl_lwaigc_mf_sd2_5_v2"}, response.Data)
+		assert.Empty(t, response.UnsupportedModels)
+		assert.Empty(t, response.ModelMapping)
+	}
+	reloaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, channel.Models, reloaded.Models)
+	assert.Equal(t, channel.ModelMapping, reloaded.ModelMapping)
+	assert.Equal(t, channel.Key, reloaded.Key)
+	assert.Equal(t, int32(2), requests.Load())
 }
 
 func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *testing.T) {

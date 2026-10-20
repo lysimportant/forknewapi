@@ -33,16 +33,23 @@ func yuanliuHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string,
 	return value
 }
 
-// TestYuanliuModelContracts 核对已适配模型、别名路由、计费单位及目录快照边界。
+// TestYuanliuModelContracts 核对旧型号参数、内部别名兼容和渠道模型路由边界。
 func TestYuanliuModelContracts(t *testing.T) {
 	plugin := loadYuanliuPlugin(t)
-	assert.Equal(t, "1.2.0", plugin.Meta.Version)
+	assert.Equal(t, "1.3.0", plugin.Meta.Version)
 	assert.Equal(t, "https://test.yuanliuai.tsyzai.com/openapi/v1", plugin.Meta.BaseURL)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
 	assert.Equal(t, "/openapi/v1/models", plugin.Meta.ModelDiscovery.Path)
 	assert.Contains(t, plugin.Meta.RequiredCapabilities, "task-submit-no-retry@1")
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
+	assert.Equal(t, "channel", plugin.Meta.ModelRouting)
+	assert.Empty(t, plugin.Meta.Models)
+	assert.Empty(t, plugin.Meta.ModelAliases)
+	assert.Empty(t, plugin.Meta.UsageProfiles)
+	assert.Equal(t, "count", plugin.Meta.UsageSchema["count"].Unit)
+	assert.Equal(t, "second", plugin.Meta.UsageSchema["seconds"].Unit)
+	assert.Equal(t, []string{"480p", "720p", "1080p", "2k"}, plugin.Meta.UsageSchema["resolution"].Enum)
 
 	models := []struct {
 		id, alias         string
@@ -68,19 +75,18 @@ func TestYuanliuModelContracts(t *testing.T) {
 		{"yl_api_hmstudio_seedance_v2_0_514a65db713b", "Yuan-Seedance-2.0-YS", 4, 15, 9, 0, 0, 16000, false, "720p", ""},
 		{"yl_lwaigc_mf_sd2_5_v2", "Yuan-Seedance-2.5-LW", 4, 30, 30, 0, 10, 16000, true, "720p", ""},
 	}
-	wantIDs := make([]string, 0, len(models))
 	for _, model := range models {
-		wantIDs = append(wantIDs, model.id)
 		t.Run(model.alias, func(t *testing.T) {
 			registry := jsplugin.NewRegistry()
 			source, err := plugins.Source("yuanliu")
 			require.NoError(t, err)
 			registered, err := registry.RegisterFactory(source, jsplugin.Options{})
 			require.NoError(t, err)
-			assert.Equal(t, model.id, registered.Meta.ModelAliases[model.alias])
-			binding, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", model.id)
+			binding, found := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", "yuanliu")
 			require.True(t, found, model.id)
 			assert.Same(t, registered, binding.Plugin)
+			_, globallyBoundID := registry.Generation().LookupEndpoint("POST", "/v1/videos", model.id)
+			assert.False(t, globallyBoundID, "精确上游 ID 只在已绑定的渠道内路由")
 			_, globallyBoundAlias := registry.Generation().LookupEndpoint("POST", "/v1/videos", model.alias)
 			assert.False(t, globallyBoundAlias, "展示别名仅通过渠道 model_mapping 进入插件")
 			_, responses := registry.Generation().LookupEndpoint("POST", "/v1/responses", model.id)
@@ -117,22 +123,14 @@ func TestYuanliuModelContracts(t *testing.T) {
 			assert.Equal(t, model.defaultResolution, payload["resolution"])
 			assert.NotContains(t, payload, "seconds")
 			usage := yuanliuHookObject(t, plugin, "extractUsage", ctx)
-			if model.perSecond {
-				assert.Equal(t, map[string]any{"seconds": float64(model.min), "resolution": model.defaultResolution}, usage)
-			} else {
-				assert.Equal(t, map[string]any{"count": float64(1)}, usage)
-			}
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.defaultResolution}, usage)
 			ctx["usagePurpose"] = "billing_ratios"
 			assert.Empty(t, yuanliuHookObject(t, plugin, "extractUsage", ctx))
 			ctx["usagePurpose"] = "facts"
 			completion := yuanliuHookObject(t, plugin, "extractUsageOnComplete", map[string]any{
 				"upstreamModel": model.id, "state": map[string]any{"duration": model.min, "resolution": model.defaultResolution},
 			}, map[string]any{"status": "SUCCESS"}, map[string]any{"seconds": model.max, "billing": map[string]any{"charged": 9876}})
-			if model.perSecond {
-				assert.Equal(t, map[string]any{"seconds": float64(model.max), "resolution": model.defaultResolution}, completion)
-			} else {
-				assert.Equal(t, map[string]any{"count": float64(1)}, completion)
-			}
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(model.max), "resolution": model.defaultResolution}, completion)
 
 			for _, duration := range []int{model.min - 1, model.max + 1} {
 				invalid := map[string]any{"model": model.alias, "prompt": "ocean", "duration": duration}
@@ -189,11 +187,83 @@ func TestYuanliuModelContracts(t *testing.T) {
 			}
 		})
 	}
-	wantIDs = append(wantIDs,
-		"yl_pp_md_sd25_900", "yl_pp_vg_sd25_wd", "yl_pp_md_sd25_30010", "y_mjna_md_sd25_30010",
-		"yl_mjna_cd_seedance_25_720p", "yl_xk_seedance2_0_903", "yl_fuyao_wan3_0_video", "yl_fuyao_wan3_0_video_prime",
-	)
-	assert.ElementsMatch(t, wantIDs, plugin.Meta.Models)
+}
+
+// TestYuanliuDynamicModelLifecycle 验证新 ID 无需插件登记，仍只通过授权渠道使用统一视频协议。
+func TestYuanliuDynamicModelLifecycle(t *testing.T) {
+	plugin := loadYuanliuPlugin(t)
+	const alias = "我的源流新模型"
+	const upstream = "new-upstream-video-model-v9"
+	for _, resolution := range []string{"480p", "720p", "1080p", "2k"} {
+		t.Run(resolution, func(t *testing.T) {
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": alias, "upstreamModel": upstream,
+				"body": map[string]any{"kind": "json", "value": map[string]any{
+					"model": alias, "prompt": "Animate @Image1 with @Video1 and @Audio1", "seconds": "45", "resolution": strings.ToUpper(resolution),
+					"images": []string{"https://cdn.example/image.png"}, "videos": []string{"https://cdn.example/video.mp4"},
+					"audios": []string{"https://cdn.example/audio.mp3"}, "aspect_ratio": "adaptive",
+				}},
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(decoded)
+			require.NoError(t, err)
+			var command map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &command))
+			assert.Equal(t, alias, command["model"])
+			assert.Equal(t, "reference_to_video", command["action"])
+			ctx := map[string]any{
+				"model": alias, "upstreamModel": upstream, "requestBody": command["requestBody"], "publicTaskId": "dynamic-task",
+				"baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+			}
+			request := yuanliuHookObject(t, plugin, "buildSubmitRequest", ctx)
+			assert.Equal(t, true, request["noRetry"])
+			assert.Equal(t, "https://yuanliu.example/openapi/v1/videos", request["url"])
+			payload := request["body"].(map[string]any)
+			assert.Equal(t, upstream, payload["model"])
+			assert.Equal(t, float64(45), payload["duration"])
+			assert.Equal(t, resolution, payload["resolution"])
+			wantFacts := map[string]any{"count": float64(1), "seconds": float64(45), "resolution": resolution}
+			assert.Equal(t, wantFacts, yuanliuHookObject(t, plugin, "extractUsage", ctx))
+			parsed := yuanliuHookObject(t, plugin, "parseSubmitResponse", ctx, map[string]any{
+				"statusCode": 201, "body": map[string]any{"id": "upstream/new-task", "status": "queued"},
+			})
+			assert.Equal(t, "upstream/new-task", parsed["taskId"])
+			result := yuanliuHookObject(t, plugin, "parseTaskResult", ctx, map[string]any{"status": "completed"})
+			assert.Equal(t, "SUCCESS", result["status"])
+			task := map[string]any{"model": alias, "upstreamModel": upstream, "state": parsed["state"]}
+			assert.Equal(t, wantFacts, yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, result, map[string]any{
+				"billing": map[string]any{"charged": 987654321},
+			}))
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(60), "resolution": resolution},
+				yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, result, map[string]any{"seconds": "60"}))
+			query := yuanliuHookObject(t, plugin, "buildQueryRequest", map[string]any{
+				"baseUrl": ctx["baseUrl"], "apiKey": ctx["apiKey"], "taskId": parsed["taskId"],
+			})
+			assert.Equal(t, "https://yuanliu.example/openapi/v1/videos/upstream%2Fnew-task", query["url"])
+		})
+	}
+	for _, duration := range []any{0, -1, 3601, 1.5, "1e1", "18446744073709551616"} {
+		_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+			"upstreamModel": upstream, "requestBody": map[string]any{"prompt": "ocean", "duration": duration, "resolution": "720p"},
+		})
+		require.ErrorContains(t, err, "duration")
+	}
+	for _, duration := range []int{1, 3600} {
+		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(duration), "resolution": "720p"},
+			yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+				"upstreamModel": upstream, "requestBody": map[string]any{"prompt": "ocean", "duration": duration, "resolution": "720p"},
+			}))
+	}
+	// 旧别名即使没有显式 upstreamModel，仍按原精确型号解析并保留已知能力限制。
+	request := yuanliuHookObject(t, plugin, "buildSubmitRequest", map[string]any{
+		"model": "Yuan-Seedance-2.0-LJ", "requestBody": map[string]any{"prompt": "ocean", "seconds": 4},
+		"publicTaskId": "legacy-alias-task", "baseUrl": "https://yuanliu.example/openapi/v1", "apiKey": "fixture-only",
+	})
+	assert.Equal(t, "yl_g7zy_seedance_v2_0_std", request["body"].(map[string]any)["model"])
+	_, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"model": "Yuan-Seedance-2.0-LJ", "requestBody": map[string]any{"prompt": "ocean", "seconds": 45},
+	})
+	require.ErrorContains(t, err, "duration")
 }
 
 // TestYuanliuOctoberModelContracts 覆盖 2026-10-19 目录新线路，保留旧模型独立回归合同。
@@ -225,8 +295,7 @@ func TestYuanliuOctoberModelContracts(t *testing.T) {
 	require.NoError(t, err)
 	for _, model := range models {
 		t.Run(model.alias, func(t *testing.T) {
-			assert.Equal(t, model.id, plugin.Meta.ModelAliases[model.alias])
-			_, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", model.id)
+			_, found := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", "yuanliu")
 			require.True(t, found)
 			body := func() map[string]any {
 				request := map[string]any{"model": model.alias, "prompt": "ocean", "duration": model.min}
@@ -258,10 +327,7 @@ func TestYuanliuOctoberModelContracts(t *testing.T) {
 			assert.Equal(t, "stable-task", payload["client_request_id"])
 			assert.Equal(t, model.resolutions[0], payload["resolution"])
 			assert.Equal(t, "16:9", payload["aspect_ratio"])
-			wantUsage := map[string]any{"count": float64(1)}
-			if model.perSecond {
-				wantUsage = map[string]any{"seconds": float64(model.min), "resolution": model.resolutions[0]}
-			}
+			wantUsage := map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.resolutions[0]}
 			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsage", ctx(body())))
 			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsageOnComplete",
 				map[string]any{"upstreamModel": model.id, "state": map[string]any{"duration": model.min, "resolution": model.resolutions[0]}},
@@ -488,7 +554,7 @@ func TestYuanliuReferenceContracts(t *testing.T) {
 		{"LW首帧字段不能降级", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"image": "https://cdn.example/image.png"}},
 		{"LW普通参考不能夹带帧角色", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"reference_images": []any{map[string]any{"url": "https://cdn.example/image.png", "role": "first_frame"}}}},
 		{"LW普通参考URL不能绕过", "yl_lwaigc_mf_sd2_5_v2", map[string]any{"reference_images": []any{map[string]any{"url": "data:image/png;base64,aW1hZ2U="}}}},
-		{"未知模型", "seedance-unknown", map[string]any{}},
+		{"空模型", "", map[string]any{}},
 		{"未知顶层字段", model, map[string]any{"generate_audio": false}},
 		{"嵌套计费绕过", model, map[string]any{"metadata": map[string]any{"duration": 99999999}}},
 		{"重复prompt不同", model, map[string]any{"metadata": map[string]any{"content": []any{map[string]any{"type": "text", "text": "different"}}}}},
@@ -580,7 +646,7 @@ func TestYuanliuCanvasGenericReferences(t *testing.T) {
 			assert.Equal(t, []any{"https://cdn.example/audio.mp3", "https://cdn.example/audio.mp3"}, payload["audios"])
 			assert.NotContains(t, payload, "reference_images")
 			assert.NotContains(t, payload, "metadata")
-			assert.Equal(t, map[string]any{"seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
 				"upstreamModel": upstream, "requestBody": command.RequestBody,
 			}))
 		})
@@ -631,7 +697,7 @@ func TestYuanliuTaskLifecycle(t *testing.T) {
 		})
 	}
 	task := map[string]any{"upstreamModel": "seedance-2.5-guanfang-anmiao", "state": map[string]any{"duration": 4, "resolution": "720p"}}
-	assert.Equal(t, map[string]any{"seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"charged": 99}}))
+	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"charged": 99}}))
 	for _, invalid := range []map[string]any{{"seconds": 99999999}, {"seconds": "18446744073686646784"}, {"seconds": 4.5}, {"seconds": 0}, {"seconds": 4, "duration": 5}, {"size": "4k"}, {"resolution": "480p", "size": "720p"}} {
 		_, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", task, map[string]any{"status": "SUCCESS"}, invalid)
 		require.Error(t, err)

@@ -146,7 +146,7 @@ func fetchYuanliuModelNames(channel *model.Channel) (map[string]string, error) {
 }
 
 // fetchPricingTaskPluginModelNames 复用有界只读目录请求；渠道模型插件允许空目录及只有 ID 的 OpenAI 条目。
-// Yuanliu 继续要求非空目录和插件声明的精确 ID，避免改变既有状态判断。
+// Yuanliu 接受渠道目录的新 ID，仍要求非空目录并保留空名称，避免改变既有状态判断。
 func fetchPricingTaskPluginModelNames(channel *model.Channel, pluginKey string, channelModels bool) (map[string]string, error) {
 	plugin, ok := jsplugin.DefaultRegistry.Get(pluginKey)
 	if !ok || plugin.Meta.ModelDiscovery == nil || plugin.Meta.ModelDiscovery.Protocol != "openai" {
@@ -217,7 +217,7 @@ func fetchPricingTaskPluginModelNames(channel *model.Channel, pluginKey string, 
 			return nil, errors.New("duplicate task plugin model ID")
 		}
 		seen[item.ID] = struct{}{}
-		if _, supported := declared[item.ID]; supported || channelModels {
+		if _, supported := declared[item.ID]; supported || channelModels || plugin.Meta.ModelRouting == "channel" {
 			if channelModels && strings.TrimSpace(item.Name) == "" {
 				item.Name = item.ID
 			}
