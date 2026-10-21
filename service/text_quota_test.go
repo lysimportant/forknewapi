@@ -140,6 +140,13 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 		{name: "image quantity exceeds one-image wallet before submission", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 4, wallet: 20000, insufficient: true},
 		{name: "image override reserves extra quantity", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 1, outboundImages: 4, want: 80000, unit: billingexpr.BillingUnitRequest},
 		{name: "image override cannot exceed remaining wallet", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 1, outboundImages: 4, wallet: 40000, reserveInsufficient: true, refund: true},
+		{name: "image usage count refunds missing images", expression: `tier("image", u("count") * 0.04)`, requestedImages: 3, actualImages: 2, want: 40000, unit: billingexpr.BillingUnitRequest},
+		{name: "image usage count keeps request when actual missing", expression: `tier("image", u("count") * 0.04)`, requestedImages: 3, want: 60000, unit: billingexpr.BillingUnitRequest},
+		{name: "image usage count zero price stays free", expression: `tier("image", u("count") * 0)`, requestedImages: 3, actualImages: 2, unit: billingexpr.BillingUnitRequest},
+		{name: "image usage count failure refunds reservation", expression: `tier("image", u("count") * 0.04)`, requestedImages: 3, refund: true},
+		{name: "image usage count exceeds one-image wallet before submission", expression: `tier("image", u("count") * 0.04)`, requestedImages: 4, wallet: 20000, insufficient: true},
+		{name: "image usage count override reserves extra quantity", expression: `tier("image", u("count") * 0.04)`, requestedImages: 1, outboundImages: 4, want: 80000, unit: billingexpr.BillingUnitRequest},
+		{name: "image usage count override cannot exceed remaining wallet", expression: `tier("image", u("count") * 0.04)`, requestedImages: 1, outboundImages: 4, wallet: 40000, reserveInsufficient: true, refund: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			quota := startingQuota
@@ -277,7 +284,7 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 						assert.NotContains(t, other, "billing_tokens")
 						assert.NotContains(t, other, "image_cache_tokens")
 					}
-					if tc.unit == billingexpr.BillingUnitRequest {
+					if tc.unit == billingexpr.BillingUnitRequest && billingexpr.UsesFixedPricing(tc.expression) {
 						assert.Contains(t, other, "fixed_price")
 					} else {
 						assert.NotContains(t, other, "fixed_price")

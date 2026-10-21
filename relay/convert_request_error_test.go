@@ -46,6 +46,7 @@ func TestImageRequestReservesFinalQuantityBeforeUpstream(t *testing.T) {
 	for _, tc := range []struct {
 		name, body                                       string
 		tiered, passThrough, insufficient, retryToOpenAI bool
+		usageCount                                       bool
 		override                                         any
 		count, status                                    int
 	}{
@@ -53,6 +54,9 @@ func TestImageRequestReservesFinalQuantityBeforeUpstream(t *testing.T) {
 		{name: "Ali empty parameters", body: `{"model":"z-image","n":2,"parameters":{}}`, count: 2},
 		{name: "legacy channel quantity override", body: `{"model":"z-image","n":1}`, override: 4, count: 4},
 		{name: "expression channel quantity override", body: `{"model":"z-image","n":1}`, override: 4, count: 4, tiered: true},
+		{name: "usage count channel quantity override", body: `{"model":"z-image","n":1}`, override: 4, count: 4, usageCount: true},
+		{name: "usage count insufficient reservation blocks upstream", body: `{"model":"z-image","n":1}`, override: 4, count: 4, usageCount: true, insufficient: true, status: http.StatusForbidden},
+		{name: "usage count retry drops Ali quantity", body: `{"model":"z-image","n":1,"parameters":{"n":4}}`, count: 1, usageCount: true, retryToOpenAI: true},
 		{name: "pass-through quantity", body: `{"model":"z-image","n":2,"parameters":{}}`, count: 2, passThrough: true},
 		{name: "zero override rejected", body: `{"model":"z-image","n":1}`, override: 0, status: http.StatusBadRequest},
 		{name: "oversized override rejected", body: `{"model":"z-image","n":1}`, override: 129, status: http.StatusBadRequest},
@@ -94,8 +98,11 @@ func TestImageRequestReservesFinalQuantityBeforeUpstream(t *testing.T) {
 				RequestURLPath: c.Request.URL.Path, Billing: reservation,
 				PriceData: hosttypes.PriceData{UsePrice: true, ModelPrice: 0.04, GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1}},
 			}
-			if tc.tiered {
+			if tc.tiered || tc.usageCount {
 				expr := `tier("image", fixed(0.04)) * image_count`
+				if tc.usageCount {
+					expr = `tier("image", u("count") * 0.04)`
+				}
 				info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{BillingMode: "tiered_expr", ExprString: expr, ExprHash: billingexpr.ExprHashString(expr), GroupRatio: 1, QuotaPerUnit: common.QuotaPerUnit, EstimatedImageCount: common.GetPointer(1)}
 				info.BillingRequestInput = &billingexpr.RequestInput{Body: []byte(tc.body), ImageCount: common.GetPointer(1)}
 				info.PriceData.UsePrice = false
@@ -124,7 +131,7 @@ func TestImageRequestReservesFinalQuantityBeforeUpstream(t *testing.T) {
 			assert.Equal(t, tc.count*20000, info.PriceData.QuotaToPreConsume)
 			assert.GreaterOrEqual(t, reservation.held, info.PriceData.QuotaToPreConsume)
 			assert.Nil(t, info.BillingImageCount)
-			if tc.tiered {
+			if tc.tiered || tc.usageCount {
 				assert.Equal(t, tc.body, string(info.BillingRequestInput.Body))
 				assert.Equal(t, 1, *info.BillingRequestInput.ImageCount)
 			}

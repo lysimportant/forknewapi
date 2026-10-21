@@ -410,9 +410,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	tieredBillingApplied := false
 	snap := relayInfo.TieredBillingSnapshot
 	// Providers normally estimate missing usage before settlement. Preserve the
-	// same prompt estimate when a fixed-price expression reaches us without it;
-	// its conditions must still run and may select a token-priced fallback.
-	if billingUsage == nil && snap != nil && billingexpr.UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
+	// same prompt estimate when a request-priced expression reaches us without
+	// it, including image usage prices. Fixed-price conditions must still run
+	// and may select a token-priced fallback.
+	if billingUsage == nil && snap != nil && (snap.EstimatedBillingUnit == billingexpr.BillingUnitRequest || billingexpr.UsesFixedPricingByHash(snap.ExprString, snap.ExprHash)) {
 		billingUsage = &dto.Usage{PromptTokens: summary.PromptTokens, CompletionTokens: summary.CompletionTokens, TotalTokens: summary.TotalTokens}
 	}
 	if billingUsage != nil {

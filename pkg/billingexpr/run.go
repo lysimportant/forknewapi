@@ -9,7 +9,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/expr-lang/expr"
-	"github.com/expr-lang/expr/vm"
 	"github.com/tidwall/gjson"
 )
 
@@ -33,7 +32,7 @@ func RunExprWithRequest(exprStr string, params TokenParams, request RequestInput
 	if err != nil {
 		return 0, TraceResult{}, err
 	}
-	return runProgram(entry.prog, entry.requestRules, entry.usedVars, params, request)
+	return runProgram(entry, params, request)
 }
 
 // RunExprByHash is like RunExpr but accepts a pre-computed hash for the cache
@@ -48,17 +47,21 @@ func RunExprByHashWithRequest(exprStr, hash string, params TokenParams, request 
 	if err != nil {
 		return 0, TraceResult{}, err
 	}
-	return runProgram(entry.prog, entry.requestRules, entry.usedVars, params, request)
+	return runProgram(entry, params, request)
 }
 
-func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[string]bool, params TokenParams, request RequestInput) (float64, TraceResult, error) {
+func runProgram(entry *cachedEntry, params TokenParams, request RequestInput) (float64, TraceResult, error) {
 	trace := TraceResult{
 		BillingUnit:  BillingUnitToken,
-		RequestRules: append([]RequestRuleTrace(nil), requestRules...),
+		RequestRules: append([]RequestRuleTrace(nil), entry.requestRules...),
 	}
 	headers := normalizeHeaders(request.Headers)
+	imageUsagePricing := request.ImageCount != nil && entry.usedUsageKeys["count"]
+	if imageUsagePricing && entry.fixedPricing {
+		return 0, trace, fmt.Errorf("fixed pricing is not supported for synchronous image usage expressions")
+	}
 	imageCount := 1
-	if usedVars["image_count"] {
+	if entry.usedVars["image_count"] || imageUsagePricing {
 		if request.ImageCount != nil {
 			imageCount = *request.ImageCount
 		}
@@ -66,6 +69,9 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 			return 0, trace, fmt.Errorf("image_count must be between 1 and %d", dto.MaxImageN)
 		}
 		trace.ImageCount = &imageCount
+	}
+	if imageUsagePricing {
+		trace.BillingUnit = BillingUnitRequest
 	}
 
 	env := map[string]any{
@@ -85,6 +91,9 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
+			if imageUsagePricing {
+				trace.Cost *= 1_000_000
+			}
 			return value
 		},
 		"fixed": func(amount float64) float64 {
@@ -125,10 +134,14 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 			return result.Value()
 		},
 		"u": func(name string) any {
+			name = strings.TrimSpace(name)
+			if imageUsagePricing && name == "count" {
+				return float64(imageCount)
+			}
 			if request.Usage == nil {
 				return nil
 			}
-			return request.Usage[strings.TrimSpace(name)]
+			return request.Usage[name]
 		},
 		"has": func(source any, substr string) bool {
 			if source == nil || substr == "" {
@@ -148,13 +161,16 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 		"floor":   math.Floor,
 	}
 
-	out, err := expr.Run(prog, env)
+	out, err := expr.Run(entry.prog, env)
 	if err != nil {
 		return 0, trace, fmt.Errorf("expr run error: %w", err)
 	}
 	f, ok := out.(float64)
 	if !ok {
 		return 0, trace, fmt.Errorf("expr result is %T, want float64", out)
+	}
+	if imageUsagePricing {
+		f *= 1_000_000
 	}
 	return f, trace, nil
 }

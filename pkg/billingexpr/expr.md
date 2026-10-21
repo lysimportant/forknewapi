@@ -159,6 +159,22 @@ Ali JSON 和 multipart 请求都明确发送该生效数量。每次渠道重试
 结算使用独立的实际数量，不修改被冻结的 `param("n")`。非法 Ali usage 数量记录诊断，并回退有效图片列表数量；缺少有效实际数量时保持发送数量。正常结束
 的 SSE 可以减少数量，客户端提前断开不能减少应收数量。最终消费日志记录 `image_count`。
 
+同步 Images `/images/generations` 与 `/images/edits` 也兼容字面量 `u("count")`，
+例如 `tier("base", u("count") * 3)` 表示每张 $3。只有图片入口提供独立、已校验的
+`RequestInput.ImageCount`，且编译后的表达式引用该字面量 usage 键时才启用；动态 usage 键
+不触发此兼容模式。预估数量来自本次渠道实际发送的生效数量，省略时为 1，并应用上文的
+渠道数量优先级与覆盖规则；结算改用有效的实际返回张数，缺少时保留发送数量。
+张数必须在 1 到 `dto.MaxImageN` 之间，独立数量优先于同名 `Usage["count"]`，不改写
+冻结的 `param("n")` 或调用方 usage。其它未知 usage 键仍返回缺失值，不补零或图片数量。
+
+此模式下整个表达式结果是本次请求的美元金额；引擎将其乘 1,000,000 接回同步结算的
+既有单位，之后仍通过 `/1,000,000 * QuotaPerUnit * groupRatio` 结算，因此不会少收
+一百万倍。trace 的计费单位为 `request`，记录实际使用的 `image_count`；`tier()` 捕获的
+`cost` 与既有 `fixed()` 相同，采用乘 1,000,000 后、请求倍率前的单位。
+该模式禁止混用 `fixed()`，包括未选择或被编译器优化掉的分支，避免重复转换单位。
+没有独立 `ImageCount` 的任务插件调用保持原有直接美元语义；旧 token、`fixed()` 与
+`image_count` 表达式也保持原语义，不因此转换已有价格。
+
 > **注意：** 自动扣除针对 GPT/OpenAI 格式的 API（prompt_tokens 包含子类别）。Claude 格式的 API 不重复扣除缓存；未独立计价的缓存读取加回输入。系统根据上游返回格式自动处理。
 
 ### Built-in Functions
