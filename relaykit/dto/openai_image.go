@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -121,6 +122,18 @@ func (r ImageRequest) MarshalJSON() ([]byte, error) {
 	//		baseMap[k] = v
 	//	}
 	//}
+
+	// Tiered or unspecified image sizes carry their aspect ratio separately.
+	// Keep this exception narrow; other Extra fields must not be forwarded.
+	switch strings.ToUpper(r.Size) {
+	case "", "AUTO", "1K", "2K", "3K", "4K":
+		if raw, exists := r.Extra["aspect_ratio"]; exists {
+			var aspectRatio string
+			if err := kitutil.Unmarshal(raw, &aspectRatio); err == nil && strings.TrimSpace(aspectRatio) != "" {
+				baseMap["aspect_ratio"] = raw
+			}
+		}
+	}
 
 	return kitutil.Marshal(baseMap)
 }
