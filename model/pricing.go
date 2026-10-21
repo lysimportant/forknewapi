@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
@@ -384,6 +385,9 @@ func updatePricing() {
 				}
 			}
 		}
+		// A task plugin may declare an existing model with fixed request pricing.
+		// Its usage metadata must not reclassify that price as task-usage billing.
+		usesFixedPricing := billingexpr.UsesFixedPricing(pricing.BillingExpr)
 		usageModel := model
 		plugin, ok := pluginGeneration.GetByModel(model)
 		if !ok {
@@ -392,7 +396,7 @@ func updatePricing() {
 				usageModel = target.Declared
 			}
 		}
-		if ok && plugin != nil {
+		if ok && plugin != nil && !usesFixedPricing {
 			usageSchema, usageExamples := plugin.Meta.UsageForModel(usageModel)
 			pricing.BillingUsageSchema = jsplugin.CloneUsageSchema(usageSchema)
 			pricing.BillingUsageExamples = jsplugin.CloneUsageExamples(usageExamples)
@@ -405,7 +409,7 @@ func updatePricing() {
 				break
 			}
 		}
-		if hasProviderOverride || (len(providers) >= 2 && pricing.BillingMode == billing_setting.BillingModeTieredExpr) {
+		if hasProviderOverride || (!usesFixedPricing && len(providers) >= 2 && pricing.BillingMode == billing_setting.BillingModeTieredExpr) {
 			for _, provider := range providers {
 				schema, examples := provider.Meta.UsageForModel(model)
 				if schema == nil {
