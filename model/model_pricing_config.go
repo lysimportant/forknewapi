@@ -421,7 +421,12 @@ func validateModelPricing(name string, values, previous PricingValues) error {
 				return fmt.Errorf("model %s: %w", name, err)
 			}
 			var err error
-			if plugins := generation.PluginsByModel(name); len(plugins) > 0 {
+			if billingexpr.UsesFixedPricing(expression) {
+				// A model-level fixed expression prices ordinary requests even when
+				// a task plugin declares the same model or a mapped alias. Explicit
+				// plugin overrides remain task expressions and are validated above.
+				err = billing_setting.SmokeTestExpr(expression)
+			} else if plugins := generation.PluginsByModel(name); len(plugins) > 0 {
 				for _, plugin := range plugins {
 					if _, overridden := variants[plugin.Meta.Key]; overridden {
 						continue
