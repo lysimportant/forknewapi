@@ -276,8 +276,8 @@ func parseOpenAIModelIDs(body []byte) ([]string, error) {
 }
 
 // taskPluginCatalogModel keeps the optional type advertised by an OpenAI
-// compatible model directory. The type is used only for channel-scoped model
-// discovery; request routing continues to use the exact ID.
+// compatible model directory. Model identity remains the exact ID; the type
+// accompanies discovery and is saved separately for protocol selection.
 type taskPluginCatalogModel struct {
 	ID   string
 	Type string
@@ -413,6 +413,7 @@ type channelUpstreamModelCatalog struct {
 	Source            string
 	UnsupportedModels []string
 	ModelAliases      map[string]string
+	ModelTypes        map[string]string
 }
 
 // discoveryResponse 将目录中已适配的上游模型显示为建议别名，附带待管理员保存的映射。
@@ -437,6 +438,11 @@ func (catalog channelUpstreamModelCatalog) discoveryResponse() gin.H {
 	}
 	if len(mapping) > 0 {
 		response["model_mapping"] = mapping
+	}
+	if len(catalog.ModelTypes) > 0 {
+		// Keys remain upstream IDs even when data contains suggested aliases:
+		// request validation resolves channel mappings before reading the type.
+		response["model_types"] = catalog.ModelTypes
 	}
 	return response
 }
@@ -597,6 +603,7 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 	if plugin.Meta.ModelDiscovery == nil {
 		return channelUpstreamModelCatalog{
 			Models: normalizeModelNames(plugin.Meta.Models), Source: "plugin", UnsupportedModels: []string{}, ModelAliases: plugin.Meta.ModelAliases,
+			ModelTypes: plugin.Meta.ModelMediaTypes,
 		}, nil
 	}
 	discovery := *plugin.Meta.ModelDiscovery
@@ -768,10 +775,25 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 					return catalog, err
 				}
 			}
+			modelTypes := make(map[string]string)
+			supportedSet := make(map[string]struct{}, len(models))
+			for _, id := range models {
+				supportedSet[id] = struct{}{}
+			}
+			for _, item := range catalogModels {
+				if _, supported := supportedSet[item.ID]; supported && (item.Type == "image" || item.Type == "video") {
+					modelTypes[item.ID] = item.Type
+				}
+			}
+			typeSettings := dto.ChannelSettings{TaskPluginModelTypes: modelTypes}
+			if err := typeSettings.ValidateTaskPluginModelTypes(); err != nil {
+				return catalog, err
+			}
 			return channelUpstreamModelCatalog{
 				Models: models, Source: "upstream",
 				UnsupportedModels: unsupportedModels,
 				ModelAliases:      aliases,
+				ModelTypes:        modelTypes,
 			}, nil
 		}
 	}
@@ -920,7 +942,7 @@ func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string)
 	return parseOpenAIModelIDs(body)
 }
 
-func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.ChannelOtherSettings, updateModels bool) error {
+func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.ChannelOtherSettings, updateModels, updateModelTypes bool) error {
 	channel.SetOtherSettings(settings)
 	updates := map[string]any{
 		"settings": channel.OtherSettings,
@@ -928,7 +950,52 @@ func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.Cha
 	if updateModels {
 		updates["models"] = channel.Models
 	}
+	if updateModelTypes {
+		updates["setting"] = channel.Setting
+	}
 	return model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
+}
+
+// mergeTaskPluginCatalogTypes preserves other channel settings and existing
+// model types while refreshing the exact IDs reported by a successful catalog.
+// Reading a preview never calls this helper or writes channel configuration.
+func mergeTaskPluginCatalogTypes(channel *model.Channel, catalog channelUpstreamModelCatalog) (bool, error) {
+	if channel.Type != constant.ChannelTypeTaskPlugin || len(catalog.ModelTypes) == 0 {
+		return false, nil
+	}
+	setting := make(map[string]any)
+	if channel.Setting != nil && strings.TrimSpace(*channel.Setting) != "" {
+		if err := common.UnmarshalJsonStr(*channel.Setting, &setting); err != nil || setting == nil {
+			return false, errors.New("invalid task plugin channel settings")
+		}
+	}
+	types := make(map[string]string)
+	if previous, ok := setting["task_plugin_model_types"]; ok {
+		encoded, err := common.Marshal(previous)
+		if err != nil || common.Unmarshal(encoded, &types) != nil || types == nil {
+			return false, errors.New("invalid task plugin model types")
+		}
+	}
+	changed := false
+	for id, modelType := range catalog.ModelTypes {
+		if types[id] != modelType {
+			types[id], changed = modelType, true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	typeSettings := dto.ChannelSettings{TaskPluginModelTypes: types}
+	if err := typeSettings.ValidateTaskPluginModelTypes(); err != nil {
+		return false, err
+	}
+	setting["task_plugin_model_types"] = types
+	encoded, err := common.Marshal(setting)
+	if err != nil {
+		return false, err
+	}
+	channel.Setting = common.GetPointer(string(encoded))
+	return true, nil
 }
 
 func checkAndPersistChannelUpstreamModelUpdates(
@@ -946,14 +1013,24 @@ func checkAndPersistChannelUpstreamModelUpdates(
 		}
 	}
 
-	pendingAddModels, pendingRemoveModels, fetchErr := collectPendingUpstreamModelChanges(channel, *settings)
+	catalog, fetchErr := fetchChannelUpstreamModelCatalog(channel)
+	if fetchErr == nil && channel.Type == constant.ChannelTypeTaskPlugin && len(catalog.Models) == 0 {
+		fetchErr = errors.New("task plugin catalog contains no supported model IDs; existing channel models are preserved")
+	}
 	settings.UpstreamModelUpdateLastCheckTime = now
 	if fetchErr != nil {
-		if err = updateChannelUpstreamModelSettings(channel, *settings, false); err != nil {
+		if err = updateChannelUpstreamModelSettings(channel, *settings, false, false); err != nil {
 			return false, 0, err
 		}
 		return false, 0, fetchErr
 	}
+	modelTypesChanged, err := mergeTaskPluginCatalogTypes(channel, catalog)
+	if err != nil {
+		return false, 0, err
+	}
+	pendingAddModels, pendingRemoveModels := collectPendingUpstreamModelChangesFromModels(
+		channel.GetModels(), catalog.Models, settings.UpstreamModelUpdateIgnoredModels, normalizeChannelModelMapping(channel),
+	)
 
 	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAddModels) > 0 {
 		originModels := normalizeModelNames(channel.GetModels())
@@ -969,7 +1046,7 @@ func checkAndPersistChannelUpstreamModelUpdates(
 	}
 	settings.UpstreamModelUpdateLastRemovedModels = pendingRemoveModels
 
-	if err = updateChannelUpstreamModelSettings(channel, *settings, modelsChanged); err != nil {
+	if err = updateChannelUpstreamModelSettings(channel, *settings, modelsChanged, modelTypesChanged); err != nil {
 		return false, autoAdded, err
 	}
 	if modelsChanged {
@@ -977,7 +1054,7 @@ func checkAndPersistChannelUpstreamModelUpdates(
 			return true, autoAdded, err
 		}
 	}
-	return modelsChanged, autoAdded, nil
+	return modelsChanged || modelTypesChanged, autoAdded, nil
 }
 
 func refreshChannelRuntimeCache() {
@@ -1414,7 +1491,7 @@ func applyChannelUpstreamModelUpdates(
 	settings.UpstreamModelUpdateLastRemovedModels = remainingRemoveModels
 	settings.UpstreamModelUpdateLastCheckTime = common.GetTimestamp()
 
-	if err := updateChannelUpstreamModelSettings(channel, settings, modelsChanged); err != nil {
+	if err := updateChannelUpstreamModelSettings(channel, settings, modelsChanged, false); err != nil {
 		return nil, nil, nil, nil, false, err
 	}
 

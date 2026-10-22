@@ -32,14 +32,16 @@ import {
 } from '@/lib/server-error-message'
 
 import { fetchUpstreamModels, updateChannel } from '../../api'
+import { CHANNEL_TYPE_TASK_PLUGIN } from '../../constants'
 import {
   channelsQueryKeys,
   mergeDiscoveredModelAliases,
+  mergeTaskPluginModelTypesSetting,
   ModelMappingValidationError,
   normalizeModelName,
   parseModelsString,
 } from '../../lib'
-import type { FetchModelsResponse } from '../../types'
+import type { FetchModelsResponse, TaskPluginModelTypes } from '../../types'
 import { useChannels } from '../channels-provider'
 import { ModelDiscoveryNotice } from '../model-discovery-notice'
 import { UpstreamModelSelection } from '../upstream-model-selection'
@@ -61,7 +63,11 @@ type FetchModelsDialogBaseProps = {
 type FetchModelsDialogProps = FetchModelsDialogBaseProps &
   (
     | {
-        onModelsSelected: (models: string[], modelMapping?: string) => void
+        onModelsSelected: (
+          models: string[],
+          modelMapping?: string,
+          modelTypes?: TaskPluginModelTypes
+        ) => void
         existingModelsOverride: string[]
       }
     | {
@@ -94,6 +100,8 @@ export function FetchModelsDialog({
   const [unsupportedModels, setUnsupportedModels] = useState<string[]>([])
   const [modelMapping, setModelMapping] =
     useState<FetchModelsResponse['model_mapping']>()
+  const [modelTypes, setModelTypes] =
+    useState<FetchModelsResponse['model_types']>()
   const [fetchError, setFetchError] = useState<unknown>()
   const [hasFetched, setHasFetched] = useState(false)
   const fetchSequence = useRef(0)
@@ -124,6 +132,7 @@ export function FetchModelsDialog({
     setSource(undefined)
     setUnsupportedModels([])
     setModelMapping(undefined)
+    setModelTypes(undefined)
     setFetchedModels([])
     setCandidateModels(existingModels)
     setSelectedModels(existingModels)
@@ -173,6 +182,7 @@ export function FetchModelsDialog({
       setSource(response.source)
       setUnsupportedModels(response.unsupported_models ?? [])
       setModelMapping(response.model_mapping)
+      setModelTypes(response.model_types)
       setHasFetched(true)
       setCandidateModels(existingModels)
       setSelectedModels(merged.models)
@@ -207,7 +217,9 @@ export function FetchModelsDialog({
     }
     // If onModelsSelected callback is provided, use it (form filling mode)
     if (onModelsSelected) {
-      if (modelMapping && Object.keys(modelMapping).length > 0) {
+      if (modelTypes && Object.keys(modelTypes).length > 0) {
+        onModelsSelected(merged.models, merged.modelMapping, modelTypes)
+      } else if (modelMapping && Object.keys(modelMapping).length > 0) {
         onModelsSelected(merged.models, merged.modelMapping)
       } else {
         onModelsSelected(merged.models)
@@ -226,6 +238,16 @@ export function FetchModelsDialog({
         models: modelsString,
         ...(modelMapping && Object.keys(modelMapping).length > 0
           ? { model_mapping: merged.modelMapping }
+          : {}),
+        ...(activeChannel.type === CHANNEL_TYPE_TASK_PLUGIN &&
+        modelTypes &&
+        Object.keys(modelTypes).length > 0
+          ? {
+              setting: mergeTaskPluginModelTypesSetting(
+                activeChannel.setting,
+                modelTypes
+              ),
+            }
           : {}),
       })
       if (response.success) {

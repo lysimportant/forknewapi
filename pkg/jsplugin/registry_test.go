@@ -1191,6 +1191,49 @@ func TestRegistryModelDiscoveryTypesAndPrefixes(t *testing.T) {
 	assert.Equal(t, "Image2Pro-Image-", loaded.Meta.ModelDiscovery.TypePrefixes["image"])
 }
 
+// TestRegistryModelMediaTypes 仅允许为已声明的精确模型补充兼容媒体类型。
+func TestRegistryModelMediaTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		valid       bool
+	}{
+		{"旧插件", "", true},
+		{"空对象", `modelMediaTypes: {},`, true},
+		{"图片和视频", `modelMediaTypes: {"Image-ID": "image", "Video-ID": "video"},`, true},
+		{"空值", `modelMediaTypes: null,`, false},
+		{"数组", `modelMediaTypes: [],`, false},
+		{"字符串", `modelMediaTypes: "image",`, false},
+		{"非字符串类型", `modelMediaTypes: {"Image-ID": 1},`, false},
+		{"未声明模型", `modelMediaTypes: {"Future-ID": "image"},`, false},
+		{"模型大小写不一致", `modelMediaTypes: {"image-id": "image"},`, false},
+		{"未知媒体类型", `modelMediaTypes: {"Image-ID": "audio"},`, false},
+		{"媒体类型大小写", `modelMediaTypes: {"Image-ID": "Image"},`, false},
+		{"空媒体类型", `modelMediaTypes: {"Image-ID": ""},`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded, err := CompilePlugin(routingTestPluginSource("media-types", 0, `["Image-ID", "Video-ID"]`, tc.field, ""), Options{})
+			if !tc.valid {
+				require.ErrorContains(t, err, "modelMediaTypes")
+				return
+			}
+			require.NoError(t, err)
+			if tc.name == "图片和视频" {
+				assert.Equal(t, map[string]string{"Image-ID": "image", "Video-ID": "video"}, loaded.Meta.ModelMediaTypes)
+			}
+		})
+	}
+
+	registry := NewRegistry()
+	loaded, err := registry.Register(routingTestPluginSource("media-types-snapshot", 0, `["Image-ID"]`, `modelMediaTypes: {"Image-ID": "image"},`, ""), Options{})
+	require.NoError(t, err)
+	snapshot := registry.Snapshot()
+	snapshot.Override[0].ModelMediaTypes["Image-ID"] = "video"
+	snapshot.Override[0].ModelMediaTypes["Future-ID"] = "image"
+	want := map[string]string{"Image-ID": "image"}
+	assert.Equal(t, want, loaded.Meta.ModelMediaTypes)
+	assert.Equal(t, want, registry.Snapshot().Override[0].ModelMediaTypes)
+}
+
 // TestRegistryModelAliases 验证别名只指向已适配模型，拒绝歧义、链式和非法映射。
 func TestRegistryModelAliases(t *testing.T) {
 	for _, tc := range []struct {

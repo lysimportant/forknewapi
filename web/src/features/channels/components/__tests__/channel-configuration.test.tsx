@@ -1111,6 +1111,107 @@ test.each([false, true])(
   }
 )
 
+test.each([false, true])(
+  'Image2Pro discovery saves exact new model IDs and task types when editing=%s',
+  async (editing) => {
+    const modelTypes = {
+      'Nano-banana-Pro': 'image',
+      '无限制-Seedream-5-Pro-2K': 'image',
+      'future-video-v99': 'video',
+    }
+    pluginOptions = [
+      {
+        ...plugins[0],
+        models: [],
+        modelDiscovery: { protocol: 'openai', path: '/v1/models' },
+      },
+    ]
+    editingChannel = {
+      ...editingChannel,
+      type: 61,
+      models: 'Nano-banana-Pro',
+      setting: JSON.stringify({
+        task_plugin_key: 'video-a',
+        task_plugin_model_types: { 'saved-model': 'video' },
+        administrator_option: { enabled: true },
+      }),
+    }
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          source: 'upstream',
+          data: Object.keys(modelTypes),
+          model_types: modelTypes,
+        },
+      })
+      .mockResolvedValue({ data: { success: true } })
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(
+      <ConfigurationHarness currentRow={editing ? editingChannel : undefined} />
+    )
+    if (editing) {
+      await screen.findByDisplayValue('Existing channel')
+    } else {
+      await user.click(await screen.findByRole('option', { name: /Video A/ }))
+      fireEvent.change(screen.getByLabelText('API Key *'), {
+        target: { value: 'test-key' },
+      })
+    }
+    await user.click(
+      screen.getByRole('button', { name: 'Fetch from Upstream' })
+    )
+    if (!editing) {
+      await user.click(
+        await screen.findByRole('checkbox', { name: 'Nano-banana-Pro' })
+      )
+    }
+    await user.click(
+      await screen.findByRole('checkbox', {
+        name: '无限制-Seedream-5-Pro-2K',
+      })
+    )
+    await user.click(screen.getByRole('checkbox', { name: 'future-video-v99' }))
+    if (editing) {
+      await user.click(screen.getByRole('tab', { name: 'Existing Models (1)' }))
+    }
+    await user.click(screen.getByRole('checkbox', { name: 'Nano-banana-Pro' }))
+    await user.click(
+      screen.getByRole('button', {
+        name: editing ? 'Update Channel' : 'Create Channel',
+      })
+    )
+    const request = editing ? put : post
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        editing ? '/api/channel/' : '/api/channel',
+        expect.anything(),
+        expect.anything()
+      )
+    )
+    const payload = request.mock.calls.at(-1)?.[1] as {
+      models: string
+      setting: string
+      channel: { models: string; setting: string }
+    }
+    const saved = editing ? payload : payload.channel
+    expect(saved.models).toBe('无限制-Seedream-5-Pro-2K,future-video-v99')
+    expect(JSON.parse(saved.setting).task_plugin_model_types).toEqual({
+      ...(editing ? { 'saved-model': 'video' } : {}),
+      ...modelTypes,
+    })
+    if (editing) {
+      expect(JSON.parse(saved.setting).administrator_option).toEqual({
+        enabled: true,
+      })
+    }
+  }
+)
+
 test.each(['fetch', 'selection'] as const)(
   'local mapping errors during %s are translated and retain the channel draft',
   async (action) => {
@@ -1268,7 +1369,10 @@ test.each([
       models: 'custom-model,Yuan-Seedance-2.5-Official',
       model_mapping:
         '{"custom-model":"manual-upstream","Yuan-Seedance-2.5-Official":"admin-upstream"}',
-      setting: '{"task_plugin_key":"video-a"}',
+      setting: JSON.stringify({
+        task_plugin_key: 'video-a',
+        task_plugin_model_types: { 'saved-model': 'image' },
+      }),
     }
     vi.spyOn(api, 'post').mockResolvedValue({ data: response })
     const put = vi
@@ -1299,6 +1403,10 @@ test.each([
     expect(put.mock.calls[0]?.[1]).toMatchObject({
       models: editingChannel.models,
       model_mapping: editingChannel.model_mapping,
+    })
+    const saved = put.mock.calls[0]?.[1] as { setting: string }
+    expect(JSON.parse(saved.setting).task_plugin_model_types).toEqual({
+      'saved-model': 'image',
     })
   }
 )
@@ -1343,13 +1451,21 @@ test('switching plugins clears the previous catalog and ignores an in-flight res
       source: string
       data: string[]
       unsupported_models: string[]
+      model_types: Record<string, 'image' | 'video'>
     }
   }>()
-  vi.spyOn(api, 'post')
+  const post = vi
+    .spyOn(api, 'post')
     .mockReturnValueOnce(oldReply.promise)
     .mockResolvedValueOnce({
-      data: { success: true, source: 'upstream', data: ['video-b-1'] },
+      data: {
+        success: true,
+        source: 'upstream',
+        data: ['video-b-1'],
+        model_types: { 'video-b-1': 'video' },
+      },
     })
+    .mockResolvedValue({ data: { success: true } })
   const user = userEvent.setup()
   render(<ConfigurationHarness />)
   await user.click(await screen.findByRole('option', { name: /Video A/ }))
@@ -1368,6 +1484,7 @@ test('switching plugins clears the previous catalog and ignores an in-flight res
         source: 'upstream',
         data: ['video-a-1'],
         unsupported_models: ['old-unsupported-model'],
+        model_types: { 'video-a-1': 'image' },
       },
     })
     await oldReply.promise
@@ -1380,6 +1497,18 @@ test('switching plugins clears the previous catalog and ignores an in-flight res
   expect(
     await screen.findByRole('checkbox', { name: 'video-b-1' })
   ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Create Channel' }))
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel',
+      expect.anything(),
+      expect.anything()
+    )
+  )
+  const saved = post.mock.calls.at(-1)?.[1] as { channel: { setting: string } }
+  expect(JSON.parse(saved.channel.setting).task_plugin_model_types).toEqual({
+    'video-b-1': 'video',
+  })
 })
 
 test('editing opens the shared configuration and omits an unchanged key on update', async () => {
@@ -1481,9 +1610,16 @@ test('opening and reselecting an existing plugin preserves its saved configurati
   editingChannel = {
     ...editingChannel,
     type: 61,
-    setting: '{"task_plugin_key":"video-a"}',
+    setting: JSON.stringify({
+      task_plugin_key: 'video-a',
+      task_plugin_model_types: { 'custom-model': 'image' },
+      administrator_option: true,
+    }),
     priority: 7,
   }
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
   const user = userEvent.setup()
   render(<ConfigurationHarness currentRow={editingChannel} />)
   expect(await screen.findByDisplayValue('Existing channel')).toBeVisible()
@@ -1509,6 +1645,16 @@ test('opening and reselecting an existing plugin preserves its saved configurati
   expect(screen.getByText('video-b-1')).toBeVisible()
   await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))
   expect(screen.getByLabelText('Priority')).toHaveValue(7)
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const saved = put.mock.calls[0]?.[1] as { setting: string }
+  expect(JSON.parse(saved.setting)).toMatchObject({
+    task_plugin_key: 'video-b',
+    administrator_option: true,
+  })
+  expect(JSON.parse(saved.setting)).not.toHaveProperty(
+    'task_plugin_model_types'
+  )
 })
 
 test('an unavailable plugin keeps its identifier and binding when other fields are updated', async () => {

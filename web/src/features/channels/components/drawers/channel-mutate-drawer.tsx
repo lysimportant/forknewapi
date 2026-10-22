@@ -773,6 +773,7 @@ export function ChannelMutateDrawer({
           (item) => item.key === target.key
         )
         if (!plugin) return
+        form.setValue('task_plugin_model_types', {}, { shouldDirty: true })
         pendingGlobalStoreModelsRef.current = false
         const previousPlugin = taskPluginOptionsQuery.data?.find(
           (item) => item.key === form.getValues('task_plugin_key')
@@ -830,6 +831,7 @@ export function ChannelMutateDrawer({
           pendingGlobalStoreModelsRef.current = false
         }
         form.setValue('type', target.type, { shouldDirty: true })
+        form.setValue('task_plugin_model_types', {}, { shouldDirty: true })
         if (!isEditing && !providerTarget && !form.getValues('name').trim()) {
           const label = CHANNEL_TYPE_OPTIONS.find(
             (option) => option.value === target.type
@@ -1234,6 +1236,12 @@ export function ChannelMutateDrawer({
       return
     }
     const response = await fetchDiscoveredModels()
+    if (response?.model_types && type === CHANNEL_TYPE_TASK_PLUGIN) {
+      form.setValue('task_plugin_model_types', {
+        ...form.getValues('task_plugin_model_types'),
+        ...response.model_types,
+      })
+    }
     if (response?.source === 'plugin' || response?.model_mapping) {
       const currentModels = parseModelsString(form.getValues('models'))
       const selected =
@@ -1333,6 +1341,12 @@ export function ChannelMutateDrawer({
         )
         form.setValue('models', formatModelsArray(merged.models))
         form.setValue('model_mapping', merged.modelMapping)
+        if (discovery.status === 'success' && discovery.modelTypes) {
+          form.setValue('task_plugin_model_types', {
+            ...form.getValues('task_plugin_model_types'),
+            ...discovery.modelTypes,
+          })
+        }
       } catch (error) {
         handleServerError(
           error,
@@ -1343,7 +1357,7 @@ export function ChannelMutateDrawer({
         )
       }
     },
-    [form, discovery.status, discovery.modelMapping, t]
+    [form, discovery.status, discovery.modelMapping, discovery.modelTypes, t]
   )
 
   // Handle successful submission

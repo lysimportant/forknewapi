@@ -97,13 +97,14 @@ var canvasYuanVideoInputs = map[string]canvasVideoInputProfile{
 
 // canvasCandidate 保存授权范围内的一条路由；Channel 从数据库读取时排除渠道凭据。
 type canvasCandidate struct {
-	Group         string
-	Channel       *model.Channel
-	OtherSettings dto.ChannelOtherSettings
-	Plugin        *jsplugin.LoadedPlugin
-	PluginManaged bool
-	Generation    *jsplugin.RoutingGeneration
-	UpstreamModel string
+	ChannelSetting dto.ChannelSettings
+	Group          string
+	Channel        *model.Channel
+	OtherSettings  dto.ChannelOtherSettings
+	Plugin         *jsplugin.LoadedPlugin
+	PluginManaged  bool
+	Generation     *jsplugin.RoutingGeneration
+	UpstreamModel  string
 }
 
 // canvasProfile 表示明确端点对应的 Canvas 合同；不通过模型名称推断媒体能力。
@@ -225,6 +226,7 @@ func canvasAuthorizedModels(c *gin.Context) (modelListGroups, map[string][]canva
 					return groups, nil, nil, errors.New("invalid channel settings")
 				}
 			}
+			candidate.ChannelSetting = channelSetting
 			if channel.OtherSettings != "" {
 				if err := common.UnmarshalJsonStr(channel.OtherSettings, &candidate.OtherSettings); err != nil {
 					return groups, nil, nil, errors.New("invalid channel settings")
@@ -282,6 +284,10 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 	if profile.Contract != "newapi-video-v1" {
 		return false
 	}
+	mediaType := model.TaskPluginModelType(candidate.Plugin, candidate.ChannelSetting, candidate.UpstreamModel)
+	if mediaType == "image" || (mediaType == "" && candidate.pluginMayGenerateImages()) {
+		return false
+	}
 	if candidate.Channel.Type == constant.ChannelTypeTaskPlugin && candidate.Plugin.Meta.ModelRouting == "channel" {
 		// 渠道模式不注册全局模型；只开放真实入口能够固定到同一插件的精确渠道名。
 		if _, declared := candidate.Generation.CanonicalModel(name); declared {
@@ -310,6 +316,35 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 	return slices.ContainsFunc(candidate.Generation.LookupEndpointCandidates(http.MethodPost, profile.Path, lookupModel), func(binding jsplugin.ProtocolBinding) bool {
 		return binding.Plugin == candidate.Plugin && binding.Protocol == "openai_video"
 	})
+}
+
+// Unknown IDs in a mixed plugin cannot safely inherit its video endpoint.
+func (candidate canvasCandidate) pluginMayGenerateImages() bool {
+	if candidate.Plugin == nil {
+		return false
+	}
+	meta := candidate.Plugin.Meta
+	if meta.ModelDiscovery != nil && slices.Contains(meta.ModelDiscovery.ModelTypes, "image") {
+		return true
+	}
+	for _, mediaType := range meta.ModelMediaTypes {
+		if mediaType == "image" {
+			return true
+		}
+	}
+	return slices.ContainsFunc(meta.Protocols, func(claim jsplugin.ProtocolClaim) bool { return claim.Name == "openai_image_tasks" })
+}
+
+func canvasKnownModelMediaType(candidates []canvasCandidate) string {
+	known := ""
+	for _, candidate := range candidates {
+		mediaType := model.TaskPluginModelType(candidate.Plugin, candidate.ChannelSetting, candidate.UpstreamModel)
+		if mediaType == "" || (known != "" && known != mediaType) {
+			return ""
+		}
+		known = mediaType
+	}
+	return known
 }
 
 // endpointTypes 返回当前候选渠道对模型开放的有序端点能力，不读取其他分组或渠道的全站缓存。
@@ -455,6 +490,7 @@ func canvasModelPricingVersion(base, name, userGroup string, metadata model.Mode
 		if candidate.Plugin != nil {
 			route["plugin"] = candidate.Plugin.Meta.Key
 			route["version"] = candidate.Plugin.Meta.Version
+			route["model_media_type"] = model.TaskPluginModelType(candidate.Plugin, candidate.ChannelSetting, candidate.UpstreamModel)
 		}
 		routes = append(routes, route)
 	}
@@ -590,6 +626,7 @@ func GetCanvasCatalog(c *gin.Context) {
 			item.UnavailableReason = "model_disabled"
 		} else if len(profiles) != 1 {
 			item.UnavailableReason = "missing_profile"
+			item.MediaType = canvasKnownModelMediaType(candidates)
 		} else {
 			profile := profiles[0]
 			item.MediaType, item.Contract = profile.MediaType, profile.Contract

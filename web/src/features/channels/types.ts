@@ -79,8 +79,11 @@ export type Channel = z.infer<typeof channelSchema>
 // Channel Settings Types
 // ============================================================================
 
+export type TaskPluginModelTypes = Record<string, 'image' | 'video'>
+
 export interface ChannelSettings {
   task_plugin_key?: string
+  task_plugin_model_types?: TaskPluginModelTypes
   force_format?: boolean
   thinking_to_content?: boolean
   proxy?: string
@@ -209,6 +212,8 @@ export interface FetchModelsResponse {
   unsupported_models?: string[]
   /** 此次目录中可导入别名对应的上游模型；既有渠道映射优先。 */
   model_mapping?: Record<string, string>
+  /** 上游原始模型 ID 对应的任务类型，不随展示别名修改键。 */
+  model_types?: TaskPluginModelTypes
 }
 
 export interface CopyChannelResponse {

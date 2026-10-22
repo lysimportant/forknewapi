@@ -103,7 +103,7 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.4.0",
+  version: "2.4.1",
   author: { name: "lysimportant/forknewapi" },
   description: {
     en: "Image2Pro image and video generation with dynamic model discovery and reference audio",
@@ -112,6 +112,7 @@ export const meta = {
   baseUrl: "https://api.image2pro.top/v1",
   website: "https://image2pro.top/api-docs",
   models: MODELS,
+  modelMediaTypes: Object.fromEntries(VIDEO_MODELS.map((model) => [model, "video"]).concat(IMAGE_MODELS.map((model) => [model, "image"]))),
   modelDiscovery: {
     protocol: "openai",
     path: "/v1/models",

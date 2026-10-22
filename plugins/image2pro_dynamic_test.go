@@ -268,3 +268,33 @@ func TestImage2ProDynamicTypeMisuse(t *testing.T) {
 		})
 	}
 }
+
+func TestImage2ProKnownImageModelsUseImageProtocol(t *testing.T) {
+	plugin := image2ProDynamicPlugin(t)
+	for _, model := range plugin.Meta.Models {
+		assert.Contains(t, []string{"image", "video"}, plugin.Meta.ModelMediaTypes[model], "known model %s must declare its compatible media type", model)
+	}
+	assert.Equal(t, "video", plugin.Meta.ModelMediaTypes["Seedance2.0 0.9r"])
+	for _, model := range []string{"Nano-banana-Pro", "无限制-Seedream-5-Pro-2K"} {
+		t.Run(model, func(t *testing.T) {
+			assert.Equal(t, "image", plugin.Meta.ModelMediaTypes[model])
+			intent := image2ProDynamicDecode(t, plugin, "openai_image_tasks", model, model, map[string]any{
+				"model": model, "prompt": "A quiet coastal town",
+			})
+			request := image2ProDynamicObject(t, intent["requestBody"])
+			assert.Equal(t, true, request["__imageTask"])
+
+			for _, protocol := range []string{"openai_video", "openai_responses"} {
+				body := map[string]any{"model": model, "prompt": "A quiet coastal town", "duration": 5}
+				if protocol == "openai_responses" {
+					delete(body, "prompt")
+					body["input"] = "A quiet coastal town"
+				}
+				_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{protocol, "decodeRequest"}, map[string]any{
+					"model": model, "upstreamModel": model, "body": map[string]any{"kind": "json", "value": body},
+				})
+				require.Error(t, err, "image model must not be accepted by video protocol %s", protocol)
+			}
+		})
+	}
+}

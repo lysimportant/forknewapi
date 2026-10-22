@@ -101,7 +101,8 @@ type Meta struct {
 	BaseURL              string                      `json:"baseUrl,omitempty"`
 	ChannelTypes         []int                       `json:"channelTypes,omitempty"`
 	Models               []string                    `json:"models"`
-	ModelAliases         map[string]string           `json:"modelAliases,omitempty"` // ModelAliases 建议的客户端别名到已适配模型的映射；仅模型导入使用，不扩大路由范围。
+	ModelAliases         map[string]string           `json:"modelAliases,omitempty"`    // ModelAliases 建议的客户端别名到已适配模型的映射；仅模型导入使用，不扩大路由范围。
+	ModelMediaTypes      map[string]string           `json:"modelMediaTypes,omitempty"` // 已知模型的兼容媒体类型；渠道保存的目录类型优先。
 	ModelDiscovery       *ModelDiscovery             `json:"modelDiscovery,omitempty"`
 	FetchMode            string                      `json:"fetchMode"`
 	AllowedHosts         []string                    `json:"allowedHosts"`
@@ -847,6 +848,7 @@ func (r *Registry) Snapshot() RegistrySnapshot {
 }
 
 func cloneMeta(meta Meta) Meta {
+	meta.ModelMediaTypes = maps.Clone(meta.ModelMediaTypes)
 	if meta.ModelDiscovery != nil {
 		discovery := *meta.ModelDiscovery
 		discovery.Aliases = maps.Clone(discovery.Aliases)
@@ -1000,7 +1002,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "modelRouting", "models", "modelAliases", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "modelRouting", "models", "modelAliases", "modelMediaTypes", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}
@@ -1155,6 +1157,20 @@ func decodeMeta(value any) (Meta, error) {
 		}
 		if meta.ModelRouting != "channel" {
 			return Meta{}, fmt.Errorf("plugin meta modelRouting must be channel when declared")
+		}
+	}
+	if rawTypes, exists := object["modelMediaTypes"]; exists {
+		types, ok := rawTypes.(map[string]any)
+		if !ok {
+			return Meta{}, fmt.Errorf("plugin meta modelMediaTypes must be an object")
+		}
+		meta.ModelMediaTypes = make(map[string]string, len(types))
+		for model, value := range types {
+			mediaType, ok := value.(string)
+			if !ok {
+				return Meta{}, fmt.Errorf("plugin meta modelMediaTypes values must be strings")
+			}
+			meta.ModelMediaTypes[model] = mediaType
 		}
 	}
 	if rawAliases, present := object["modelAliases"]; present {
@@ -1515,6 +1531,14 @@ func normalizeV1Meta(meta *Meta) error {
 		}
 		seenFold[folded] = struct{}{}
 		models[model] = struct{}{}
+	}
+	for model, mediaType := range meta.ModelMediaTypes {
+		if _, declared := models[model]; !declared {
+			return fmt.Errorf("plugin meta modelMediaTypes key %q must exactly match a declared model", model)
+		}
+		if mediaType != "image" && mediaType != "video" {
+			return fmt.Errorf("plugin meta modelMediaTypes values may contain only image and video")
+		}
 	}
 	aliasNames := make(map[string]bool, len(meta.ModelAliases))
 	aliasTargets := make(map[string]bool, len(meta.ModelAliases))

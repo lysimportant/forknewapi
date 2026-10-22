@@ -1,5 +1,17 @@
 # Image2Pro 视频插件检查点
 
+## 2026-10-22：保留动态模型类型，修复图片误判视频
+
+- 基线 `main@0c0a997e2` 已移除图片和视频导入前缀。本轮保留已有动态协议测试，不处理用户已自行删除的旧映射提示。
+- Image2Pro 2.4.1 为已知型号声明兼容媒体类型；`Nano-banana-Pro`、`无限制-Seedream-5-Pro-2K` 均为 `image`。新型号从 `/v1/models` 的 `metadata.type` 取得类型，目录接口以原始 ID 为键返回 `model_types`，无需添加静态型号适配。
+- 渠道新建、编辑、列表获取模型和自动检测同步都保存 `setting.task_plugin_model_types`，保留其他设置；切换插件清除旧类型，过期目录响应不会写入新插件。预览与失败目录不写模型类型，只有类型变化也会刷新运行时缓存。该字段可选，无数据库迁移；已有无类型渠道回退到插件兼容声明。
+- 请求按映射后和插件最终改写后的上游 ID 检查类型，在提交及计费前拒绝协议误用。Canvas 不再把图片授予 `newapi-video-v1`；Image2Pro 使用异步图片接口，当前 Canvas 未适配该图片合同，因此图片显示 `media_type=image`、`missing_profile`，未知混合模型也不默认成视频。
+- 分工：目录/同步由主 Agent 完成，registry_impl 负责插件声明与 API 文档，catalog_impl 负责前端保存链路，plugin_impl 负责 DTO、运行时与 Canvas；所有数据验证使用合成 fixture、临时 SQLite 和本地模拟接口，无真实付费生成或生产配置改动。
+- 后端验证：`go test -mod=readonly ./... -count=1 -timeout=600s` 全部通过（45 个测试包，controller 204.501s），独立 `relaykit` 模块全套测试通过；两个模块的 `go vet -mod=readonly ./...`、宿主构建和 `plugin lint plugins/tasks/image2pro/plugin.js` 均通过，插件报告 `image2pro@2.4.1`。全套测试后仅补充预览断言，`TestImage2ProModelPreviewAndFailedSyncPreserveSavedTypes` 独立复跑通过；实现未再变化。日志位于 `.local-tests/image2pro-model-types-13b882b185714d61bf901bd9b2b000a3/`。
+- 前端定向验证：渠道配置、上游选择和模型类型保存三个文件 88 项测试全部通过；`npm run typecheck`、涉及文件的 oxlint/oxfmt 检查通过。环境无 Bun，复用现有 Node/npm 和依赖运行同名脚本，不安装或升级依赖。前端主测试使用进程级 `TEMP/TMP=web/node_modules/.cache/image2pro-t6-temp`，基线复跑与构建使用上述独立验证目录下的临时文件夹，未修改全局环境。
+- 前端全套 `npm run test -- --maxWorkers=1` 已运行：172 个文件中 166 通过、6 失败；1906 项中 1886 通过、20 失败（693.44s），渠道测试全部通过。失败均为编辑器的 `Unrecognized extension value in extension set`，提示重复 `@codemirror/state` 实例。把未修改的 `HEAD@0c0a997e2` 前端源码导出到独立临时目录、复用当前依赖，串行复跑这 6 个文件得到 50 通过、相同 20 项失败（30.65s）；逐项比较失败名称无差异，确认基线已存在。本轮不改依赖或无关编辑器实现，不能将完整前端套件记为通过。证据为上述验证目录中的 `frontend-test.log`、`frontend-head-baseline-test.log`。
+- 前端 `npm run build` 通过，日志 `frontend-build.log`；完整差异复核、Go 格式检查、`git diff --check` 和任务文件敏感信息扫描通过。没有布局、控件或新文案变更，未扩展浏览器视觉验收；尚未部署，也未验证真实供应商付费生成。
+
 ## 2026-10-16：Seedance2.0 改为按次计费
 
 - 插件版本 2.3.0：`Seedance2.0 0.9r` 与 `Seedance2.0` 使用逐模型 `count` 用量，每次生成固定为 1；管理员填写每次生成单价，表达式为 `u("count") * P`，`P` 为每次美元售价。视频时长仍需显式提供 4–15 整秒并原样发给供应商，不参与 Seedance 用量乘算。`无限制-Flash-MAX-Video` 与 `Flash视频-MAX` 继续按请求秒数计费。

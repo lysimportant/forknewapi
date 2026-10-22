@@ -378,7 +378,7 @@ func TestImage2ProBillingLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-	assert.Equal(t, "2.4.0", plugin.Meta.Version)
+	assert.Equal(t, "2.4.1", plugin.Meta.Version)
 	for _, tc := range []struct {
 		name, upstream, unit string
 		maximum              int

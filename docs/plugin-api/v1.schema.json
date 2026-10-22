@@ -15,6 +15,7 @@
     "channelTypes": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1}}, "models": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "modelRouting": {"const": "channel", "description": "仅类型 61 图像/视频插件按启用渠道保存的精确模型授权；models 可为空或建议清单，不进入全局模型索引"},
     "modelAliases": {"type": "object", "propertyNames": {"type": "string", "minLength": 1, "maxLength": 200}, "additionalProperties": {"type": "string", "minLength": 1}, "description": "模型导入建议的客户端别名到 models 中精确上游 ID 的映射；每个上游最多一个别名，不扩大生成能力，不覆盖已有渠道映射"},
+    "modelMediaTypes": {"type": "object", "additionalProperties": {"enum": ["image", "video"]}, "description": "已知模型的兼容媒体类型；键必须精确匹配 models 中的原始 ID，由宿主校验。渠道保存的目录类型优先，省略或空对象兼容旧插件，不限制目录新型号"},
     "fetchMode": {"enum": ["per_task", "batch"]}, "allowedHosts": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "protocols": {"type": "array", "uniqueItems": true, "items": {"oneOf": [
       {"enum": ["openai_video", "openai_image_tasks"]},

@@ -172,6 +172,9 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		}
 	}
 	request, hasRequest := c.Get("task_request")
+	if err := a.validateModelMediaProtocol(c, info); err != nil {
+		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+	}
 	hasUsageProfiles := len(a.plugin.Meta.UsageProfiles) > 0
 	if hasRequest && !hasUsageProfiles {
 		if err := a.validateResolvedUsageRequest(request, ""); err != nil {
@@ -181,6 +184,9 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if _, err := a.buildSubmit(c, info); err != nil {
 		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
 	}
+	if err := a.validateModelMediaProtocol(c, info); err != nil {
+		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+	}
 	// The descriptor may rewrite the model. Validate profiled requests against
 	// that final model before any quota calculation or upstream submission.
 	if hasRequest && hasUsageProfiles {
@@ -188,6 +194,49 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		if err := a.validateResolvedUsageRequest(request, usageModel); err != nil {
 			return service.TaskErrorWrapperLocal(err, "plugin_usage_invalid", http.StatusBadRequest)
 		}
+	}
+	return nil
+}
+
+// Validate only new submissions. Persisted tasks keep their frozen execution
+// snapshot, while final upstream IDs (including descriptor rewrites) determine
+// whether a new request uses the correct media protocol.
+func (a *TaskAdaptor) validateModelMediaProtocol(c *gin.Context, info *relaycommon.RelayInfo) error {
+	if info == nil || info.ChannelMeta == nil {
+		return nil
+	}
+	mediaType := model.TaskPluginModelType(a.plugin, info.ChannelSetting, cmp.Or(info.UpstreamModelName, info.OriginModelName))
+	if mediaType == "" {
+		return nil
+	}
+	protocol := ""
+	if value, present := c.Get(pluginruntime.ContextKeyPinnedEndpoint); present {
+		if pinned, ok := value.(pluginruntime.PinnedEndpoint); ok && pinned.Plugin == a.plugin {
+			protocol = pinned.Protocol
+		}
+	}
+	if protocol == "" {
+		if value, present := c.Get(pluginruntime.ContextKeyProtocolRequest); present {
+			if request, ok := value.(pluginruntime.ProtocolRequestContext); ok {
+				protocol = request.Protocol
+			}
+		}
+	}
+	if protocol == "" && c.Request != nil {
+		switch c.Request.URL.Path {
+		case "/v1/videos":
+			protocol = "openai_video"
+		case "/v1/images/tasks":
+			protocol = "openai_image_tasks"
+		case "/v1/responses":
+			protocol = "openai_responses"
+		}
+	}
+	videoResponses := protocol == "openai_responses" && slices.ContainsFunc(a.plugin.Meta.Protocols, func(claim pluginruntime.ProtocolClaim) bool {
+		return claim.Name == "openai_video"
+	})
+	if (mediaType == "image" && (protocol == "openai_video" || videoResponses)) || (mediaType == "video" && protocol == "openai_image_tasks") {
+		return fmt.Errorf("model media type %s is incompatible with protocol %s", mediaType, protocol)
 	}
 	return nil
 }

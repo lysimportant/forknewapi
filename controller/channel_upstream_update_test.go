@@ -155,6 +155,7 @@ type taskPluginDiscoveryResponse struct {
 	Source            string            `json:"source"`
 	UnsupportedModels []string          `json:"unsupported_models"`
 	ModelMapping      map[string]string `json:"model_mapping"`
+	ModelTypes        map[string]string `json:"model_types"`
 }
 
 // previewTaskPluginModels 调用渠道草稿的模型获取入口，不保存渠道或执行付费请求。
@@ -208,6 +209,7 @@ func TestFetchTypedTaskPluginModelsFiltersAndPrefixesByMetadataType(t *testing.T
 		"Test-Image-img-alpha": "img-alpha",
 		"Test-Video-vid-beta":  "vid-beta",
 	}, response.ModelMapping)
+	assert.Equal(t, map[string]string{"img-alpha": "image", "vid-beta": "video"}, response.ModelTypes)
 }
 
 func TestFetchImage2ProModelsKeepsTypedUpstreamIDsWithoutMapping(t *testing.T) {
@@ -217,6 +219,8 @@ func TestFetchImage2ProModelsKeepsTypedUpstreamIDsWithoutMapping(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[
       {"id":"new-image-model-v3","metadata":{"type":"image"}},
       {"id":"new-video-model-v2","metadata":{"type":"video"}},
+      {"id":"Nano-banana-Pro","metadata":{"type":"image"}},
+      {"id":"无限制-Seedream-5-Pro-2K","metadata":{"type":"image"}},
       {"id":"text-chat-model","metadata":{"type":"text"}},
       {"id":"untyped-model"}
     ]}`))
@@ -228,9 +232,94 @@ func TestFetchImage2ProModelsKeepsTypedUpstreamIDsWithoutMapping(t *testing.T) {
 	})
 	require.True(t, response.Success, response.Message)
 	assert.Equal(t, "upstream", response.Source)
-	assert.Equal(t, []string{"new-image-model-v3", "new-video-model-v2"}, response.Data)
+	assert.Equal(t, []string{"new-image-model-v3", "new-video-model-v2", "Nano-banana-Pro", "无限制-Seedream-5-Pro-2K"}, response.Data)
 	assert.Equal(t, []string{"text-chat-model", "untyped-model"}, response.UnsupportedModels)
 	assert.Empty(t, response.ModelMapping)
+	assert.Equal(t, map[string]string{
+		"new-image-model-v3": "image", "new-video-model-v2": "video",
+		"Nano-banana-Pro": "image", "无限制-Seedream-5-Pro-2K": "image",
+	}, response.ModelTypes)
+}
+
+func TestImage2ProModelUpdatePersistsTypesAndRefreshesTypeChanges(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	var changedType atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		mediaType := "image"
+		if changedType.Load() {
+			mediaType = "video"
+		}
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":"Nano-banana-Pro","metadata":{"type":"image"}},{"id":"future-model","metadata":{"type":%q}}]}`, mediaType)
+	}))
+	defer server.Close()
+	setting := `{"task_plugin_key":"image2pro","preserved_setting":{"enabled":true},"task_plugin_model_types":{"legacy-model":"video"}}`
+	channel := &model.Channel{
+		Type: constant.ChannelTypeTaskPlugin, Name: "typed image2pro sync", Key: "synthetic-sync-key",
+		BaseURL: &server.URL, Models: "Nano-banana-Pro", Setting: &setting,
+	}
+	settings := dto.ChannelOtherSettings{UpstreamModelUpdateCheckEnabled: true, UpstreamModelUpdateAutoSyncEnabled: true}
+	channel.SetOtherSettings(settings)
+	require.NoError(t, db.Create(channel).Error)
+
+	changed, added, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, true, true)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, 1, added)
+	reloaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, "Nano-banana-Pro,future-model", reloaded.Models)
+	assert.Equal(t, map[string]string{"Nano-banana-Pro": "image", "future-model": "image", "legacy-model": "video"}, reloaded.GetSetting().TaskPluginModelTypes)
+	var saved map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(*reloaded.Setting, &saved))
+	assert.Equal(t, map[string]any{"enabled": true}, saved["preserved_setting"])
+
+	changedType.Store(true)
+	changed, added, err = checkAndPersistChannelUpstreamModelUpdates(reloaded, &settings, true, true)
+	require.NoError(t, err)
+	assert.True(t, changed, "a type-only change must refresh the runtime cache")
+	assert.Zero(t, added)
+	reloaded, err = model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, "Nano-banana-Pro,future-model", reloaded.Models)
+	assert.Equal(t, "video", reloaded.GetSetting().TaskPluginModelTypes["future-model"])
+	changed, added, err = checkAndPersistChannelUpstreamModelUpdates(reloaded, &settings, true, true)
+	require.NoError(t, err)
+	assert.False(t, changed, "an unchanged catalog is idempotent")
+	assert.Zero(t, added)
+}
+
+func TestImage2ProModelPreviewAndFailedSyncPreserveSavedTypes(t *testing.T) {
+	for _, responseBody := range []string{`{"data":[{"id":"future-image","metadata":{"type":"image"}}]}`, `{"data":[{"id":"text-only","metadata":{"type":"text"}}]}`, `{"data":[]}`, `{"data":[{"id":"invalid,model","metadata":{"type":"image"}}]}`} {
+		t.Run(responseBody, func(t *testing.T) {
+			db := setupModelListControllerTestDB(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(responseBody))
+			}))
+			defer server.Close()
+			setting := `{"task_plugin_key":"image2pro","task_plugin_model_types":{"Nano-banana-Pro":"image"}}`
+			channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin, Name: "typed preview", Key: "synthetic-preview-key", BaseURL: &server.URL, Models: "Nano-banana-Pro", Setting: &setting}
+			require.NoError(t, db.Create(channel).Error)
+			preview := previewTaskPluginModels(t, map[string]any{"type": constant.ChannelTypeTaskPlugin, "channel_id": channel.Id, "task_plugin_key": "image2pro", "base_url": server.URL})
+			assert.Equal(t, strings.Contains(responseBody, "future-image") || strings.Contains(responseBody, "text-only"), preview.Success, preview.Message)
+			reloaded, err := model.GetChannelById(channel.Id, true)
+			require.NoError(t, err)
+			assert.Equal(t, setting, *reloaded.Setting, "preview must not save discovered types")
+			assert.Equal(t, "Nano-banana-Pro", reloaded.Models)
+			if !strings.Contains(responseBody, "future-image") {
+				settings := dto.ChannelOtherSettings{UpstreamModelUpdateAutoSyncEnabled: true}
+				changed, added, err := checkAndPersistChannelUpstreamModelUpdates(reloaded, &settings, true, true)
+				require.Error(t, err)
+				assert.False(t, changed)
+				assert.Zero(t, added)
+				reloaded, err = model.GetChannelById(channel.Id, true)
+				require.NoError(t, err)
+				assert.Equal(t, setting, *reloaded.Setting)
+				assert.Equal(t, "Nano-banana-Pro", reloaded.Models)
+				assert.Empty(t, reloaded.GetOtherSettings().UpstreamModelUpdateLastRemovedModels)
+			}
+		})
+	}
 }
 
 func TestTaskPluginDiscoveryTypePrefixAliasConflict(t *testing.T) {

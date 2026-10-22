@@ -6,18 +6,21 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 type ChannelSettings struct {
-	TaskPluginKey          string `json:"task_plugin_key,omitempty"`
-	ForceFormat            bool   `json:"force_format,omitempty"`
-	ThinkingToContent      bool   `json:"thinking_to_content,omitempty"`
-	Proxy                  string `json:"proxy"`
-	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
-	SystemPrompt           string `json:"system_prompt,omitempty"`
-	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	TaskPluginKey          string            `json:"task_plugin_key,omitempty"`
+	TaskPluginModelTypes   map[string]string `json:"task_plugin_model_types,omitempty"`
+	ForceFormat            bool              `json:"force_format,omitempty"`
+	ThinkingToContent      bool              `json:"thinking_to_content,omitempty"`
+	Proxy                  string            `json:"proxy"`
+	PassThroughBodyEnabled bool              `json:"pass_through_body_enabled,omitempty"`
+	SystemPrompt           string            `json:"system_prompt,omitempty"`
+	SystemPromptOverride   bool              `json:"system_prompt_override,omitempty"`
 	// HTTPProtocol controls outbound HTTP version negotiation for this channel.
 	// Accepted values: "", "auto" (default), "http1".
 	HTTPProtocol string `json:"http_protocol,omitempty"`
@@ -48,6 +51,27 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 	}
 	if protocol == HTTPProtocolHTTP1 && s.HTTP2ConnectionShards > 1 {
 		return fmt.Errorf("http2_connection_shards must be 1 when http_protocol is http1")
+	}
+	return s.ValidateTaskPluginModelTypes()
+}
+
+// ValidateTaskPluginModelTypes validates exact upstream IDs without normalizing identities.
+func (s *ChannelSettings) ValidateTaskPluginModelTypes() error {
+	if s == nil {
+		return nil
+	}
+	for model, mediaType := range s.TaskPluginModelTypes {
+		if model == "" || strings.TrimSpace(model) != model || len(model) > 200 || !utf8.ValidString(model) || strings.Contains(model, ",") {
+			return fmt.Errorf("invalid task_plugin_model_types model key")
+		}
+		for _, character := range model {
+			if unicode.IsControl(character) {
+				return fmt.Errorf("invalid task_plugin_model_types model key")
+			}
+		}
+		if mediaType != "image" && mediaType != "video" {
+			return fmt.Errorf("task_plugin_model_types values must be image or video")
+		}
 	}
 	return nil
 }

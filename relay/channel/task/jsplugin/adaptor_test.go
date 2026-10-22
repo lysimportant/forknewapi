@@ -62,6 +62,55 @@ export const protocols = {openai_video: {
 }};
 `
 
+func TestTaskAdaptorValidatesCatalogMediaTypeAgainstFinalModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		protocol  string
+		upstream  string
+		rewrite   string
+		types     map[string]string
+		wantError bool
+	}{
+		{name: "image cannot use video", protocol: "openai_video", upstream: "raw", types: map[string]string{"raw": "image"}, wantError: true},
+		{name: "image cannot use video responses", protocol: "openai_responses", upstream: "raw", types: map[string]string{"raw": "image"}, wantError: true},
+		{name: "video cannot use image tasks", protocol: "openai_image_tasks", upstream: "raw", types: map[string]string{"raw": "video"}, wantError: true},
+		{name: "mapped upstream determines image rejection", protocol: "openai_video", upstream: "raw", types: map[string]string{"client-alias": "video", "raw": "image"}, wantError: true},
+		{name: "mapped upstream permits video", protocol: "openai_video", upstream: "raw", types: map[string]string{"client-alias": "image", "raw": "video"}},
+		{name: "descriptor rewrite image rejected", protocol: "openai_video", upstream: "raw", rewrite: "final", types: map[string]string{"raw": "video", "final": "image"}, wantError: true},
+		{name: "descriptor rewrite video rejected from image tasks", protocol: "openai_image_tasks", upstream: "raw", rewrite: "final", types: map[string]string{"raw": "image", "final": "video"}, wantError: true},
+		{name: "legacy unknown type unchanged", protocol: "openai_video", upstream: "raw"},
+		{name: "saved type overrides static fallback", protocol: "openai_video", upstream: "mock-v1", types: map[string]string{"mock-v1": "video"}},
+		{name: "static image rejects video", protocol: "openai_video", upstream: "mock-v1", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := strings.Replace(mockPlugin, `model: "mock-v1", rewriteModel: "mock-upstream"`, `rewriteModel: "`+tt.rewrite+`"`, 1)
+			source = strings.Replace(source, `protocols: ["openai_video"],`, `protocols: ["openai_video"], modelMediaTypes: {"mock-v1":"image"},`, 1)
+			plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			c.Set("task_request", map[string]any{"prompt": "synthetic"})
+			c.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Plugin: plugin, Protocol: tt.protocol, Model: "client-alias"})
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "client-alias",
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelBaseUrl: "https://synthetic.example", UpstreamModelName: tt.upstream, ChannelSetting: dto.ChannelSettings{TaskPluginModelTypes: tt.types}},
+				TaskRelayInfo:   &relaycommon.TaskRelayInfo{},
+			}
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			taskErr := adaptor.ValidateRequestAndSetAction(c, info)
+			if tt.wantError {
+				require.NotNil(t, taskErr)
+				assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+				assert.Contains(t, taskErr.Message, "incompatible with protocol")
+			} else {
+				require.Nil(t, taskErr)
+			}
+		})
+	}
+}
+
 func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 	source := strings.Replace(mockPlugin, `taskData: {accepted: true, status: resp.statusCode},`, `taskData: {}, clientResponse: {id: ctx.publicTaskId},`, 1)
 	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})

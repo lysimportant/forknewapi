@@ -28,7 +28,7 @@ import {
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../constants'
-import type { Channel } from '../types'
+import type { Channel, TaskPluginModelTypes } from '../types'
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   advancedCustomConfigUsesRelativeUpstreamPath,
@@ -77,6 +77,37 @@ function isOptionalProxyURL(value: string | undefined): boolean {
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
+
+/** Keep upstream IDs verbatim and ignore malformed or unsupported metadata. */
+export function normalizeTaskPluginModelTypes(
+  value: unknown
+): TaskPluginModelTypes {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([, type]) => type === 'image' || type === 'video'
+    )
+  ) as TaskPluginModelTypes
+}
+
+/** Merge catalog metadata without replacing other administrator settings. */
+export function mergeTaskPluginModelTypesSetting(
+  setting: string | null | undefined,
+  modelTypes: TaskPluginModelTypes
+): string {
+  const parsed: unknown = setting?.trim() ? JSON.parse(setting) : {}
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(ERROR_MESSAGES.INVALID_JSON)
+  }
+  const settings = parsed as Record<string, unknown>
+  return JSON.stringify({
+    ...settings,
+    task_plugin_model_types: {
+      ...normalizeTaskPluginModelTypes(settings.task_plugin_model_types),
+      ...normalizeTaskPluginModelTypes(modelTypes),
+    },
+  })
+}
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -203,6 +234,9 @@ export const channelFormSchema = z
     type: z.number().min(0, ERROR_MESSAGES.REQUIRED_TYPE),
     base_url: z.string().optional(),
     task_plugin_key: z.string().optional(),
+    task_plugin_model_types: z
+      .record(z.string(), z.enum(['image', 'video']))
+      .optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
@@ -416,6 +450,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   type: 1,
   base_url: '',
   task_plugin_key: '',
+  task_plugin_model_types: {},
   key: '',
   openai_organization: '',
   models: '',
@@ -480,6 +515,7 @@ export function transformChannelToFormDefaults(
   // Parse channel extra settings from setting field
   let extraSettings = {
     task_plugin_key: '',
+    task_plugin_model_types: {} as TaskPluginModelTypes,
     force_format: false,
     thinking_to_content: false,
     proxy: '',
@@ -499,6 +535,9 @@ export function transformChannelToFormDefaults(
       )
       extraSettings = {
         task_plugin_key: parsed.task_plugin_key || '',
+        task_plugin_model_types: normalizeTaskPluginModelTypes(
+          parsed.task_plugin_model_types
+        ),
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
@@ -617,10 +656,26 @@ export function transformChannelToFormDefaults(
  * Build the setting JSON string from form extra settings
  */
 export function buildSettingJSON(formData: ChannelFormValues): string {
+  let existingSetting: Record<string, unknown> = {}
+  if (formData.setting?.trim()) {
+    const parsed: unknown = JSON.parse(formData.setting)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existingSetting = parsed as Record<string, unknown>
+    }
+  }
+  const modelTypes = normalizeTaskPluginModelTypes(
+    formData.task_plugin_model_types
+  )
   const settingObj: Record<string, unknown> = {
+    ...existingSetting,
     task_plugin_key:
       formData.type === CHANNEL_TYPE_TASK_PLUGIN
         ? formData.task_plugin_key?.trim() || ''
+        : undefined,
+    task_plugin_model_types:
+      formData.type === CHANNEL_TYPE_TASK_PLUGIN &&
+      Object.keys(modelTypes).length > 0
+        ? modelTypes
         : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
@@ -637,6 +692,8 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       : normalizeHttp2ConnectionShards(formData.http2_connection_shards)
 
   // Omit defaults so unchanged channels keep equivalent JSON.
+  delete settingObj.http_protocol
+  delete settingObj.http2_connection_shards
   if (protocol === HTTP_PROTOCOL_HTTP1) {
     settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
   } else if (shards > 1) {

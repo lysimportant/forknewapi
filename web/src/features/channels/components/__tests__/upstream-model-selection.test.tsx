@@ -355,6 +355,11 @@ test('saved channel discovery updates models and selected alias mappings in one 
     response_time: 0,
     balance_updated_time: 0,
     models: 'Yuan-Seedance-2.5-Official,manual-alias',
+    setting: JSON.stringify({
+      task_plugin_key: 'yuan',
+      task_plugin_model_types: { 'saved-upstream': 'image' },
+      administrator_option: { enabled: true },
+    }),
     model_mapping:
       '{"Yuan-Seedance-2.5-Official":"administrator-upstream","manual-alias":"manual-upstream"}',
     group: 'default',
@@ -369,6 +374,10 @@ test('saved channel discovery updates models and selected alias mappings in one 
         'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
       },
       unsupported_models: ['unadapted-upstream-model'],
+      model_types: {
+        'seedance-2.5-guanfang-anmiao': 'video',
+        yl_g7zy_seedance_v2_0_std: 'video',
+      },
     },
   })
   const put = vi
@@ -400,11 +409,23 @@ test('saved channel discovery updates models and selected alias mappings in one 
     }),
     expect.anything()
   )
-  const saved = put.mock.calls[0]?.[1] as { model_mapping: string }
+  const saved = put.mock.calls[0]?.[1] as {
+    model_mapping: string
+    setting: string
+  }
   expect(JSON.parse(saved.model_mapping)).toEqual({
     'Yuan-Seedance-2.5-Official': 'administrator-upstream',
     'manual-alias': 'manual-upstream',
     'Yuan-Seedance-2.0-LJ': 'yl_g7zy_seedance_v2_0_std',
+  })
+  expect(JSON.parse(saved.setting)).toEqual({
+    task_plugin_key: 'yuan',
+    task_plugin_model_types: {
+      'saved-upstream': 'image',
+      'seedance-2.5-guanfang-anmiao': 'video',
+      yl_g7zy_seedance_v2_0_std: 'video',
+    },
+    administrator_option: { enabled: true },
   })
   client.clear()
 })

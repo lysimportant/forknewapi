@@ -34,6 +34,7 @@ type DiscoveryState = {
   source?: ChannelModelDiscoverySource
   unsupportedModels: string[]
   modelMapping?: FetchModelsResponse['model_mapping']
+  modelTypes?: FetchModelsResponse['model_types']
   error?: unknown
 }
 
@@ -72,6 +73,7 @@ export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
         source: previous.source,
         unsupportedModels: previous.unsupportedModels,
         modelMapping: previous.modelMapping,
+        modelTypes: previous.modelTypes,
       }
     })
     return () => {
@@ -88,6 +90,7 @@ export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
       source: previous.source,
       unsupportedModels: previous.unsupportedModels,
       modelMapping: previous.modelMapping,
+      modelTypes: previous.modelTypes,
     }))
     try {
       const response =
@@ -104,6 +107,7 @@ export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
         source: response.source,
         unsupportedModels: response.unsupported_models ?? [],
         modelMapping: response.model_mapping,
+        modelTypes: response.model_types,
       })
       return response
     } catch (error) {
@@ -114,6 +118,7 @@ export function useChannelModelDiscovery(props: ChannelModelDiscoveryProps) {
         source: previous.source,
         unsupportedModels: previous.unsupportedModels,
         modelMapping: previous.modelMapping,
+        modelTypes: previous.modelTypes,
         error,
       }))
     }
