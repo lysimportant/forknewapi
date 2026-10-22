@@ -1,7 +1,9 @@
 /** Canvas 和既有渠道使用展示名；供应商创建接口必须发送目录中的真实模型 ID。 */
 const SEEDANCE_MODEL = "Seedance2.0 0.9r";
 const FLASH_MODEL = "无限制-Flash-MAX-Video";
-/** 保留既有展示名路由，并允许模型目录导入真实 ID；两组名称最终发送同一真实 ID。 */
+const IMAGE_MODEL_PREFIX = "Image2Pro-Image-";
+const VIDEO_MODEL_PREFIX = "Image2Pro-Video-";
+/** 保留既有展示名建议，并允许模型目录导入真实 ID；两组名称最终发送同一真实 ID。 */
 const VIDEO_MODELS = [SEEDANCE_MODEL, FLASH_MODEL, "Seedance2.0", "Flash视频-MAX"];
 /** 公开目录中的图片候选；文档未逐项保证其均已接入异步图片接口。 */
 const IMAGE_MODELS = [
@@ -27,14 +29,16 @@ const IMAGE_MODELS = [
 ];
 const MODELS = VIDEO_MODELS.concat(IMAGE_MODELS);
 const MODEL_SPECS = {
-  [SEEDANCE_MODEL]: { upstream: "Seedance2.0", durationMax: 15, imageLimit: 9 },
-  "Seedance2.0": { upstream: "Seedance2.0", durationMax: 15, imageLimit: 9 },
-  [FLASH_MODEL]: { upstream: "Flash视频-MAX", durationMax: 12, imageLimit: 5 },
-  "Flash视频-MAX": { upstream: "Flash视频-MAX", durationMax: 12, imageLimit: 5 },
+  [SEEDANCE_MODEL]: { upstream: "Seedance2.0", durationMin: 4, durationMax: 15, imageLimit: 9 },
+  "Seedance2.0": { upstream: "Seedance2.0", durationMin: 4, durationMax: 15, imageLimit: 9 },
+  [FLASH_MODEL]: { upstream: "Flash视频-MAX", durationMin: 4, durationMax: 12, imageLimit: 5 },
+  "Flash视频-MAX": { upstream: "Flash视频-MAX", durationMin: 4, durationMax: 12, imageLimit: 5 },
 };
+/** 未登记的新视频型号使用有限通用边界，具体型号能力仍由上游校验。 */
+const GENERIC_SPEC = { durationMin: 1, durationMax: 3600, imageLimit: 9 };
 /** 兼容的参考图入口；内部先归一为 content，供应商出站再转换为公开视频字段。 */
 const IMAGE_FIELDS = ["input_image", "images", "input_reference", "image", "reference_images", "image_urls"];
-/** 兼容识别历史媒体入口；公开创建接口仅允许图片，音视频会在归一阶段拒绝。 */
+/** 兼容历史媒体入口；本接口支持公网参考图片与音频 mediaId。 */
 const MEDIA_RULES = {
   image: {
     field: "images",
@@ -99,24 +103,27 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.3.0",
+  version: "2.4.0",
   author: { name: "lysimportant/forknewapi" },
   description: {
-    en: "Image2Pro Seedance 2.0 and Flash-MAX text and reference-image video generation",
-    zh: "Image2Pro Seedance 2.0 与 Flash-MAX 文本及参考图视频生成",
+    en: "Image2Pro image and video generation with dynamic model discovery and reference audio",
+    zh: "Image2Pro 动态图片及视频模型，支持参考图片与音频",
   },
   baseUrl: "https://api.image2pro.top/v1",
   website: "https://image2pro.top/api-docs",
   models: MODELS,
-  modelDiscovery: { protocol: "openai", path: "/v1/models" },
+  modelDiscovery: {
+    protocol: "openai",
+    path: "/v1/models",
+    modelTypes: ["image", "video"],
+    typePrefixes: { image: IMAGE_MODEL_PREFIX, video: VIDEO_MODEL_PREFIX },
+  },
+  modelRouting: "channel",
   fetchMode: "per_task",
   requiredCapabilities: ["task-submit-no-retry@1"],
-  protocols: [
-    { name: "openai_video", models: VIDEO_MODELS },
-    { name: "openai_responses", models: VIDEO_MODELS, supports: ["stream", "sync", "background"] },
-    { name: "openai_image_tasks", models: IMAGE_MODELS },
-  ],
+  protocols: ["openai_video", { name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_image_tasks"],
   usageSchema: {
+    count: { type: "number", unit: "count", unitLabel: { en: "request", zh: "次" }, description: { en: "Generation unit price", zh: "生成单价" } },
     seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
   },
   usageProfiles: [
@@ -129,6 +136,12 @@ export const meta = {
           unitLabel: { en: "request", zh: "次" },
           description: { en: "Video generation unit price", zh: "视频生成单价" },
         },
+      },
+    },
+    {
+      models: [FLASH_MODEL, "Flash视频-MAX"],
+      schema: {
+        seconds: { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } },
       },
     },
     {
@@ -152,6 +165,19 @@ function isHTTPURL(value) {
   return /^https?:\/\/(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]+)?(?:[/?#].*)?$/i.test(value);
 }
 
+function isHTTPSURL(value) {
+  return typeof value === "string" && /^https:\/\//i.test(value) && isHTTPURL(value);
+}
+
+function hasControlCharacters(value) {
+  if (typeof value !== "string") return false;
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code < 32 || code === 127) return true;
+  }
+  return false;
+}
+
 /** 兼容渠道根地址及 /v1 地址，保留自定义路径前缀且不重复版本段。 */
 function apiBase(ctx) {
   const base = typeof ctx.baseUrl === "string" ? ctx.baseUrl.replace(/\/+$/, "") : "";
@@ -160,25 +186,66 @@ function apiBase(ctx) {
 }
 
 function isImageModel(model) {
-  return typeof model === "string" && IMAGE_MODELS.includes(model);
+  return typeof model === "string" && (IMAGE_MODELS.includes(model) || model.startsWith(IMAGE_MODEL_PREFIX));
+}
+
+function isVideoModel(model) {
+  return typeof model === "string" && (Object.prototype.hasOwnProperty.call(MODEL_SPECS, model) || model.startsWith(VIDEO_MODEL_PREFIX));
+}
+
+function isImageOperation(ctx) {
+  const request = ctx && ctx.requestBody;
+  const state = ctx && ctx.state;
+  return Boolean(
+    (request && request["__imageTask"] === true) ||
+    (state && state.kind === "image") ||
+    isImageModel(ctx && ctx.model) ||
+    isImageModel(ctx && ctx.upstreamModel) ||
+    isImageModel(request && request.model)
+  );
+}
+
+/** 目录映射保留原始 upstreamModel，图片类型由客户端前缀或内部标记传递。 */
+function isImageContext(ctx) {
+  return Boolean(ctx && (isImageOperation(ctx) || ctx.protocol === "openai_image_tasks" || ctx.operation === "image" || ctx.action === "image_generation"));
+}
+
+function upstreamModelName(ctx, fallback) {
+  const model = (ctx && (ctx.upstreamModel || ctx.model)) || fallback;
+  if (typeof model !== "string" || !model.trim()) throw new Error("Image2Pro model is required");
+  const spec = Object.prototype.hasOwnProperty.call(MODEL_SPECS, model) ? MODEL_SPECS[model] : null;
+  return spec ? spec.upstream : model;
 }
 
 const IMAGE_REQUEST_FIELDS = [
-  "model", "prompt", "n", "size", "aspect_ratio", "ratio", "resolution", "image_size",
-  "input_image", "reference_image", "image", "images", "mask", "response_format",
+  "model",
+  "prompt",
+  "n",
+  "size",
+  "aspect_ratio",
+  "ratio",
+  "resolution",
+  "image_size",
+  "input_image",
+  "reference_image",
+  "image",
+  "images",
+  "mask",
+  "response_format",
 ];
 
 /** 图片异步接口仅接受公开 JSON 字段；不接收 multipart 或兼容性透传参数。 */
-function normalizeImageRequest(source, model) {
-  if (!isImageModel(model)) throw new Error("unsupported Image2Pro image model");
+function normalizeImageRequest(source, model, allowInternal = false) {
+  if (typeof model !== "string" || !model.trim() || isVideoModel(model)) throw new Error("unsupported Image2Pro image model");
   if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro image request body must be an object");
-  for (const key of Object.keys(source)) if (!IMAGE_REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro image field: " + key);
+  for (const key of Object.keys(source))
+    if (!IMAGE_REQUEST_FIELDS.includes(key) && !(allowInternal && key === "__imageTask" && source[key] === true))
+      throw new Error("unsupported Image2Pro image field: " + key);
   if (source.model !== model) throw new Error("Image2Pro image model does not match the selected model");
   if (typeof source.prompt !== "string" || !source.prompt.trim()) throw new Error("Image2Pro image prompt is required");
   if (source.n !== undefined && (!Number.isInteger(source.n) || source.n < 1 || source.n > 4))
     throw new Error("Image2Pro image n must be an integer from 1 to 4");
-  if (source.response_format !== undefined && source.response_format !== "url")
-    throw new Error("Image2Pro image response_format must be url");
+  if (source.response_format !== undefined && source.response_format !== "url") throw new Error("Image2Pro image response_format must be url");
   return { ...source };
 }
 
@@ -234,19 +301,20 @@ function clientRequestId(request) {
   return value;
 }
 
-/** 返回已适配模型的公开目录合同，同时兼容渠道已映射的真实模型 ID。 */
+/** 旧型号保留专用限制，目录新增视频型号采用通用边界。 */
 function modelSpec(model) {
-  const spec = MODEL_SPECS[model];
-  if (!spec) throw new Error("unsupported Image2Pro model");
-  return spec;
+  return Object.prototype.hasOwnProperty.call(MODEL_SPECS, model) ? MODEL_SPECS[model] : GENERIC_SPEC;
 }
 
-/** 校验媒体与上传占位符；公开视频接口只会外发图片，音视频在归一阶段明确拒绝。 */
+/** 校验媒体与上传占位符；参考音频仅接受 HTTPS URL 或 mediaId。 */
 function mediaReference(value, type, files, model) {
   modelSpec(model);
   const rule = MEDIA_RULES[type];
   if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (type === "audio" && Object.keys(value).length === 1 && typeof value.mediaId === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/.test(value.mediaId))
+      return { mediaId: value.mediaId };
     if (Object.prototype.hasOwnProperty.call(value, "__fileRef")) {
+      if (type === "audio") throw new Error("Image2Pro audio references require an HTTPS URL or mediaId");
       const file = files.find((item) => item.ref === value.__fileRef);
       if (
         !file ||
@@ -261,7 +329,9 @@ function mediaReference(value, type, files, model) {
     }
     throw new Error("Image2Pro " + type + " reference URL is invalid");
   }
-  if (isHTTPURL(value)) return value;
+  if (type === "audio" && isHTTPSURL(value)) return value;
+  if (type !== "audio" && isHTTPURL(value)) return value;
+  if (type === "audio") throw new Error("Image2Pro audio references require an HTTPS URL or mediaId");
   const data = typeof value === "string" ? /^data:([^;,]+);base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/.exec(value) : null;
   if (data && data[2] && rule.mimes.includes(data[1])) return value;
   throw new Error("Image2Pro " + type + " references must be HTTP(S) URLs or supported " + type + " data URLs");
@@ -270,9 +340,15 @@ function mediaReference(value, type, files, model) {
 /** 校验兼容 content，保留文字与图片顺序、重复引用和角色。 */
 function normalizeContent(content, files, model) {
   const spec = modelSpec(model);
-  const name = model === FLASH_MODEL || model === "Flash视频-MAX" ? "Image2Pro Flash-MAX" : "Image2Pro Seedance";
+  const name =
+    model === FLASH_MODEL || model === "Flash视频-MAX"
+      ? "Image2Pro Flash-MAX"
+      : Object.prototype.hasOwnProperty.call(MODEL_SPECS, model)
+        ? "Image2Pro Seedance"
+        : "Image2Pro video";
   if (!Array.isArray(content) || content.length === 0) throw new Error(name + " content must be a non-empty array");
   const counts = { image: 0, video: 0, audio: 0 };
+  const seenAudios = new Set();
   let textLength = 0;
   let hasText = false;
   const normalized = content.map((item) => {
@@ -293,29 +369,50 @@ function normalizeContent(content, files, model) {
     if (!["image_url", "video_url", "audio_url"].includes(item.type)) throw new Error("unsupported " + name + " content type");
     if (Object.keys(item).some((field) => !["type", item.type, "role"].includes(field))) throw new Error("unsupported " + name + " media content field");
     const reference = item[item.type];
-    if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).some((field) => field !== "url"))
-      throw new Error(name + " media content requires a URL object without extra fields");
+    if (
+      !reference ||
+      typeof reference !== "object" ||
+      Array.isArray(reference) ||
+      Object.keys(reference).some((field) => field !== "url" && field !== "mediaId") ||
+      (item.type === "audio_url" && Object.keys(reference).length !== 1) ||
+      (item.type !== "audio_url" && Object.keys(reference).some((field) => field !== "url"))
+    )
+      throw new Error(name + " media content requires a URL or mediaId object without extra fields");
     const type = item.type.slice(0, -4);
     const role = item.role === undefined ? "reference_" + type : item.role;
     if (role !== "reference_" + type) throw new Error("unsupported " + name + " " + type + " role");
     counts[type]++;
     if (type === "image" && counts.image > spec.imageLimit) throw new Error(name + " supports at most " + spec.imageLimit + " reference images");
-    if (type !== "image") throw new Error("Image2Pro public video API supports image references only");
-    return { type: item.type, [item.type]: { url: mediaReference(reference.url, type, files, model) }, role };
+    if (type === "audio" && counts.audio > MEDIA_RULES.audio.limit)
+      throw new Error(name + " supports at most " + MEDIA_RULES.audio.limit + " reference audios");
+    if (type === "video") throw new Error("Image2Pro public video API does not support video references");
+    const rawReference = type === "audio" && Object.prototype.hasOwnProperty.call(reference, "mediaId") ? { mediaId: reference.mediaId } : reference.url;
+    const normalizedReference = mediaReference(rawReference, type, files, model);
+    if (type === "audio") {
+      const audioKey = normalizedReference && typeof normalizedReference === "object" ? "mediaId:" + normalizedReference.mediaId : "url:" + normalizedReference;
+      if (seenAudios.has(audioKey)) throw new Error(name + " does not allow duplicate audio references");
+      seenAudios.add(audioKey);
+    }
+    return {
+      type: item.type,
+      [item.type]: type === "audio" && normalizedReference && typeof normalizedReference === "object" ? normalizedReference : { url: normalizedReference },
+      role,
+    };
   });
-  if (!hasText && !counts.image) throw new Error("Image2Pro requires prompt or at least one reference image");
+  if (!hasText && !counts.image && !counts.audio) throw new Error("Image2Pro requires prompt or at least one reference image or audio");
   return normalized;
 }
 
-/** 兼容入口归一为内部 content；两个模型按公开目录校验时长、比例和图片数量。 */
+/** 兼容入口归一为内部 content；旧型号保留时长、比例和图片数量限制。 */
 function normalizeRequest(source, model, files = []) {
+  if (typeof model !== "string" || !model.trim() || isImageModel(model)) throw new Error("unsupported Image2Pro video model");
   if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro request body must be an object");
   const spec = modelSpec(model);
   for (const key of Object.keys(source)) if (!REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro field: " + key);
   if (BOOLEAN_FIELDS.some((field) => source[field] !== undefined)) throw new Error("Image2Pro public video API does not support Seedance generation flags");
   const request = { model: source.model, duration: requestedSeconds(source) };
-  if (!Number.isInteger(request.duration) || request.duration < 4 || request.duration > spec.durationMax)
-    throw new Error("Image2Pro duration must be an integer from 4 to " + spec.durationMax);
+  if (!Number.isInteger(request.duration) || request.duration < spec.durationMin || request.duration > spec.durationMax)
+    throw new Error("Image2Pro duration must be an integer from " + spec.durationMin + " to " + spec.durationMax);
   let content = [];
   if (source.content !== undefined) {
     if (source.prompt !== undefined || Object.values(MEDIA_RULES).some((rule) => rule.aliases.some((field) => source[field] !== undefined)))
@@ -339,11 +436,17 @@ function normalizeRequest(source, model, files = []) {
       let url = reference;
       let role = "reference_" + type;
       if (reference && typeof reference === "object" && !Array.isArray(reference) && !Object.prototype.hasOwnProperty.call(reference, "__fileRef")) {
-        if (Object.keys(reference).some((key) => !["url", "role"].includes(key))) throw new Error("unsupported Image2Pro reference field");
-        url = reference.url;
+        const audioMediaId = type === "audio" && Object.keys(reference).length === 1 && Object.prototype.hasOwnProperty.call(reference, "mediaId");
+        if (
+          Object.keys(reference).some((key) => !["url", "role", ...(type === "audio" ? ["mediaId"] : [])].includes(key)) ||
+          (type === "audio" && Object.prototype.hasOwnProperty.call(reference, "mediaId") && !audioMediaId) ||
+          (type === "audio" && !audioMediaId && !Object.prototype.hasOwnProperty.call(reference, "url"))
+        )
+          throw new Error("unsupported Image2Pro reference field");
+        url = audioMediaId ? { mediaId: reference.mediaId } : reference.url;
         if (reference.role !== undefined) role = reference.role;
       }
-      content.push({ type: type + "_url", [type + "_url"]: { url }, role });
+      content.push({ type: type + "_url", [type + "_url"]: type === "audio" && url && typeof url === "object" ? url : { url }, role });
     }
   }
   request.content = normalizeContent(content, files, model);
@@ -362,6 +465,7 @@ function normalizeRequest(source, model, files = []) {
 
 /** 根据已校验的内部 content 分类宿主动作。 */
 function videoAction(content) {
+  if (content.some((item) => item.type === "audio_url" || item.type === "video_url")) return "reference_to_video";
   return content.some((item) => item.type === "image_url") ? "image_to_video" : "text_to_video";
 }
 
@@ -435,29 +539,35 @@ function multipartRequest(body, model) {
  * @returns {object} 使用顶层 prompt、input_image 或 images 的供应商请求体。
  * @throws {Error} 内部请求包含公开接口无法表达的素材类型时拒绝发送。
  */
-function providerVideoBody(request) {
-  const body = { model: modelSpec(request.model).upstream, duration: request.duration, ratio: request.ratio };
+function providerVideoBody(request, upstreamModel) {
+  const body = { model: upstreamModel, duration: request.duration, ratio: request.ratio };
   let prompt = "";
   const images = [];
+  const audios = [];
   for (const item of request.content) {
     if (item.type === "text") {
       prompt += item.text;
       continue;
     }
-    if (item.type !== "image_url") throw new Error("Image2Pro public video API supports image references only");
-    images.push(item.image_url.url);
+    if (item.type === "image_url") images.push(item.image_url.url);
+    else if (item.type === "audio_url") {
+      const audio = item.audio_url;
+      audios.push(audio && Object.prototype.hasOwnProperty.call(audio, "mediaId") ? { mediaId: audio.mediaId } : audio.url);
+    } else throw new Error("Image2Pro public video API does not support video references");
   }
   if (prompt.trim()) body.prompt = prompt;
   if (images.length === 1) body.input_image = images[0];
   else if (images.length > 1) body.images = images;
+  if (audios.length) body.audios = audios;
   return body;
 }
 
 /** 构造单次 JSON 提交，上传占位符由宿主替换；幂等键与禁止重试避免未知结果重复扣费。 */
 export function buildSubmitRequest(ctx) {
   const model = ctx.upstreamModel || ctx.model;
-  if (isImageModel(model)) {
-    const request = normalizeImageRequest(ctx.requestBody, model);
+  if (isImageContext(ctx)) {
+    const request = normalizeImageRequest(ctx.requestBody, model, true);
+    delete request["__imageTask"];
     const key = ctx.publicTaskId;
     if (typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(key))
       throw new Error("a valid NewAPI public task ID is required for Image2Pro image generation");
@@ -476,7 +586,7 @@ export function buildSubmitRequest(ctx) {
     throw new Error("a valid public task ID or client idempotency key is required for Image2Pro");
   delete request.client_request_id;
   const action = videoAction(request.content);
-  const body = providerVideoBody(request);
+  const body = providerVideoBody(request, upstreamModelName(ctx, model));
   return {
     url: apiBase(ctx) + "/videos",
     method: "POST",
@@ -491,15 +601,13 @@ export function buildSubmitRequest(ctx) {
 export function parseSubmitResponse(ctx, response) {
   const body = response && response.body;
   const model = ctx.upstreamModel || ctx.model;
-  if (isImageModel(model)) {
+  if (isImageContext(ctx)) {
     if (response && response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300))
       throw new Error("Image2Pro image task creation failed");
-    if (!body || typeof body !== "object" || Array.isArray(body) || !validTaskId(body.id))
-      throw new Error("Image2Pro image task response is invalid");
-    if (!["queued", "processing", "completed", "failed"].includes(body.status))
-      throw new Error("Image2Pro returned an unrecognized image task status");
+    if (!body || typeof body !== "object" || Array.isArray(body) || !validTaskId(body.id)) throw new Error("Image2Pro image task response is invalid");
+    if (!["queued", "processing", "completed", "failed"].includes(body.status)) throw new Error("Image2Pro returned an unrecognized image task status");
     if (body.status === "completed" && !imageResultURLs(body)) throw new Error("Image2Pro completed image task response is invalid");
-    const result = { taskId: body.id, taskData: body, state: { n: requestedImageCount(ctx.requestBody || {}) } };
+    const result = { taskId: body.id, taskData: body, state: { kind: "image", n: requestedImageCount(ctx.requestBody || {}) } };
     if (body.status === "completed" || body.status === "failed") result.immediate = imageTaskResult(ctx, body);
     return result;
   }
@@ -523,7 +631,7 @@ export function parseSubmitResponse(ctx, response) {
 /** Seedance 每个任务计一次，Flash 使用请求秒数；旧倍率入口不叠加用量或上游积分。 */
 export function extractUsage(ctx) {
   const model = ctx.upstreamModel || ctx.model;
-  if (isImageModel(model)) {
+  if (isImageContext(ctx)) {
     if (ctx.usagePurpose === "billing_ratios") return {};
     return { count: requestedImageCount(ctx.requestBody || {}) };
   }
@@ -536,14 +644,14 @@ export function extractUsage(ctx) {
 export function extractUsageOnComplete(task, result) {
   if (!result || result.status !== "SUCCESS") return null;
   const state = task.state || {};
-  if (isImageModel(task.upstreamModel || task.model)) return { count: requestedImageCount(state) };
+  if (state.kind === "image" || isImageModel(task.upstreamModel || task.model)) return { count: requestedImageCount(state) };
   const seconds = requestedSeconds(state);
   return state.billingUnit === "count" ? { count: 1 } : { seconds };
 }
 
 /** 查询只接受供应商十六进制任务 ID，鉴权固定使用当前渠道。 */
 export function buildQueryRequest(ctx) {
-  if (isImageModel(ctx.upstreamModel || ctx.model)) {
+  if (isImageContext(ctx)) {
     if (!validTaskId(ctx.taskId)) throw new Error("Image2Pro image task ID is invalid");
     return {
       url: apiBase(ctx) + "/images/tasks/" + encodeURIComponent(ctx.taskId),
@@ -558,7 +666,7 @@ export function buildQueryRequest(ctx) {
 
 /** 映射文档明确状态；完成须有安全视频地址，未知状态不伪装为处理中。 */
 export function parseTaskResult(ctx, body) {
-  if (isImageModel(ctx.upstreamModel || ctx.model)) return imageTaskResult(ctx, body);
+  if (isImageContext(ctx)) return imageTaskResult(ctx, body);
   if (!body || typeof body !== "object" || Array.isArray(body)) return { status: "UNKNOWN", reason: "invalid Image2Pro task response" };
   const status = { processing: "IN_PROGRESS", completed: "SUCCESS", failed: "FAILURE" }[body.status];
   if (typeof status !== "string") return { status: "UNKNOWN", reason: "unrecognized Image2Pro task status" };
@@ -586,7 +694,7 @@ function imageTaskResult(ctx, body) {
     if (!urls) return { status: "UNKNOWN", reason: "Image2Pro completed image task has invalid image URLs" };
     result.url = urls[0];
     result.progress = "100%";
-    result.state = { n: requestedImageCount((ctx && (ctx.state || ctx.requestBody)) || {}) };
+    result.state = { kind: "image", n: requestedImageCount((ctx && (ctx.state || ctx.requestBody)) || {}) };
   } else if (status === "IN_PROGRESS") result.progress = "50%";
   return result;
 }
@@ -595,24 +703,30 @@ function imageTaskResult(ctx, body) {
 function renderImageTask(_ctx, task) {
   const data = task && task.data && typeof task.data === "object" && !Array.isArray(task.data) ? task.data : {};
   const statuses = {
-    NOT_START: "queued", SUBMITTED: "queued", QUEUED: "queued",
-    IN_PROGRESS: "processing", SUCCESS: "completed", FAILURE: "failed",
+    NOT_START: "queued",
+    SUBMITTED: "queued",
+    QUEUED: "queued",
+    IN_PROGRESS: "processing",
+    SUCCESS: "completed",
+    FAILURE: "failed",
   };
   const status = statuses[task && task.status] || "unknown";
   const output = {
-    id: task && task.task_id || "",
+    id: (task && task.task_id) || "",
     object: "image.task",
     model: typeof data.model === "string" ? data.model : "",
     status,
-    created_at: task && task.created_at || 0,
+    created_at: (task && task.created_at) || 0,
   };
   if (task && Number.isFinite(task.updated_at) && task.updated_at > 0) output.updated_at = task.updated_at;
-  if (data.expires_at !== undefined &&
+  if (
+    data.expires_at !== undefined &&
     ((typeof data.expires_at === "number" && Number.isFinite(data.expires_at)) ||
-      (typeof data.expires_at === "string" && data.expires_at.length <= 64 && !/[\x00-\x1f\x7f]/.test(data.expires_at))))
+      (typeof data.expires_at === "string" && data.expires_at.length <= 64 && !hasControlCharacters(data.expires_at)))
+  )
     output.expires_at = data.expires_at;
   if (Number.isInteger(data.n) && data.n >= 1 && data.n <= 4) output.n = data.n;
-  if (typeof data.accounting_status === "string" && data.accounting_status.length <= 64 && !/[\x00-\x1f\x7f]/.test(data.accounting_status))
+  if (typeof data.accounting_status === "string" && data.accounting_status.length <= 64 && !hasControlCharacters(data.accounting_status))
     output.accounting_status = data.accounting_status;
   if (status === "completed") {
     const urls = imageResultURLs(data);
@@ -620,8 +734,7 @@ function renderImageTask(_ctx, task) {
       output.status = "failed";
       output.error = { code: "image_generation_failed", message: "Image2Pro image generation failed" };
     } else output.data = urls.map((url) => ({ url }));
-  } else if (status === "failed")
-    output.error = { code: "image_generation_failed", message: "Image2Pro image generation failed" };
+  } else if (status === "failed") output.error = { code: "image_generation_failed", message: "Image2Pro image generation failed" };
   return output;
 }
 
@@ -650,6 +763,7 @@ function videoOutput(ctx) {
 function responsesRequest(ctx) {
   const source = ctx.body && ctx.body.kind === "json" && ctx.body.value;
   if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro Responses requires a JSON object");
+  if (isImageModel(ctx.model || source.model)) throw new Error("unsupported Image2Pro video model");
   for (const key of Object.keys(source))
     if (!["input", "stream", "background"].includes(key) && !REQUEST_FIELDS.includes(key)) throw new Error("unsupported Image2Pro Responses field: " + key);
   const request = {};
@@ -697,7 +811,7 @@ function responsesRequest(ctx) {
 /** 标准视频与 Responses 共用生成驱动、逐模型计费和宿主管理的制品权限。 */
 export const protocols = {
   openai_image_tasks: {
-    /** 图片异步任务只接受文档定义的 JSON 请求和明确的图片模型候选。 */
+    /** 图片异步任务只接受文档定义的 JSON 字段，类型由目录前缀确认。 */
     decodeRequest: function (ctx) {
       const body = ctx.body;
       if (!body || body.kind !== "json") throw new Error("Image2Pro image tasks require a JSON body");
@@ -705,10 +819,11 @@ export const protocols = {
       if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro image request body must be an object");
       const model = ctx.model || source.model;
       const upstreamModel = ctx.upstreamModel || model;
-      if (!isImageModel(upstreamModel)) throw new Error("unsupported Image2Pro image model");
+      if (!isImageModel(model) && !isImageModel(upstreamModel)) throw new Error("unsupported Image2Pro image model");
       if (source.model !== model) throw new Error("Image2Pro image model does not match the selected model");
       const request = normalizeImageRequest(source, model);
       request.model = upstreamModel;
+      request["__imageTask"] = true;
       return { kind: "submit", model, requestBody: request };
     },
     render: function (ctx, task) {
@@ -724,6 +839,7 @@ export const protocols = {
       else if (body && body.kind === "multipart") source = multipartRequest(body, ctx.upstreamModel || ctx.model);
       else throw new Error("Image2Pro requires a JSON or multipart body");
       const model = ctx.model || (source && source.model);
+      if (isImageModel(model)) throw new Error("unsupported Image2Pro video model");
       const request = normalizeRequest(source, ctx.upstreamModel || model, body.kind === "multipart" ? body.files || [] : []);
       request.model = model;
       return {

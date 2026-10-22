@@ -45,13 +45,92 @@ export function parseTaskResult() { return {}; }
 // registerChannelRoutedModelDiscoveryTestPlugin 注册仅由渠道模型授权的统一视频插件。
 // 测试目录获取不能修改静态模型清单、全局模型路由或已保存的渠道配置。
 func registerChannelRoutedModelDiscoveryTestPlugin(t *testing.T) string {
+	return registerChannelRoutedModelDiscoveryTestPluginWithDiscovery(t, `{protocol: "openai", path: "/v1/models"}`)
+}
+
+func registerChannelRoutedModelDiscoveryTestPluginWithDiscovery(t *testing.T, discovery string) string {
 	t.Helper()
 	const key = "channel-discovery-test"
-	const source = `
+	source := fmt.Sprintf(`
 export const meta = {
   apiVersion: 1, key: "channel-discovery-test", name: "Channel Discovery", version: "1.0.0", author: {name: "Test"},
   models: [], modelRouting: "channel", fetchMode: "per_task", protocols: ["openai_video"],
-  modelDiscovery: {protocol: "openai", path: "/v1/models"},
+  modelDiscovery: %s,
+  usageSchema: {videos: {type: "number", unit: "count", description: {en: "Video generation unit price", zh: "视频生成单价"}}},
+};
+export const protocols = {openai_video: {decodeRequest() { return {}; }, render() { return {}; }}};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+export function listArtifacts() { return []; }
+export function buildContentRequest() { return {}; }
+`, discovery)
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = jsplugin.DefaultRegistry.Unregister(key) })
+	return key
+}
+
+func TestFetchChannelRoutedTaskPluginNativeCatalogAliases(t *testing.T) {
+	for _, test := range []struct {
+		protocol string
+		path     string
+		bodies   []string
+	}{
+		{
+			protocol: "gemini", path: "/v1beta/models",
+			bodies: []string{
+				`{"models":[{"name":"models/Known-ID"}],"nextPageToken":"next-page"}`,
+				`{"models":[{"name":"models/Future-ID"}]}`,
+			},
+		},
+		{
+			protocol: "bailian", path: "/api/v1/models",
+			bodies: []string{
+				`{"success":true,"output":{"total":2,"page_no":1,"page_size":20,"models":[{"model":"Known-ID"}]}}`,
+				`{"success":true,"output":{"total":2,"page_no":2,"page_size":20,"models":[{"model":"Future-ID"}]}}`,
+			},
+		},
+	} {
+		t.Run(test.protocol, func(t *testing.T) {
+			key := registerChannelRoutedModelDiscoveryTestPluginWithDiscovery(t, fmt.Sprintf(
+				`{protocol: %q, path: %q, aliasPrefix: "Native-", aliases: {"Friendly-Known": "Known-ID", "Absent-Alias": "absent"}}`, test.protocol, test.path,
+			))
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				index := int(requests.Add(1)) - 1
+				assert.Equal(t, test.path, r.URL.Path)
+				if index == 1 && test.protocol == "gemini" {
+					assert.Equal(t, "next-page", r.URL.Query().Get("pageToken"))
+				}
+				if test.protocol == "bailian" {
+					assert.Equal(t, fmt.Sprint(index+1), r.URL.Query().Get("page_no"))
+				}
+				_, _ = w.Write([]byte(test.bodies[min(index, len(test.bodies)-1)]))
+			}))
+			defer server.Close()
+			response := previewTaskPluginModels(t, map[string]any{
+				"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": key,
+				"base_url": server.URL, "key": "synthetic-native-key",
+			})
+			require.True(t, response.Success, response.Message)
+			assert.Equal(t, []string{"Friendly-Known", "Native-Future-ID"}, response.Data)
+			assert.Equal(t, map[string]string{"Friendly-Known": "Known-ID", "Native-Future-ID": "Future-ID"}, response.ModelMapping)
+			assert.Empty(t, response.UnsupportedModels)
+			assert.Equal(t, int32(2), requests.Load())
+		})
+	}
+}
+
+func registerTypedChannelModelDiscoveryTestPlugin(t *testing.T) string {
+	t.Helper()
+	const key = "typed-channel-discovery-test"
+	const source = `
+export const meta = {
+  apiVersion: 1, key: "typed-channel-discovery-test", name: "Typed Channel Discovery", version: "1.0.0", author: {name: "Test"},
+  models: [], modelRouting: "channel", fetchMode: "per_task", protocols: ["openai_video"],
+  modelDiscovery: {protocol: "openai", path: "/v1/models", modelTypes: ["image", "video"], typePrefixes: {image: "Image2Pro-Image-", video: "Image2Pro-Video-"}},
   usageSchema: {videos: {type: "number", unit: "count", description: {en: "Video generation unit price", zh: "视频生成单价"}}},
 };
 export const protocols = {openai_video: {decodeRequest() { return {}; }, render() { return {}; }}};
@@ -104,6 +183,42 @@ func TestFetchTaskPluginModelsUsesDeclaredCatalogWithoutDiscovery(t *testing.T) 
 	unknown := previewTaskPluginModels(t, map[string]any{"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "unknown-plugin"})
 	assert.False(t, unknown.Success)
 	assert.Contains(t, unknown.Message, "not registered")
+}
+
+func TestFetchTypedTaskPluginModelsFiltersAndPrefixesByMetadataType(t *testing.T) {
+	key := registerTypedChannelModelDiscoveryTestPlugin(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		_, _ = w.Write([]byte(`{"data":[
+      {"id":"img-alpha","metadata":{"type":"image"}},
+      {"id":"vid-beta","metadata":{"type":"video"}},
+      {"id":"txt-gamma","metadata":{"type":"text"}},
+      {"id":"missing-type"}
+    ]}`))
+	}))
+	defer server.Close()
+	response := previewTaskPluginModels(t, map[string]any{
+		"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": key,
+		"base_url": server.URL, "key": "fixture-key",
+	})
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, []string{"Image2Pro-Image-img-alpha", "Image2Pro-Video-vid-beta"}, response.Data)
+	assert.Equal(t, []string{"txt-gamma", "missing-type"}, response.UnsupportedModels)
+	assert.Equal(t, map[string]string{
+		"Image2Pro-Image-img-alpha": "img-alpha",
+		"Image2Pro-Video-vid-beta":  "vid-beta",
+	}, response.ModelMapping)
+}
+
+func TestTaskPluginDiscoveryTypePrefixAliasConflict(t *testing.T) {
+	_, err := taskPluginDiscoveryAliasesForCatalogWithReserved([]taskPluginCatalogModel{
+		{ID: "x", Type: "image"},
+		{ID: "Ax", Type: "video"},
+	}, jsplugin.ModelDiscovery{TypePrefixes: map[string]string{
+		"image": "A",
+		"video": "B",
+	}}, []string{"x", "Ax"})
+	require.ErrorContains(t, err, "conflicts with an exact upstream ID")
 }
 
 // TestFetchTaskPluginModelAliases 只为本次实时目录中已适配模型提供映射，内部更新检测仍使用上游 ID。

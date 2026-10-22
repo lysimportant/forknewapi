@@ -266,6 +266,24 @@ func getUpstreamModelUpdateMinCheckIntervalSeconds() int64 {
 }
 
 func parseOpenAIModelIDs(body []byte) ([]string, error) {
+	models, err := parseOpenAIModelCatalog(body)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeModelNames(lo.Map(models, func(item taskPluginCatalogModel, _ int) string {
+		return item.ID
+	})), nil
+}
+
+// taskPluginCatalogModel keeps the optional type advertised by an OpenAI
+// compatible model directory. The type is used only for channel-scoped model
+// discovery; request routing continues to use the exact ID.
+type taskPluginCatalogModel struct {
+	ID   string
+	Type string
+}
+
+func parseOpenAIModelCatalog(body []byte) ([]taskPluginCatalogModel, error) {
 	var result struct {
 		Data *[]OpenAIModel `json:"data"`
 	}
@@ -275,13 +293,38 @@ func parseOpenAIModelIDs(body []byte) ([]string, error) {
 	if result.Data == nil {
 		return nil, fmt.Errorf("invalid OpenAI Models response: data is required")
 	}
-	ids := normalizeModelNames(lo.Map(*result.Data, func(item OpenAIModel, _ int) string {
-		return item.ID
-	}))
-	if len(ids) == 0 {
+	models := make([]taskPluginCatalogModel, 0, len(*result.Data))
+	seen := make(map[string]int, len(*result.Data))
+	for _, item := range *result.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		modelType := ""
+		if item.Metadata != nil {
+			if value, ok := item.Metadata["type"].(string); ok {
+				modelType = strings.TrimSpace(value)
+			}
+		}
+		if index, ok := seen[id]; ok {
+			// Identical duplicate entries have historically been normalized away;
+			// reject only a contradictory type so filtering cannot silently choose
+			// one interpretation of the same upstream ID.
+			if models[index].Type != "" && modelType != "" && models[index].Type != modelType {
+				return nil, fmt.Errorf("invalid OpenAI Models response: model ID %q has conflicting metadata.type values", id)
+			}
+			if models[index].Type == "" {
+				models[index].Type = modelType
+			}
+			continue
+		}
+		seen[id] = len(models)
+		models = append(models, taskPluginCatalogModel{ID: id, Type: modelType})
+	}
+	if len(models) == 0 {
 		return nil, fmt.Errorf("OpenAI Models response contains no valid model IDs")
 	}
-	return ids, nil
+	return models, nil
 }
 
 func sanitizeFetchModelsError(err error, key string) error {
@@ -401,25 +444,53 @@ func (catalog channelUpstreamModelCatalog) discoveryResponse() gin.H {
 // taskPluginDiscoveryAliases 仅为本次目录生成导入建议：固定别名优先，其他型号加前缀。
 // 拒绝名称冲突和映射链，不截断或改写精确目标；目录读取不修改渠道配置。
 func taskPluginDiscoveryAliases(models []string, discovery jsplugin.ModelDiscovery) (map[string]string, error) {
+	items := make([]taskPluginCatalogModel, 0, len(models))
+	for _, id := range models {
+		items = append(items, taskPluginCatalogModel{ID: id})
+	}
+	return taskPluginDiscoveryAliasesForCatalog(items, discovery)
+}
+
+func taskPluginDiscoveryAliasesForCatalog(models []taskPluginCatalogModel, discovery jsplugin.ModelDiscovery) (map[string]string, error) {
+	reserved := make([]string, 0, len(models))
+	for _, item := range models {
+		reserved = append(reserved, item.ID)
+	}
+	return taskPluginDiscoveryAliasesForCatalogWithReserved(models, discovery, reserved)
+}
+
+func taskPluginDiscoveryAliasesForCatalogWithReserved(models []taskPluginCatalogModel, discovery jsplugin.ModelDiscovery, reservedIDs []string) (map[string]string, error) {
 	if discovery.AliasPrefix == "" && len(discovery.Aliases) == 0 {
-		return nil, nil
+		if len(discovery.TypePrefixes) == 0 {
+			return nil, nil
+		}
 	}
 	byTarget := make(map[string]string, len(discovery.Aliases))
 	for alias, target := range discovery.Aliases {
 		byTarget[target] = alias
 	}
-	upstreamIDs := make(map[string]bool, len(models))
-	for _, id := range models {
+	upstreamIDs := make(map[string]bool, len(reservedIDs))
+	for _, id := range reservedIDs {
 		upstreamIDs[id] = true
 	}
+	for _, item := range models {
+		if item.ID != "" {
+			upstreamIDs[item.ID] = true
+		}
+	}
 	aliases := make(map[string]string, len(models))
-	for _, id := range models {
+	for _, item := range models {
+		id := item.ID
 		alias, found := byTarget[id]
 		if !found {
-			if discovery.AliasPrefix == "" {
+			prefix := discovery.AliasPrefix
+			if typePrefix, ok := discovery.TypePrefixes[item.Type]; ok {
+				prefix = typePrefix
+			}
+			if prefix == "" {
 				continue
 			}
-			alias = discovery.AliasPrefix + id
+			alias = prefix + id
 		}
 		for _, name := range []string{alias, id} {
 			if name == "" || strings.TrimSpace(name) != name || !utf8.ValidString(name) || strings.Contains(name, ",") || strings.ContainsFunc(name, unicode.IsControl) {
@@ -438,6 +509,24 @@ func taskPluginDiscoveryAliases(models []string, discovery jsplugin.ModelDiscove
 		aliases[alias] = id
 	}
 	return aliases, nil
+}
+
+func filterTaskPluginModelCatalog(models []taskPluginCatalogModel, discovery jsplugin.ModelDiscovery) (supported []taskPluginCatalogModel, unsupported []string) {
+	if discovery.ModelTypes == nil {
+		return models, nil
+	}
+	allowed := make(map[string]struct{}, len(discovery.ModelTypes))
+	for _, modelType := range discovery.ModelTypes {
+		allowed[modelType] = struct{}{}
+	}
+	for _, item := range models {
+		if _, ok := allowed[item.Type]; !ok {
+			unsupported = append(unsupported, item.ID)
+			continue
+		}
+		supported = append(supported, item)
+	}
+	return supported, unsupported
 }
 
 // fetchChannelUpstreamModelCatalog 为管理页面读取模型及其来源；普通渠道保留既有获取规则。
@@ -557,6 +646,7 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var ids []string
+	var catalogModels []taskPluginCatalogModel
 	remainingBytes := int64(1 << 20)
 	seenPageTokens := make(map[string]bool)
 	seenModelIDs := make(map[string]bool)
@@ -580,10 +670,13 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 		hasNextPage := false
 		switch discovery.Protocol {
 		case "openai":
-			ids, err = parseOpenAIModelIDs(body)
+			catalogModels, err = parseOpenAIModelCatalog(body)
 			if err != nil {
 				return catalog, err
 			}
+			ids = normalizeModelNames(lo.Map(catalogModels, func(item taskPluginCatalogModel, _ int) string {
+				return item.ID
+			}))
 		case "gemini":
 			var result struct {
 				Models []struct {
@@ -655,10 +748,22 @@ func fetchTaskPluginModelCatalog(channel *model.Channel) (catalog channelUpstrea
 			if plugin.Meta.ModelRouting != "channel" {
 				models = intersectModelNames(ids, plugin.Meta.Models)
 				unsupportedModels = subtractModelNames(ids, plugin.Meta.Models)
+			} else if discovery.ModelTypes != nil {
+				filtered, rejected := filterTaskPluginModelCatalog(catalogModels, discovery)
+				models = lo.Map(filtered, func(item taskPluginCatalogModel, _ int) string { return item.ID })
+				unsupportedModels = rejected
 			}
 			aliases := plugin.Meta.ModelAliases
 			if plugin.Meta.ModelRouting == "channel" {
-				aliases, err = taskPluginDiscoveryAliases(models, discovery)
+				if discovery.Protocol == "openai" {
+					aliasModels := catalogModels
+					if discovery.ModelTypes != nil {
+						aliasModels, _ = filterTaskPluginModelCatalog(catalogModels, discovery)
+					}
+					aliases, err = taskPluginDiscoveryAliasesForCatalogWithReserved(aliasModels, discovery, ids)
+				} else {
+					aliases, err = taskPluginDiscoveryAliases(models, discovery)
+				}
 				if err != nil {
 					return catalog, err
 				}

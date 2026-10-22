@@ -67,11 +67,9 @@ func TestRegistryChannelModelRouting(t *testing.T) {
 		{"未知模式", `[]`, `modelRouting: "global", protocols: ["openai_video"],`, "modelRouting must be channel"},
 		{"禁止旧渠道类型", `[]`, `modelRouting: "channel", protocols: ["openai_video"], channelTypes: [1],`, "must not declare channelTypes"},
 		{"禁止原生路由", `[]`, `modelRouting: "channel", protocols: ["openai_video"], routes: [{method: "POST", path: "/jobs", type: "submit", decode: "create", render: "created"}],`, "must not declare routes"},
-		{"禁止模型计量分组", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"], usageProfiles: [{models: ["candidate"], schema: {}}],`, "not usageProfiles"},
+		{"允许建议模型计量分组", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"], usageProfiles: [{models: ["candidate"], schema: {}}],`, ""},
 		{"禁止建议别名", `["candidate"]`, `modelRouting: "channel", protocols: ["openai_video"], modelAliases: {public: "candidate"},`, "must not declare modelAliases"},
-		{"必须声明视频协议", `[]`, `modelRouting: "channel",`, "requires only openai_video"},
-		{"禁止其他协议", `[]`, `modelRouting: "channel", protocols: [{name: "openai_responses", supports: ["sync"]}],`, "requires only openai_video"},
-		{"禁止多个协议", `[]`, `modelRouting: "channel", protocols: ["openai_video", {name: "openai_responses", supports: ["sync"]}],`, "requires only openai_video"},
+		{"必须声明协议", `[]`, `modelRouting: "channel",`, "at least one supported protocol"},
 		{"禁止协议模型限定", `["candidate"]`, `modelRouting: "channel", protocols: [{name: "openai_video", models: ["candidate"]}],`, "without protocol models"},
 		{"建议模型仍须规范", `[" candidate"]`, `modelRouting: "channel", protocols: ["openai_video"],`, "non-empty canonical names"},
 		{"模型不能为null", `null`, `modelRouting: "channel", protocols: ["openai_video"],`, "models must be an array"},
@@ -105,6 +103,21 @@ func TestRegistryChannelModelRouting(t *testing.T) {
 
 	meta := Meta{APIVersion: 1, Key: "channel-models", Name: "Channel models", Version: "1.0.0", Author: AuthorMeta{Name: "Test"}, FetchMode: "per_task", ModelRouting: "channel", Protocols: []ProtocolClaim{{Name: "openai_video", Models: []string{}}}}
 	require.ErrorContains(t, ValidateV1Meta(meta), "without protocol models")
+}
+
+func TestRegistryChannelModelRoutingAllowsMultipleProtocols(t *testing.T) {
+	source := routingTestPluginSource("channel-multi-protocol", 0, `[]`,
+		`modelRouting: "channel", protocols: ["openai_video", {name: "openai_responses", supports: ["sync"]}, {name: "openai_image_tasks"}],`,
+		`export const protocols = {
+		openai_video: {decodeRequest: function(ctx) { return ctx; }, render: function(ctx, task) { return task; }},
+		openai_responses: {decodeRequest: function(ctx) { return ctx; }, renderFinal: function(ctx, task) { return task; }},
+		openai_image_tasks: {decodeRequest: function(ctx) { return ctx; }, render: function(ctx, task) { return task; }}
+	};
+	 export function listArtifacts() { return []; }
+	 export function buildContentRequest() { return {}; }`)
+	plugin, err := CompilePlugin(source, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"openai_video", "openai_responses", "openai_image_tasks"}, []string{plugin.Meta.Protocols[0].Name, plugin.Meta.Protocols[1].Name, plugin.Meta.Protocols[2].Name})
 }
 
 func TestRegistryRejectsPluginKeyLongerThanTaskPlatformColumn(t *testing.T) {
@@ -1137,6 +1150,45 @@ func TestRegistryModelDiscoveryAliases(t *testing.T) {
 	assert.Equal(t, "Yuan-", loaded.Meta.ModelDiscovery.AliasPrefix)
 	assert.Equal(t, "dynamic-exact-id", loaded.Meta.ModelDiscovery.Aliases["Yuan-Video"])
 	assert.Equal(t, "dynamic-exact-id", registry.Snapshot().Override[0].ModelDiscovery.Aliases["Yuan-Video"])
+}
+
+func TestRegistryModelDiscoveryTypesAndPrefixes(t *testing.T) {
+	base := `modelRouting: "channel", protocols: ["openai_video"], modelDiscovery: {protocol: "openai", path: "/v1/models", `
+	valid := base + `modelTypes: ["image", "video"], typePrefixes: {image: "Image2Pro-Image-", video: "Image2Pro-Video-"}},`
+	plugin, err := CompilePlugin(routingTestPluginSource("discovery-types", 0, `[]`, valid, routingProtocolExport("openai_video")), Options{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"image", "video"}, plugin.Meta.ModelDiscovery.ModelTypes)
+	assert.Equal(t, map[string]string{"image": "Image2Pro-Image-", "video": "Image2Pro-Video-"}, plugin.Meta.ModelDiscovery.TypePrefixes)
+
+	for _, tc := range []struct {
+		name, fields string
+	}{
+		{"unknown model type", `modelTypes: ["audio"]`},
+		{"duplicate model type", `modelTypes: ["image", "image"]`},
+		{"empty model types", `modelTypes: []`},
+		{"prefix without model types", `typePrefixes: {image: "Image-"}`},
+		{"unknown prefix type", `modelTypes: ["image"], typePrefixes: {audio: "Audio-"}`},
+		{"empty prefixes", `modelTypes: ["image"], typePrefixes: {}`},
+		{"empty prefix", `modelTypes: ["image"], typePrefixes: {image: ""}`},
+		{"prefix whitespace", `modelTypes: ["image"], typePrefixes: {image: "Image -"}`},
+		{"prefix comma", `modelTypes: ["image"], typePrefixes: {image: "Image-,"}`},
+		{"duplicate prefixes", `modelTypes: ["image", "video"], typePrefixes: {image: "Media-", video: "Media-"}`},
+		{"overlapping prefixes", `modelTypes: ["image", "video"], typePrefixes: {image: "Media-", video: "Media-Video-"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CompilePlugin(routingTestPluginSource("discovery-types", 0, `[]`, base+tc.fields+`},`, routingProtocolExport("openai_video")), Options{})
+			require.ErrorContains(t, err, "modelDiscovery")
+		})
+	}
+
+	registry := NewRegistry()
+	loaded, err := registry.Register(routingTestPluginSource("discovery-types-snapshot", 0, `[]`, valid, routingProtocolExport("openai_video")), Options{})
+	require.NoError(t, err)
+	snapshot := registry.Snapshot()
+	snapshot.Override[0].ModelDiscovery.ModelTypes[0] = "video"
+	snapshot.Override[0].ModelDiscovery.TypePrefixes["image"] = "changed-"
+	assert.Equal(t, []string{"image", "video"}, loaded.Meta.ModelDiscovery.ModelTypes)
+	assert.Equal(t, "Image2Pro-Image-", loaded.Meta.ModelDiscovery.TypePrefixes["image"])
 }
 
 // TestRegistryModelAliases 验证别名只指向已适配模型，拒绝歧义、链式和非法映射。

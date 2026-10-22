@@ -50,8 +50,11 @@ func TestImage2ProVideoContracts(t *testing.T) {
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
 	assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
+	assert.Equal(t, "channel", plugin.Meta.ModelRouting)
+	assert.Equal(t, []string{"image", "video"}, plugin.Meta.ModelDiscovery.ModelTypes)
 	assert.Equal(t, "https://api.image2pro.top/v1", plugin.Meta.BaseURL)
-	require.Len(t, plugin.Meta.UsageSchema, 1)
+	assert.Contains(t, plugin.Meta.UsageSchema, "count")
+	assert.Contains(t, plugin.Meta.UsageSchema, "seconds")
 	assert.Equal(t, "second", plugin.Meta.UsageSchema["seconds"].Unit)
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["seconds"].Description["en"])
 	assert.Equal(t, "视频生成单价", plugin.Meta.UsageSchema["seconds"].Description["zh"])
@@ -59,7 +62,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 	for _, model := range models {
 		t.Run(model.client, func(t *testing.T) {
 			for _, endpoint := range []string{"/v1/videos", "/v1/responses"} {
-				binding, found := registry.Generation().LookupEndpoint("POST", endpoint, model.client)
+				binding, found := registry.Generation().LookupPluginEndpoint("POST", endpoint, plugin.Meta.Key)
 				require.True(t, found)
 				assert.Same(t, plugin, binding.Plugin)
 			}
@@ -262,8 +265,8 @@ func TestImage2ProVideoContracts(t *testing.T) {
 			{name: "Flash最多五图", model: "无限制-Flash-MAX-Video", body: map[string]any{"duration": 5, "images": flashImages}, message: "at most 5 reference images"},
 			{name: "Seedance最多九图", model: "Seedance2.0 0.9r", body: map[string]any{"duration": 5, "images": seedanceImages}, message: "at most 9 reference images"},
 			{name: "Flash固定比例", model: "无限制-Flash-MAX-Video", body: map[string]any{"duration": 5, "prompt": "ocean", "ratio": "adaptive"}, message: "requires a fixed ratio"},
-			{name: "音频未公开", model: "无限制-Flash-MAX-Video", body: map[string]any{"duration": 5, "prompt": "ocean", "audios": []string{"https://cdn.example/ref.mp3"}}, message: "supports image references only"},
-			{name: "视频未公开", model: "Seedance2.0 0.9r", body: map[string]any{"duration": 5, "prompt": "ocean", "videos": []string{"https://cdn.example/ref.mp4"}}, message: "supports image references only"},
+			{name: "音频要求HTTPS", model: "无限制-Flash-MAX-Video", body: map[string]any{"duration": 5, "prompt": "ocean", "audios": []string{"http://cdn.example/ref.mp3"}}, message: "require an HTTPS URL or mediaId"},
+			{name: "视频未公开", model: "Seedance2.0 0.9r", body: map[string]any{"duration": 5, "prompt": "ocean", "videos": []string{"https://cdn.example/ref.mp4"}}, message: "does not support video references"},
 			{name: "首帧角色未公开", model: "无限制-Flash-MAX-Video", body: map[string]any{"duration": 5, "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://cdn.example/ref.png"}, "role": "first_frame"}}}, message: "unsupported Image2Pro Flash-MAX image role"},
 			{name: "Seedance扩展开关未公开", model: "Seedance2.0 0.9r", body: map[string]any{"duration": 5, "prompt": "ocean", "watermark": false}, message: "does not support Seedance generation flags"},
 			{name: "未公开分辨率不静默丢弃", model: "Seedance2.0 0.9r", body: map[string]any{"duration": 5, "prompt": "ocean", "resolution": "1080p"}, message: "does not expose resolution"},
@@ -374,7 +377,7 @@ func TestImage2ProBillingLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-	assert.Equal(t, "2.3.0", plugin.Meta.Version)
+	assert.Equal(t, "2.4.0", plugin.Meta.Version)
 	for _, tc := range []struct {
 		name, upstream, unit string
 		maximum              int
@@ -523,21 +526,18 @@ func TestImage2ProImageTaskContracts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, append(append([]string{}, videoModels...), imageModels...), plugin.Meta.Models)
 	require.Len(t, plugin.Meta.Protocols, 3)
-	assert.Equal(t, videoModels, plugin.Meta.Protocols[0].Models)
-	assert.Equal(t, videoModels, plugin.Meta.Protocols[1].Models)
-	assert.Equal(t, imageModels, plugin.Meta.Protocols[2].Models)
+	assert.Nil(t, plugin.Meta.Protocols[0].Models)
+	assert.Nil(t, plugin.Meta.Protocols[1].Models)
+	assert.Nil(t, plugin.Meta.Protocols[2].Models)
 	for _, modelName := range imageModels {
-		binding, found := registry.Generation().LookupEndpoint(http.MethodPost, "/v1/images/tasks", modelName)
+		binding, found := registry.Generation().LookupPluginEndpoint(http.MethodPost, "/v1/images/tasks", plugin.Meta.Key)
 		require.True(t, found, "image model %q must route to async image tasks", modelName)
 		assert.Same(t, plugin, binding.Plugin)
-		_, found = registry.Generation().LookupEndpoint(http.MethodPost, "/v1/videos", modelName)
-		assert.False(t, found, "image model %q must not route to video generation", modelName)
 	}
 	for _, modelName := range videoModels {
-		_, found := registry.Generation().LookupEndpoint(http.MethodPost, "/v1/images/tasks", modelName)
-		assert.False(t, found, "video model %q must not route to image tasks", modelName)
-		_, found = registry.Generation().LookupEndpoint(http.MethodPost, "/v1/videos", modelName)
-		assert.True(t, found, "video route must remain available for %q", modelName)
+		binding, found := registry.Generation().LookupPluginEndpoint(http.MethodPost, "/v1/videos", plugin.Meta.Key)
+		require.True(t, found, "video model %q must route to videos", modelName)
+		assert.Same(t, plugin, binding.Plugin)
 	}
 
 	modelName := imageModels[8]
@@ -561,6 +561,12 @@ func TestImage2ProImageTaskContracts(t *testing.T) {
 	requestJSON, err := common.Marshal(requestBody)
 	require.NoError(t, err)
 	intentRequestJSON, err := common.Marshal(intent["requestBody"])
+	require.NoError(t, err)
+	var normalizedRequest map[string]any
+	require.NoError(t, common.Unmarshal(intentRequestJSON, &normalizedRequest))
+	assert.Equal(t, true, normalizedRequest["__imageTask"])
+	delete(normalizedRequest, "__imageTask")
+	intentRequestJSON, err = common.Marshal(normalizedRequest)
 	require.NoError(t, err)
 	assert.JSONEq(t, string(requestJSON), string(intentRequestJSON))
 
@@ -653,7 +659,7 @@ func TestImage2ProImageTaskContracts(t *testing.T) {
 	parsedTaskDataJSON, err := common.Marshal(parsed["taskData"])
 	require.NoError(t, err)
 	assert.JSONEq(t, string(createdJSON), string(parsedTaskDataJSON))
-	assert.Equal(t, map[string]any{"n": float64(2)}, parsed["state"])
+	assert.Equal(t, map[string]any{"kind": "image", "n": float64(2)}, parsed["state"])
 
 	queryValue, err := plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{
 		"model": modelName, "upstreamModel": modelName, "taskId": "upstream-job:123",

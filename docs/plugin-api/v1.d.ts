@@ -25,15 +25,17 @@ export type DecodedBody =
   | Readonly<{kind: "none"}>;
 
 export interface NativeDecodeContext {method: string; path: string; params: Readonly<Record<string, string>>; query: Readonly<Record<string, readonly string[]>>; body: DecodedBody}
-export interface ProtocolDecodeContext extends NativeDecodeContext {protocol: "openai_responses" | "openai_video"; operation: string; model: string; stream: boolean}
+export interface ProtocolDecodeContext extends NativeDecodeContext {protocol: "openai_responses" | "openai_video" | "openai_image_tasks"; operation: string; model: string; upstreamModel?: string; stream: boolean}
 export type SubmitIntent = {kind: "submit"; model: string; action?: string; requestBody?: unknown; originTaskIds?: readonly string[]};
 export type QueryIntent = {kind: "query"; taskIds: readonly string[]};
 export type TaskIntent = SubmitIntent | QueryIntent;
 export interface NativeRoute {method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; type: "submit" | "query" | "dynamic"; action?: string; taskIdParam?: string; decode?: string; render: string; models?: readonly string[]}
-export type ProtocolName = "openai_responses" | "openai_video";
+export type ProtocolName = "openai_responses" | "openai_video" | "openai_image_tasks";
 export type ResponsesMode = "stream" | "sync" | "background";
 export type ProtocolClaim =
   | "openai_video"
+  | "openai_image_tasks"
+  | {name: "openai_image_tasks"; models?: readonly string[]}
   | {name: "openai_responses"; supports: readonly ResponsesMode[]; models?: readonly string[]}
   | {name: "openai_video"; models?: readonly string[]};
 export type LocalizedText = string | ({ en: string } & Record<string, string>);
@@ -45,8 +47,17 @@ export type UsageFieldSchema =
 export type UsageExample = {label: string; facts: Readonly<Record<string, string | number | boolean>>};
 export type UsageProfile = {models: readonly string[]; schema: Readonly<Record<string, UsageFieldSchema>>; examples?: readonly UsageExample[]};
 /** 管理页的只读模型目录；path 不含主机、查询参数或凭据，分页由宿主处理。 */
-export interface ModelDiscovery {protocol: "openai" | "gemini" | "bailian"; path: string}
-export interface Meta {requiredCapabilities?: readonly HostCapability[]; submitResponseTypes?: readonly ("json" | "sse")[]; sortPriority?: number; website?: string; apiVersion: 1; key: string; name: string; icon?: string; description?: LocalizedText; version: string; author: {name: string; url?: string}; baseUrl?: string; channelTypes?: readonly number[]; /** 仅类型 61 视频插件；按渠道已保存精确模型授权，models 可为空或建议清单，不注册全局模型。 */ modelRouting?: "channel"; models: readonly string[]; /** 模型导入建议；别名不注册生成能力，保存时保留管理员已有映射。 */ modelAliases?: Readonly<Record<string, string>>; modelDiscovery?: ModelDiscovery; fetchMode: "per_task" | "batch"; allowedHosts?: readonly string[]; routes?: readonly NativeRoute[]; protocols?: readonly ProtocolClaim[]; usageSchema?: Readonly<Record<string, UsageFieldSchema>>; usageExamples?: readonly UsageExample[]; usageProfiles?: readonly UsageProfile[]; auth?: "none" | "api_key" | "vertex_oauth" | {type: "none" | "api_key" | "oauth2_jwt"}}
+export interface ModelDiscovery {
+  protocol: "openai" | "gemini" | "bailian";
+  path: string;
+  aliasPrefix?: string;
+  aliases?: Readonly<Record<string, string>>;
+  /** 仅 channel 路由；目录 metadata.type 目前支持 image/video。 */
+  modelTypes?: readonly ("image" | "video")[];
+  /** 每种目录类型的建议别名前缀；键必须属于 modelTypes。 */
+  typePrefixes?: Readonly<Partial<Record<"image" | "video", string>>>;
+}
+export interface Meta {requiredCapabilities?: readonly HostCapability[]; submitResponseTypes?: readonly ("json" | "sse")[]; sortPriority?: number; website?: string; apiVersion: 1; key: string; name: string; icon?: string; description?: LocalizedText; version: string; author: {name: string; url?: string}; baseUrl?: string; channelTypes?: readonly number[]; /** 仅类型 61 图像/视频插件；按渠道已保存精确模型授权，models 可为空或建议清单，不注册全局模型。 */ modelRouting?: "channel"; models: readonly string[]; /** 模型导入建议；别名不注册生成能力，保存时保留管理员已有映射。 */ modelAliases?: Readonly<Record<string, string>>; modelDiscovery?: ModelDiscovery; fetchMode: "per_task" | "batch"; allowedHosts?: readonly string[]; routes?: readonly NativeRoute[]; protocols?: readonly ProtocolClaim[]; usageSchema?: Readonly<Record<string, UsageFieldSchema>>; usageExamples?: readonly UsageExample[]; usageProfiles?: readonly UsageProfile[]; auth?: "none" | "api_key" | "vertex_oauth" | {type: "none" | "api_key" | "oauth2_jwt"}}
 export interface TaskView {task_id: string; status: string; progress?: string; fail_reason?: string; created_at?: number; updated_at?: number; data?: unknown; properties?: Record<string, unknown>}
 export interface DriverContext {requestBody: unknown; requestHeaders: Readonly<Record<string, string>>; action: string; model: string; upstreamModel: string; baseUrl: string; apiKey?: string; authHeader: string; files: readonly FileReference[]; publicTaskId: string; originTasks?: readonly {taskId: string; upstreamTaskId: string; action: string; status: string; data: unknown}[]}
 export interface TaskQueryContext {taskId: string; publicTaskId: string; action: string; model: string; upstreamModel: string; baseUrl: string; apiKey?: string; authHeader: string; auth?: unknown; data: unknown; state: unknown}
@@ -61,6 +72,7 @@ export declare const native: Record<string, ((ctx: NativeDecodeContext) => TaskI
 export declare const protocols: {
   openai_responses?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; renderEvents?(ctx: unknown, task: TaskView, previousState: unknown): unknown; renderFinal?(ctx: unknown, task: TaskView): unknown};
   openai_video?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): unknown};
+  openai_image_tasks?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): unknown};
 };
 export declare function buildSubmitRequest(ctx: DriverContext): RequestDescriptor;
 export interface SubmitEvent {event: string; id: string; data: string}

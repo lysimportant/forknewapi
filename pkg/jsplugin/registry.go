@@ -118,10 +118,12 @@ type Meta struct {
 // ModelDiscovery 声明管理页读取上游目录的只读协议；未声明时使用插件模型列表。
 // Path 为渠道地址下的绝对路径，不含主机、查询参数或凭据，不改变生成路由和计费。
 type ModelDiscovery struct {
-	Protocol    string            `json:"protocol"`              // openai、gemini 或 bailian，分别使用对应的目录与分页格式。
-	Path        string            `json:"path"`                  // 例如 /v1/models；宿主避免与渠道地址末尾的协议前缀重复。
-	AliasPrefix string            `json:"aliasPrefix,omitempty"` // 渠道模型导入的默认名称前缀，不注册路由。
-	Aliases     map[string]string `json:"aliases,omitempty"`     // 渠道模型导入的精确别名到上游 ID；不要求静态声明模型。
+	Protocol     string            `json:"protocol"`               // openai、gemini 或 bailian，分别使用对应的目录与分页格式。
+	Path         string            `json:"path"`                   // 例如 /v1/models；宿主避免与渠道地址末尾的协议前缀重复。
+	AliasPrefix  string            `json:"aliasPrefix,omitempty"`  // 渠道模型导入的默认名称前缀，不注册路由。
+	Aliases      map[string]string `json:"aliases,omitempty"`      // 渠道模型导入的精确别名到上游 ID；不要求静态声明模型。
+	ModelTypes   []string          `json:"modelTypes,omitempty"`   // 此插件可导入的目录模型类型；仅渠道路由模式支持。
+	TypePrefixes map[string]string `json:"typePrefixes,omitempty"` // 按模型类型声明的 ID 前缀；仅渠道路由模式支持。
 }
 
 // UsageProfile replaces the plugin's default usage metadata for its models.
@@ -848,6 +850,8 @@ func cloneMeta(meta Meta) Meta {
 	if meta.ModelDiscovery != nil {
 		discovery := *meta.ModelDiscovery
 		discovery.Aliases = maps.Clone(discovery.Aliases)
+		discovery.ModelTypes = slices.Clone(discovery.ModelTypes)
+		discovery.TypePrefixes = maps.Clone(discovery.TypePrefixes)
 		meta.ModelDiscovery = &discovery
 	}
 	meta.SubmitResponseTypes = slices.Clone(meta.SubmitResponseTypes)
@@ -1056,7 +1060,7 @@ func decodeMeta(value any) (Meta, error) {
 			return Meta{}, fmt.Errorf("plugin meta modelDiscovery must be an object")
 		}
 		for field := range discovery {
-			if field != "protocol" && field != "path" && field != "aliasPrefix" && field != "aliases" {
+			if field != "protocol" && field != "path" && field != "aliasPrefix" && field != "aliases" && field != "modelTypes" && field != "typePrefixes" {
 				return Meta{}, fmt.Errorf("plugin meta modelDiscovery has unknown field %q", field)
 			}
 		}
@@ -1085,6 +1089,25 @@ func decodeMeta(value any) (Meta, error) {
 					return Meta{}, fmt.Errorf("plugin meta modelDiscovery aliases targets must be strings")
 				}
 				meta.ModelDiscovery.Aliases[alias] = target
+			}
+		}
+		if _, present := discovery["modelTypes"]; present {
+			if meta.ModelDiscovery.ModelTypes, err = strictStringSlice(discovery, "modelTypes"); err != nil {
+				return Meta{}, err
+			}
+		}
+		if rawTypePrefixes, present := discovery["typePrefixes"]; present {
+			typePrefixes, ok := rawTypePrefixes.(map[string]any)
+			if !ok {
+				return Meta{}, fmt.Errorf("plugin meta modelDiscovery typePrefixes must be an object")
+			}
+			meta.ModelDiscovery.TypePrefixes = make(map[string]string, len(typePrefixes))
+			for modelType, value := range typePrefixes {
+				prefix, ok := value.(string)
+				if !ok {
+					return Meta{}, fmt.Errorf("plugin meta modelDiscovery typePrefixes values must be strings")
+				}
+				meta.ModelDiscovery.TypePrefixes[modelType] = prefix
 			}
 		}
 	}
@@ -1329,8 +1352,8 @@ func normalizeV1Meta(meta *Meta) error {
 				return fmt.Errorf("plugin meta modelDiscovery path must not contain dot segments")
 			}
 		}
-		if (discovery.AliasPrefix != "" || discovery.Aliases != nil) && meta.ModelRouting != "channel" {
-			return fmt.Errorf("plugin meta modelDiscovery aliasPrefix and aliases require modelRouting channel")
+		if (discovery.AliasPrefix != "" || discovery.Aliases != nil || discovery.ModelTypes != nil || discovery.TypePrefixes != nil) && meta.ModelRouting != "channel" {
+			return fmt.Errorf("plugin meta modelDiscovery aliasPrefix, aliases, modelTypes and typePrefixes require modelRouting channel")
 		}
 		if prefix := discovery.AliasPrefix; prefix != "" {
 			if len(prefix) > 50 || !utf8.ValidString(prefix) || strings.Contains(prefix, ",") {
@@ -1339,6 +1362,63 @@ func normalizeV1Meta(meta *Meta) error {
 			for _, character := range prefix {
 				if unicode.IsSpace(character) || unicode.IsControl(character) {
 					return fmt.Errorf("plugin meta modelDiscovery aliasPrefix must not contain whitespace or control characters")
+				}
+			}
+		}
+		if discovery.ModelTypes != nil {
+			if len(discovery.ModelTypes) == 0 {
+				return fmt.Errorf("plugin meta modelDiscovery modelTypes must contain at least one type")
+			}
+			seenTypes := make(map[string]bool, len(discovery.ModelTypes))
+			for _, modelType := range discovery.ModelTypes {
+				if modelType != "image" && modelType != "video" {
+					return fmt.Errorf("plugin meta modelDiscovery modelTypes may contain only image and video")
+				}
+				if seenTypes[modelType] {
+					return fmt.Errorf("plugin meta modelDiscovery modelTypes must be unique")
+				}
+				seenTypes[modelType] = true
+			}
+			if discovery.TypePrefixes != nil {
+				for modelType := range discovery.TypePrefixes {
+					if !seenTypes[modelType] {
+						return fmt.Errorf("plugin meta modelDiscovery typePrefixes key %q must be declared in modelTypes", modelType)
+					}
+				}
+			}
+		}
+		if discovery.TypePrefixes != nil && discovery.ModelTypes == nil {
+			return fmt.Errorf("plugin meta modelDiscovery typePrefixes requires modelTypes")
+		}
+		if discovery.TypePrefixes != nil {
+			if len(discovery.TypePrefixes) == 0 {
+				return fmt.Errorf("plugin meta modelDiscovery typePrefixes must contain at least one type prefix")
+			}
+			prefixes := make([]string, 0, len(discovery.TypePrefixes))
+			for modelType, prefix := range discovery.TypePrefixes {
+				if modelType != "image" && modelType != "video" {
+					return fmt.Errorf("plugin meta modelDiscovery typePrefixes keys may contain only image and video")
+				}
+				if prefix == "" || len(prefix) > 50 || !utf8.ValidString(prefix) || strings.Contains(prefix, ",") {
+					return fmt.Errorf("plugin meta modelDiscovery typePrefixes values must be non-empty canonical prefixes of at most 50 bytes")
+				}
+				for _, character := range prefix {
+					if unicode.IsSpace(character) || unicode.IsControl(character) {
+						return fmt.Errorf("plugin meta modelDiscovery typePrefixes values must not contain whitespace or control characters")
+					}
+				}
+				prefixes = append(prefixes, prefix)
+			}
+			for index, prefix := range prefixes {
+				for _, other := range prefixes[index+1:] {
+					if prefix == other {
+						return fmt.Errorf("plugin meta modelDiscovery typePrefixes must be unique")
+					}
+					// Prefix nesting makes aliases ambiguous when an upstream ID
+					// itself starts with another type's prefix.
+					if strings.HasPrefix(prefix, other) || strings.HasPrefix(other, prefix) {
+						return fmt.Errorf("plugin meta modelDiscovery typePrefixes must not overlap")
+					}
 				}
 			}
 		}
@@ -1390,14 +1470,19 @@ func normalizeV1Meta(meta *Meta) error {
 		if len(meta.Routes) > 0 {
 			return fmt.Errorf("plugin meta modelRouting channel must not declare routes")
 		}
-		if len(meta.UsageProfiles) > 0 {
-			return fmt.Errorf("plugin meta modelRouting channel must use the default usageSchema, not usageProfiles")
-		}
 		if len(meta.ModelAliases) > 0 {
 			return fmt.Errorf("plugin meta modelRouting channel must not declare modelAliases")
 		}
-		if len(meta.Protocols) != 1 || meta.Protocols[0].Name != "openai_video" || meta.Protocols[0].Models != nil {
-			return fmt.Errorf("plugin meta modelRouting channel requires only openai_video without protocol models")
+		if len(meta.Protocols) == 0 {
+			return fmt.Errorf("plugin meta modelRouting channel requires at least one supported protocol without protocol models")
+		}
+		for _, claim := range meta.Protocols {
+			if claim.Name != "openai_video" && claim.Name != "openai_responses" && claim.Name != "openai_image_tasks" {
+				return fmt.Errorf("plugin meta modelRouting channel supports only openai_video, openai_responses and openai_image_tasks")
+			}
+			if claim.Models != nil {
+				return fmt.Errorf("plugin meta modelRouting channel protocol claims must be declared without protocol models")
+			}
 		}
 		if meta.Models == nil {
 			meta.Models = []string{}
