@@ -130,7 +130,7 @@ func registerTypedChannelModelDiscoveryTestPlugin(t *testing.T) string {
 export const meta = {
   apiVersion: 1, key: "typed-channel-discovery-test", name: "Typed Channel Discovery", version: "1.0.0", author: {name: "Test"},
   models: [], modelRouting: "channel", fetchMode: "per_task", protocols: ["openai_video"],
-  modelDiscovery: {protocol: "openai", path: "/v1/models", modelTypes: ["image", "video"], typePrefixes: {image: "Image2Pro-Image-", video: "Image2Pro-Video-"}},
+  modelDiscovery: {protocol: "openai", path: "/v1/models", modelTypes: ["image", "video"], typePrefixes: {image: "Test-Image-", video: "Test-Video-"}},
   usageSchema: {videos: {type: "number", unit: "count", description: {en: "Video generation unit price", zh: "视频生成单价"}}},
 };
 export const protocols = {openai_video: {decodeRequest() { return {}; }, render() { return {}; }}};
@@ -202,12 +202,35 @@ func TestFetchTypedTaskPluginModelsFiltersAndPrefixesByMetadataType(t *testing.T
 		"base_url": server.URL, "key": "fixture-key",
 	})
 	require.True(t, response.Success, response.Message)
-	assert.Equal(t, []string{"Image2Pro-Image-img-alpha", "Image2Pro-Video-vid-beta"}, response.Data)
+	assert.Equal(t, []string{"Test-Image-img-alpha", "Test-Video-vid-beta"}, response.Data)
 	assert.Equal(t, []string{"txt-gamma", "missing-type"}, response.UnsupportedModels)
 	assert.Equal(t, map[string]string{
-		"Image2Pro-Image-img-alpha": "img-alpha",
-		"Image2Pro-Video-vid-beta":  "vid-beta",
+		"Test-Image-img-alpha": "img-alpha",
+		"Test-Video-vid-beta":  "vid-beta",
 	}, response.ModelMapping)
+}
+
+func TestFetchImage2ProModelsKeepsTypedUpstreamIDsWithoutMapping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer fixture-key", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[
+      {"id":"new-image-model-v3","metadata":{"type":"image"}},
+      {"id":"new-video-model-v2","metadata":{"type":"video"}},
+      {"id":"text-chat-model","metadata":{"type":"text"}},
+      {"id":"untyped-model"}
+    ]}`))
+	}))
+	defer server.Close()
+	response := previewTaskPluginModels(t, map[string]any{
+		"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "image2pro",
+		"base_url": server.URL + "/v1", "key": "fixture-key",
+	})
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, "upstream", response.Source)
+	assert.Equal(t, []string{"new-image-model-v3", "new-video-model-v2"}, response.Data)
+	assert.Equal(t, []string{"text-chat-model", "untyped-model"}, response.UnsupportedModels)
+	assert.Empty(t, response.ModelMapping)
 }
 
 func TestTaskPluginDiscoveryTypePrefixAliasConflict(t *testing.T) {

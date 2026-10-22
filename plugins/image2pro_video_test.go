@@ -52,6 +52,7 @@ func TestImage2ProVideoContracts(t *testing.T) {
 	assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
 	assert.Equal(t, "channel", plugin.Meta.ModelRouting)
 	assert.Equal(t, []string{"image", "video"}, plugin.Meta.ModelDiscovery.ModelTypes)
+	assert.Nil(t, plugin.Meta.ModelDiscovery.TypePrefixes)
 	assert.Equal(t, "https://api.image2pro.top/v1", plugin.Meta.BaseURL)
 	assert.Contains(t, plugin.Meta.UsageSchema, "count")
 	assert.Contains(t, plugin.Meta.UsageSchema, "seconds")

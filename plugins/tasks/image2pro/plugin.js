@@ -1,8 +1,8 @@
 /** Canvas 和既有渠道使用展示名；供应商创建接口必须发送目录中的真实模型 ID。 */
 const SEEDANCE_MODEL = "Seedance2.0 0.9r";
 const FLASH_MODEL = "无限制-Flash-MAX-Video";
-const IMAGE_MODEL_PREFIX = "Image2Pro-Image-";
-const VIDEO_MODEL_PREFIX = "Image2Pro-Video-";
+const LEGACY_IMAGE_MODEL_PREFIX = "Image2Pro-Image-";
+const LEGACY_VIDEO_MODEL_PREFIX = "Image2Pro-Video-";
 /** 保留既有展示名建议，并允许模型目录导入真实 ID；两组名称最终发送同一真实 ID。 */
 const VIDEO_MODELS = [SEEDANCE_MODEL, FLASH_MODEL, "Seedance2.0", "Flash视频-MAX"];
 /** 公开目录中的图片候选；文档未逐项保证其均已接入异步图片接口。 */
@@ -116,7 +116,6 @@ export const meta = {
     protocol: "openai",
     path: "/v1/models",
     modelTypes: ["image", "video"],
-    typePrefixes: { image: IMAGE_MODEL_PREFIX, video: VIDEO_MODEL_PREFIX },
   },
   modelRouting: "channel",
   fetchMode: "per_task",
@@ -186,11 +185,11 @@ function apiBase(ctx) {
 }
 
 function isImageModel(model) {
-  return typeof model === "string" && (IMAGE_MODELS.includes(model) || model.startsWith(IMAGE_MODEL_PREFIX));
+  return typeof model === "string" && (IMAGE_MODELS.includes(model) || model.startsWith(LEGACY_IMAGE_MODEL_PREFIX));
 }
 
 function isVideoModel(model) {
-  return typeof model === "string" && (Object.prototype.hasOwnProperty.call(MODEL_SPECS, model) || model.startsWith(VIDEO_MODEL_PREFIX));
+  return typeof model === "string" && (Object.prototype.hasOwnProperty.call(MODEL_SPECS, model) || model.startsWith(LEGACY_VIDEO_MODEL_PREFIX));
 }
 
 function isImageOperation(ctx) {
@@ -205,7 +204,7 @@ function isImageOperation(ctx) {
   );
 }
 
-/** 目录映射保留原始 upstreamModel，图片类型由客户端前缀或内部标记传递。 */
+/** 目录映射保留原始 upstreamModel，图片类型由接口与内部标记传递。 */
 function isImageContext(ctx) {
   return Boolean(ctx && (isImageOperation(ctx) || ctx.protocol === "openai_image_tasks" || ctx.operation === "image" || ctx.action === "image_generation"));
 }
@@ -811,7 +810,7 @@ function responsesRequest(ctx) {
 /** 标准视频与 Responses 共用生成驱动、逐模型计费和宿主管理的制品权限。 */
 export const protocols = {
   openai_image_tasks: {
-    /** 图片异步任务只接受文档定义的 JSON 字段，类型由目录前缀确认。 */
+    /** 图片异步任务只接受文档定义的 JSON 字段，接口路径标识图片操作。 */
     decodeRequest: function (ctx) {
       const body = ctx.body;
       if (!body || body.kind !== "json") throw new Error("Image2Pro image tasks require a JSON body");
@@ -819,7 +818,8 @@ export const protocols = {
       if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("Image2Pro image request body must be an object");
       const model = ctx.model || source.model;
       const upstreamModel = ctx.upstreamModel || model;
-      if (!isImageModel(model) && !isImageModel(upstreamModel)) throw new Error("unsupported Image2Pro image model");
+      if (typeof model !== "string" || !model.trim() || isVideoModel(model) || isVideoModel(upstreamModel))
+        throw new Error("unsupported Image2Pro image model");
       if (source.model !== model) throw new Error("Image2Pro image model does not match the selected model");
       const request = normalizeImageRequest(source, model);
       request.model = upstreamModel;

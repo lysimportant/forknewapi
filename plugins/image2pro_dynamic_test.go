@@ -49,10 +49,10 @@ func image2ProDynamicDecode(t *testing.T, plugin *jsplugin.LoadedPlugin, protoco
 	return intent
 }
 
-// TestImage2ProDynamicImageLifecycle exercises a catalog-only ID through the real host adapter.
+// TestImage2ProDynamicImageLifecycle exercises a raw catalog ID through the real host adapter.
 func TestImage2ProDynamicImageLifecycle(t *testing.T) {
 	plugin := image2ProDynamicPlugin(t)
-	const client, upstream = "Image2Pro-Image-future-image-v7", "future-image-v7"
+	const client, upstream = "future-image-v7", "future-image-v7"
 	assert.NotContains(t, plugin.Meta.Models, upstream, "fixture must remain outside the plugin's suggested models")
 	intent := image2ProDynamicDecode(t, plugin, "openai_image_tasks", client, upstream, map[string]any{
 		"model": client, "prompt": "A lighthouse at dusk", "n": 2, "size": "2048x2048",
@@ -77,7 +77,7 @@ func TestImage2ProDynamicImageLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var sent map[string]any
 	require.NoError(t, common.DecodeJson(body, &sent))
-	assert.Equal(t, upstream, sent["model"], "upstream receives the exact catalog ID rather than the import prefix")
+	assert.Equal(t, upstream, sent["model"], "upstream receives the exact catalog ID")
 	assert.Equal(t, "A lighthouse at dusk", sent["prompt"])
 	assert.Equal(t, float64(2), sent["n"])
 	assert.Len(t, sent, 4, "internal routing state must not leak to the provider")
@@ -93,7 +93,7 @@ func TestImage2ProDynamicImageLifecycle(t *testing.T) {
 		PrivateData: model.TaskPrivateData{PluginState: parsed.PluginState},
 	}
 	state := image2ProDynamicObject(t, jsonValueForDynamicTest(t, parsed.PluginState))
-	// Query with raw model identity verifies persisted state survives after the import alias is unavailable.
+	// Query with only the raw model identity verifies persisted image state is sufficient.
 	queryValue, err := plugin.Engine.Call(t.Context(), "buildQueryRequest", map[string]any{
 		"model": upstream, "upstreamModel": upstream, "taskId": parsed.UpstreamTaskID, "state": state,
 		"baseUrl": "https://synthetic.example/v1", "apiKey": "synthetic-fixture",
@@ -136,10 +136,10 @@ func jsonValueForDynamicTest(t *testing.T, data []byte) any {
 	return value
 }
 
-// TestImage2ProDynamicVideoAudio verifies URL and uploaded-media references without any real network request.
+// TestImage2ProDynamicVideoAudio verifies a raw video ID and media references without network calls.
 func TestImage2ProDynamicVideoAudio(t *testing.T) {
 	plugin := image2ProDynamicPlugin(t)
-	const client, upstream = "Image2Pro-Video-future-video-v9", "future-video-v9"
+	const client, upstream = "future-video-v9", "future-video-v9"
 	assert.NotContains(t, plugin.Meta.Models, upstream)
 	intent := image2ProDynamicDecode(t, plugin, "openai_video", client, upstream, map[string]any{
 		"model": client, "prompt": "Waves matching the soundtrack", "duration": 22,
@@ -180,6 +180,33 @@ func TestImage2ProDynamicVideoAudio(t *testing.T) {
 	assert.Equal(t, map[string]any{"seconds": float64(22)}, image2ProDynamicObject(t, completed))
 }
 
+func TestImage2ProDynamicLegacyAliases(t *testing.T) {
+	plugin := image2ProDynamicPlugin(t)
+	t.Run("image", func(t *testing.T) {
+		const client, upstream = "Image2Pro-Image-future-image-v7", "future-image-v7"
+		intent := image2ProDynamicDecode(t, plugin, "openai_image_tasks", client, upstream, map[string]any{
+			"model": client, "prompt": "A lighthouse at dusk", "n": 2,
+		})
+		request := image2ProDynamicObject(t, intent["requestBody"])
+		assert.Equal(t, upstream, request["model"])
+		assert.Equal(t, true, request["__imageTask"])
+	})
+	t.Run("video", func(t *testing.T) {
+		const client, upstream = "Image2Pro-Video-future-video-v9", "future-video-v9"
+		intent := image2ProDynamicDecode(t, plugin, "openai_video", client, upstream, map[string]any{
+			"model": client, "prompt": "Waves matching the soundtrack", "duration": 22,
+		})
+		value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+			"model": client, "upstreamModel": upstream, "requestBody": intent["requestBody"],
+			"baseUrl": "https://synthetic.example", "apiKey": "synthetic-fixture", "publicTaskId": "task_legacy_video_fixture",
+		})
+		require.NoError(t, err)
+		sent := image2ProDynamicObject(t, image2ProDynamicObject(t, value)["body"])
+		assert.Equal(t, upstream, sent["model"])
+		assert.Equal(t, float64(22), sent["duration"])
+	})
+}
+
 func TestImage2ProDynamicAudioRejections(t *testing.T) {
 	plugin := image2ProDynamicPlugin(t)
 	for _, tc := range []struct {
@@ -199,16 +226,16 @@ func TestImage2ProDynamicAudioRejections(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
-				"model": "Image2Pro-Video-new", "upstreamModel": "new-video", "body": map[string]any{
-					"kind": "json", "value": map[string]any{"model": "Image2Pro-Video-new", "prompt": "ocean", "duration": 5, "audios": tc.audios},
+				"model": "new-video", "upstreamModel": "new-video", "body": map[string]any{
+					"kind": "json", "value": map[string]any{"model": "new-video", "prompt": "ocean", "duration": 5, "audios": tc.audios},
 				},
 			})
 			require.Error(t, err)
 		})
 	}
 	_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
-		"model": "Image2Pro-Video-new", "upstreamModel": "new-video", "body": map[string]any{
-			"kind": "multipart", "fields": map[string]any{"model": []string{"Image2Pro-Video-new"}, "prompt": []string{"ocean"}, "duration": []string{"5"}},
+		"model": "new-video", "upstreamModel": "new-video", "body": map[string]any{
+			"kind": "multipart", "fields": map[string]any{"model": []string{"new-video"}, "prompt": []string{"ocean"}, "duration": []string{"5"}},
 			"files": []any{map[string]any{"field": "audios", "ref": "synthetic-audio", "filename": "fixture.mp3", "mimeType": "audio/mpeg", "size": 32}},
 		},
 	})
@@ -218,8 +245,11 @@ func TestImage2ProDynamicAudioRejections(t *testing.T) {
 func TestImage2ProDynamicTypeMisuse(t *testing.T) {
 	plugin := image2ProDynamicPlugin(t)
 	for _, tc := range []struct{ protocol, client, upstream string }{
+		{"openai_image_tasks", "Seedance2.0", "Seedance2.0"},
 		{"openai_image_tasks", "Image2Pro-Video-new-video", "new-video"},
+		{"openai_video", "gpt-image-2.0", "gpt-image-2.0"},
 		{"openai_video", "Image2Pro-Image-new-image", "new-image"},
+		{"openai_responses", "gpt-image-2.0", "gpt-image-2.0"},
 		{"openai_responses", "Image2Pro-Image-new-image", "new-image"},
 	} {
 		t.Run(tc.protocol, func(t *testing.T) {
@@ -234,7 +264,7 @@ func TestImage2ProDynamicTypeMisuse(t *testing.T) {
 			_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{tc.protocol, "decodeRequest"}, map[string]any{
 				"model": tc.client, "upstreamModel": tc.upstream, "body": map[string]any{"kind": "json", "value": request},
 			})
-			require.Error(t, err, "the typed import alias must reject a request for the other media protocol")
+			require.Error(t, err, "known media types and legacy aliases must reject the other protocol")
 		})
 	}
 }
