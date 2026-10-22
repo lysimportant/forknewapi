@@ -72,7 +72,7 @@ func TestImage2ProDynamicImageLifecycle(t *testing.T) {
 	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 	facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"count": float64(2)}, facts)
+	assert.Equal(t, map[string]any{"count": float64(2), "seconds": float64(0)}, facts)
 	body, err := adaptor.BuildRequestBody(c, info)
 	require.NoError(t, err)
 	var sent map[string]any
@@ -108,7 +108,7 @@ func TestImage2ProDynamicImageLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "SUCCESS", completed.Status)
 	assert.Equal(t, "https://cdn.example/first.png", completed.Url)
-	assert.Equal(t, map[string]any{"count": float64(2)}, completed.UsageFacts, "billing uses frozen request count rather than provider count")
+	assert.Equal(t, map[string]any{"count": float64(2), "seconds": float64(0)}, completed.UsageFacts, "billing uses frozen request count rather than provider count")
 	assert.JSONEq(t, `{"kind":"image","n":2}`, string(completed.PluginState))
 	// Persist the returned completion state, then retry with only the raw catalog identity.
 	task.Properties.OriginModelName = upstream

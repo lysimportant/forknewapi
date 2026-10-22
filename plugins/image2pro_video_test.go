@@ -378,7 +378,7 @@ func TestImage2ProBillingLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-	assert.Equal(t, "2.4.2", plugin.Meta.Version)
+	assert.Equal(t, "2.4.3", plugin.Meta.Version)
 	imageSchema, imageExamples := plugin.Meta.UsageForModelType("future-catalog-image", "image")
 	require.Len(t, imageSchema, 1)
 	assert.Equal(t, "count", imageSchema["count"].Unit)
@@ -636,7 +636,7 @@ func TestImage2ProImageTaskContracts(t *testing.T) {
 	require.NoError(t, err)
 	usageBytes, err := common.Marshal(usageValue)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"count":2}`, string(usageBytes))
+	assert.JSONEq(t, `{"count":2,"seconds":0}`, string(usageBytes))
 	schema, _ := plugin.Meta.UsageForModel(modelName)
 	require.Contains(t, schema, "count")
 	assert.Equal(t, "count", schema["count"].Unit)
@@ -646,7 +646,7 @@ func TestImage2ProImageTaskContracts(t *testing.T) {
 	require.NoError(t, err)
 	usageBytes, err = common.Marshal(completeUsage)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"count":2}`, string(usageBytes))
+	assert.JSONEq(t, `{"count":2,"seconds":0}`, string(usageBytes))
 
 	created := map[string]any{
 		"id": "upstream-job:123", "object": "image.task", "model": modelName, "status": "queued",

@@ -103,7 +103,7 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.4.2",
+  version: "2.4.3",
   author: { name: "lysimportant/forknewapi" },
   description: {
     en: "Image2Pro image and video generation with dynamic model discovery and reference audio",
@@ -634,7 +634,7 @@ export function extractUsage(ctx) {
   const model = ctx.upstreamModel || ctx.model;
   if (isImageContext(ctx)) {
     if (ctx.usagePurpose === "billing_ratios") return {};
-    return { count: requestedImageCount(ctx.requestBody || {}) };
+    return { count: requestedImageCount(ctx.requestBody || {}), seconds: 0 };
   }
   const request = normalizeRequest(ctx.requestBody, model, ctx.files || []);
   if (ctx.usagePurpose === "billing_ratios") return {};
@@ -645,7 +645,7 @@ export function extractUsage(ctx) {
 export function extractUsageOnComplete(task, result) {
   if (!result || result.status !== "SUCCESS") return null;
   const state = task.state || {};
-  if (state.kind === "image" || isImageModel(task.upstreamModel || task.model)) return { count: requestedImageCount(state) };
+  if (state.kind === "image" || isImageModel(task.upstreamModel || task.model)) return { count: requestedImageCount(state), seconds: 0 };
   const seconds = requestedSeconds(state);
   return state.billingUnit === "count" ? { count: 1 } : { seconds };
 }

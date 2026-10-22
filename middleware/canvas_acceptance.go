@@ -177,6 +177,7 @@ func canvasCreationPath(path string) bool {
 		"/v1/chat/completions",
 		"/v1/images/generations",
 		"/v1/images/edits",
+		"/v1/images/tasks",
 		"/v1/audio/speech",
 		"/v1/videos",
 	}, path)

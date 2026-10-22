@@ -369,6 +369,11 @@ func TestCanvasExecutionAcceptance(t *testing.T) {
 	}{
 		{name: "ordinary valid", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload), status: http.StatusNoContent, downstream: true},
 		{name: "auto valid", method: http.MethodPost, path: "/v1/images/generations", tokenID: autoToken.Id, usingGroup: "auto", header: encodeCanvasExecutionPayloadForTest(t, autoPayload), status: http.StatusNoContent, downstream: true},
+		{name: "image task valid", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload), status: http.StatusNoContent, downstream: true},
+		{name: "auto image task valid", method: http.MethodPost, path: "/v1/images/tasks", tokenID: autoToken.Id, usingGroup: "auto", header: encodeCanvasExecutionPayloadForTest(t, autoPayload), status: http.StatusNoContent, downstream: true},
+		{name: "image task missing header", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusBadRequest},
+		{name: "image task user mismatch", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, mutateCanvasExecutionPayload(ordinaryPayload, func(payload *canvasExecutionPayload) { payload.UserID = strconv.Itoa(user.Id + 1) })), status: http.StatusForbidden},
+		{name: "image task polling without header", method: http.MethodGet, path: "/v1/images/tasks/task-1", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusNoContent, downstream: true},
 		{name: "missing header", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusBadRequest},
 		{name: "padded header", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload) + "=", status: http.StatusBadRequest},
 		{name: "duplicate json field", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: duplicateIssuerHeader, status: http.StatusBadRequest},
