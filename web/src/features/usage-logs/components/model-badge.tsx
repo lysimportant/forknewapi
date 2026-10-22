@@ -28,18 +28,22 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { resolveModelProvider } from '@/lib/model-provider'
 import { cn } from '@/lib/utils'
 
 import { getReasoningEffortVariant } from '../lib/format'
-
 /** 日志模型展示参数；实际模型来自已记录的上游请求，不代表底层模型身份验证。 */
+import { isResponseModelMismatch } from '../lib/response-model'
+import type { LogOtherData } from '../types'
+import { DetailRow } from './dialogs/log-detail-layout'
+
 interface ModelBadgeProps {
   /** 客户端请求的完整模型名称。 */
   modelName: string
   /** 可选上游模型名称；与请求模型相同时不重复展示。 */
   actualModel?: string
   /** 上游响应原始声明的模型，未观测到时省略。 */
-  responseModel?: string
+  responseModel?: string | LogOtherData['response_model']
   /** 日志记录的推理强度；缺失时不推测上游默认值。 */
   reasoningEffort?: string
   /** 服务端核对调用模型与响应模型后的不一致标记。 */
@@ -47,113 +51,24 @@ interface ModelBadgeProps {
   className?: string
   /** 在受限宽度内换行，名称最多显示两行，完整值可在详情中查看。 */
   wrapText?: boolean
-  /** 卡片详情入口；提供时由调用方打开详情，徽标不触发复制。 */
+  /** 卡片详情入口；存在模型映射或差异时打开详情，否则复制模型名。 */
   onInspect?: () => void
 }
 
-interface ModelProvider {
-  icon: string
-  label: string
-}
-
-function resolveModelProvider(modelName: string): ModelProvider | null {
-  const model = modelName.toLowerCase()
-  const hasAny = (keywords: string[]) =>
-    keywords.some((keyword) => model.includes(keyword))
-
-  if (
-    hasAny([
-      'gpt-',
-      'chatgpt-',
-      'text-embedding-',
-      'omni-moderation',
-      'dall-e',
-      'whisper',
-      'tts-',
-    ]) ||
-    /\bo[134](?:-|$)/.test(model)
-  ) {
-    return { icon: 'OpenAI.Color', label: 'OpenAI' }
-  }
-  if (hasAny(['claude-', 'anthropic'])) {
-    return { icon: 'Claude.Color', label: 'Claude' }
-  }
-  if (hasAny(['gemini-', 'learnlm-'])) {
-    return { icon: 'Gemini.Color', label: 'Gemini' }
-  }
-  if (hasAny(['grok-', 'xai-'])) {
-    return { icon: 'Grok.Color', label: 'Grok' }
-  }
-  if (hasAny(['deepseek-'])) {
-    return { icon: 'DeepSeek.Color', label: 'DeepSeek' }
-  }
-  if (hasAny(['qwen', 'qwq-'])) {
-    return { icon: 'Qwen.Color', label: 'Qwen' }
-  }
-  if (hasAny(['doubao-', 'volcengine'])) {
-    return { icon: 'Doubao.Color', label: 'Doubao' }
-  }
-  if (hasAny(['moonshot-', 'kimi-'])) {
-    return { icon: 'Moonshot.Color', label: 'Moonshot' }
-  }
-  if (hasAny(['minimax', 'abab'])) {
-    return { icon: 'Minimax.Color', label: 'MiniMax' }
-  }
-  if (hasAny(['glm-', 'chatglm', 'cogview', 'cogvideo'])) {
-    return { icon: 'Zhipu.Color', label: 'Zhipu' }
-  }
-  if (hasAny(['mimo-'])) {
-    return { icon: 'XiaomiMiMo', label: 'MiMo' }
-  }
-  if (hasAny(['ernie'])) {
-    return { icon: 'Wenxin.Color', label: 'Baidu' }
-  }
-  if (hasAny(['spark'])) {
-    return { icon: 'Spark.Color', label: 'iFlyTek' }
-  }
-  if (hasAny(['hunyuan'])) {
-    return { icon: 'Hunyuan.Color', label: 'Tencent' }
-  }
-  if (hasAny(['baichuan'])) {
-    return { icon: 'Baichuan.Color', label: 'Baichuan' }
-  }
-  if (hasAny(['internlm'])) {
-    return { icon: 'InternLM.Color', label: 'InternLM' }
-  }
-  if (hasAny(['step-'])) {
-    return { icon: 'Stepfun.Color', label: 'StepFun' }
-  }
-  if (hasAny(['yi-'])) {
-    return { icon: 'Yi.Color', label: 'Yi' }
-  }
-  if (hasAny(['mistral-', 'mixtral-'])) {
-    return { icon: 'Mistral.Color', label: 'Mistral' }
-  }
-  if (hasAny(['llama-', 'meta-'])) {
-    return { icon: 'Meta.Color', label: 'Meta' }
-  }
-  if (hasAny(['command-', 'cohere-'])) {
-    return { icon: 'Cohere.Color', label: 'Cohere' }
-  }
-
-  return null
-}
-
-/** 展示请求模型及供应商图标；没有详情回调时沿用徽标复制行为。 */
-function ModelBadgeContent(props: ModelBadgeProps) {
+function ModelBadgeContent(props: ModelBadgeProps & { copyable?: boolean }) {
   const provider = resolveModelProvider(props.modelName)
 
   return (
     <StatusBadge
       copyText={props.modelName}
-      copyable={!props.onInspect}
+      copyable={props.copyable ?? !props.onInspect}
       size='sm'
-      showDot={!provider}
-      autoColor={provider ? undefined : props.modelName}
+      showDot={!provider?.icon}
+      autoColor={provider?.icon ? undefined : props.modelName}
       className={cn(
         'border-border/60 bg-muted/30 h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
-        provider && 'text-foreground',
-        props.wrapText && 'h-auto min-h-6 max-w-full py-0.5 whitespace-normal',
+        provider?.icon && 'text-foreground',
+        props.wrapText && 'h-auto min-h-6 max-w-full py-px whitespace-normal',
         props.className
       )}
     >
@@ -163,11 +78,11 @@ function ModelBadgeContent(props: ModelBadgeProps) {
           props.wrapText ? 'max-w-full min-w-0' : 'max-w-none'
         )}
       >
-        {provider && (
+        {provider?.icon && (
           <span
             className='flex h-[18px] w-[18px] shrink-0 items-center justify-center'
-            title={provider.label}
-            aria-label={provider.label}
+            title={provider.label ?? provider.name}
+            aria-label={provider.label ?? provider.name}
           >
             {getLobeIcon(provider.icon, 18)}
           </span>
@@ -175,7 +90,7 @@ function ModelBadgeContent(props: ModelBadgeProps) {
         <span
           className={
             props.wrapText
-              ? 'line-clamp-2 [overflow-wrap:anywhere]'
+              ? 'line-clamp-2 leading-5 [overflow-wrap:anywhere]'
               : 'whitespace-nowrap'
           }
         >
@@ -188,6 +103,13 @@ function ModelBadgeContent(props: ModelBadgeProps) {
 
 /** 展示请求模型、已记录的推理强度及模型差异，保留完整名称的查看和复制入口。 */
 export function ModelBadge(props: ModelBadgeProps) {
+  if (typeof props.responseModel === 'object' && props.responseModel !== null) {
+    return <ObservedModelBadge {...props} responseModel={props.responseModel} />
+  }
+  return <LegacyModelBadge {...props} />
+}
+
+function LegacyModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
   const reasoningEffort =
     typeof props.reasoningEffort === 'string'
@@ -233,6 +155,20 @@ export function ModelBadge(props: ModelBadgeProps) {
   ) : null
 
   if (props.onInspect) {
+    if (!actualModel && !isMismatch) {
+      return (
+        <CopyButton
+          value={props.modelName}
+          aria-label={`${t('Model')}: ${props.modelName}`}
+          size='sm'
+          iconClassName='hidden'
+          className='h-auto min-h-8 max-w-full min-w-0 flex-col items-start justify-start gap-1 px-0 py-0 text-left font-normal whitespace-normal'
+        >
+          <ModelBadgeContent {...props} copyable={false} />
+          {reasoningEffortContent}
+        </CopyButton>
+      )
+    }
     return (
       <Button
         variant='ghost'
@@ -352,6 +288,179 @@ export function ModelBadge(props: ModelBadgeProps) {
           </div>
         </PopoverContent>
       </Popover>
+    </div>
+  )
+}
+
+function ObservedModelBadge(
+  props: ModelBadgeProps & {
+    responseModel: NonNullable<LogOtherData['response_model']>
+  }
+) {
+  const { t } = useTranslation()
+  const mismatch = isResponseModelMismatch(props.responseModel)
+  const responseModelLabel =
+    mismatch && props.responseModel
+      ? t('Response model: {{model}}', {
+          model: props.responseModel.returned_model,
+        })
+      : ''
+  const modelLabel = `${t('Model')}: ${props.modelName}${responseModelLabel ? `, ${responseModelLabel}` : ''}`
+  const hasDetails =
+    !!props.actualModel ||
+    !!(
+      props.responseModel &&
+      (mismatch ||
+        props.responseModel.returned_model !==
+          props.responseModel.requested_model ||
+        (props.responseModel.upstream_model &&
+          props.responseModel.upstream_model !==
+            props.responseModel.requested_model))
+    )
+
+  if (!hasDetails) {
+    if (props.onInspect) {
+      return (
+        <CopyButton
+          value={props.modelName}
+          aria-label={modelLabel}
+          size='sm'
+          iconClassName='hidden'
+          className='h-auto min-h-8 max-w-full min-w-0 justify-start px-0 py-0 text-left font-normal whitespace-normal'
+        >
+          <ModelBadgeContent {...props} copyable={false} />
+        </CopyButton>
+      )
+    }
+    return <ModelBadgeContent {...props} copyable />
+  }
+
+  const content = (
+    <>
+      {props.reasoningEffort && (
+        <StatusBadge
+          label={`${t('Reasoning Effort')}: ${props.reasoningEffort}`}
+          variant={getReasoningEffortVariant(props.reasoningEffort)}
+          size='sm'
+          copyable={false}
+        />
+      )}
+      <ModelBadgeContent {...props} copyable={false} />
+      {mismatch && (
+        <StatusBadge
+          icon={AlertTriangle}
+          label={responseModelLabel}
+          variant='warning'
+          copyable={false}
+        />
+      )}
+      {!mismatch && props.actualModel && (
+        <Route
+          className='text-muted-foreground size-3 shrink-0'
+          aria-hidden='true'
+        />
+      )}
+    </>
+  )
+
+  if (props.onInspect) {
+    return (
+      <Button
+        variant='ghost'
+        aria-label={modelLabel}
+        aria-haspopup='dialog'
+        onClick={props.onInspect}
+        className='h-auto min-h-8 max-w-full min-w-0 flex-wrap justify-start gap-1 px-0 py-0 text-left font-normal whitespace-normal'
+      >
+        {content}
+      </Button>
+    )
+  }
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Button
+            variant='ghost'
+            aria-label={modelLabel}
+            className='h-auto max-w-full min-w-0 flex-wrap justify-start gap-1 p-0 font-normal'
+          />
+        }
+      >
+        {content}
+      </PopoverTrigger>
+      <PopoverContent className='w-96 max-w-[calc(100vw-2rem)]'>
+        {props.responseModel ? (
+          <ResponseModelDetails observation={props.responseModel} />
+        ) : (
+          <div className='space-y-2'>
+            <div className='flex items-start justify-between gap-3'>
+              <span className='text-muted-foreground text-xs'>
+                {t('Request Model:')}
+              </span>
+              <span className='truncate font-mono text-xs font-medium'>
+                {props.modelName}
+              </span>
+            </div>
+            <div className='flex items-start justify-between gap-3'>
+              <span className='text-muted-foreground text-xs'>
+                {t('Actual Model:')}
+              </span>
+              <span className='truncate font-mono text-xs font-medium'>
+                {props.actualModel}
+              </span>
+            </div>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+export function ResponseModelDetails(props: {
+  observation: NonNullable<LogOtherData['response_model']>
+}) {
+  const { t } = useTranslation()
+  const mismatch = isResponseModelMismatch(props.observation)
+
+  return (
+    <div className='min-w-0 space-y-2'>
+      {mismatch && (
+        <StatusBadge
+          icon={AlertTriangle}
+          label={t('Response model: {{model}}', {
+            model: props.observation.returned_model,
+          })}
+          variant='warning'
+          copyable={false}
+          className='h-auto whitespace-normal'
+        />
+      )}
+      <DetailRow
+        label={t('Request Model')}
+        value={props.observation.requested_model}
+        mono
+      />
+      <DetailRow
+        label={t('Upstream Model')}
+        value={
+          props.observation.upstream_model || props.observation.requested_model
+        }
+        mono
+      />
+      <DetailRow
+        label={t('Response Model')}
+        value={props.observation.returned_model}
+        mono
+      />
+      {mismatch && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'The upstream returned a model name different from both the requested and upstream models. Aliases or dated versions may also cause this; this warning alone does not prove model substitution.'
+          )}
+        </p>
+      )}
     </div>
   )
 }

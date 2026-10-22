@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -123,10 +124,6 @@ type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }
 
-type OpenAIImageTaskConverter interface {
-	ConvertToOpenAIImageTask(task *model.Task) ([]byte, error)
-}
-
 type TaskArtifact = hosttypes.TaskArtifact
 
 type TaskArtifactClientRequest struct {
@@ -147,7 +144,7 @@ type TaskContentRequest struct {
 }
 
 type TaskContentRequestProvider interface {
-	BuildContentRequest(task *model.Task, artifactKey string, clientRequest TaskArtifactClientRequest) (*TaskContentRequest, error)
+	BuildContentRequest(ctx context.Context, task *model.Task, artifactKey string, clientRequest TaskArtifactClientRequest) (*TaskContentRequest, error)
 }
 
 type TaskUsageFactsProvider interface {

@@ -66,19 +66,22 @@ func newResponsesStreamContractFixture(t *testing.T, body string, isStream bool)
 	return c, recorder, response, info
 }
 
-// TestResponsesStreamContractTerminalFailure 验证失败和未完成终态原样到达客户端，其真实用量及异常状态进入结算和消费日志。
+// TestResponsesStreamContractTerminalFailure 验证终态原样到达客户端，保留真实用量，并区分失败和达到输出上限。
 func TestResponsesStreamContractTerminalFailure(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		event string
+		name       string
+		event      string
+		wantStatus string
 	}{
 		{
-			name:  "failed",
-			event: `{"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"upstream failed"},"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19,"input_tokens_details":{"cached_tokens":4}}}}`,
+			name:       "failed",
+			event:      `{"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"sensitive upstream detail"},"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19,"input_tokens_details":{"cached_tokens":4}}}}`,
+			wantStatus: "error",
 		},
 		{
-			name:  "incomplete",
-			event: `{"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19,"input_tokens_details":{"cached_tokens":4}}}}`,
+			name:       "incomplete",
+			event:      `{"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":12,"output_tokens":7,"total_tokens":19,"input_tokens_details":{"cached_tokens":4}}}}`,
+			wantStatus: "ok",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,9 +97,13 @@ func TestResponsesStreamContractTerminalFailure(t *testing.T) {
 			assert.Equal(t, 4, usage.PromptTokensDetails.CachedTokens)
 
 			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1)
-			streamLog, ok := other.Snapshot()["stream_status"].(map[string]interface{})
+			streamLog, ok := other.Snapshot()["stream_status"].(map[string]any)
 			require.True(t, ok, "消费日志必须包含流状态")
-			assert.Equal(t, "error", streamLog["status"], "失败或未完成终态不能在消费日志中显示为成功")
+			assert.Equal(t, test.wantStatus, streamLog["status"])
+			assert.Equal(t, test.name, streamLog["response_status"])
+			logJSON, err := common.Marshal(streamLog)
+			require.NoError(t, err)
+			assert.NotContains(t, string(logJSON), "sensitive upstream detail", "上游错误原文不能写入消费日志")
 		})
 	}
 }

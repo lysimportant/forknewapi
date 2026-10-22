@@ -1,14 +1,20 @@
 package oairesponses
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
+	relaymedia "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/media"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 const (
@@ -27,7 +33,7 @@ const (
 
 // ResponsesRequestToChatCompletionsRequest 将无状态 Responses 请求转换为 Chat 请求。
 // 不可表达的输入项目、密文及无效工具结果关联返回错误；不修改原请求，不替上游执行或补全工具调用。
-func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
+func ResponsesRequestToChatCompletionsRequest(ctx context.Context, req *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
 	if req == nil {
 		return nil, errors.New("request is nil")
 	}
@@ -38,7 +44,7 @@ func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (
 		return nil, err
 	}
 
-	messages, err := responsesRequestMessagesToChat(req)
+	messages, err := responsesRequestMessagesToChat(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +94,12 @@ func ResponsesRequestToChatCompletionsRequest(req *dto.OpenAIResponsesRequest) (
 		return nil, fmt.Errorf("invalid presence_penalty: %w", err)
 	}
 
-	if reasoningIntent, err := reasoning.FromOpenAIResponses(req); err != nil {
+	reasoningIntent, diagnostics, err := reasoning.FromOpenAIResponses(req)
+	if err != nil {
 		return nil, reasoning.AsClientError(err)
-	} else if err := reasoning.ApplyToOpenAIChat(out, reasoningIntent); err != nil {
+	}
+	convdiag.Add(ctx, diagnostics...)
+	if err := reasoning.ApplyToOpenAIChat(out, reasoningIntent); err != nil {
 		return nil, reasoning.AsClientError(err)
 	}
 	if req.ServiceTier != "" {
@@ -137,7 +146,7 @@ func ValidateRequestChatUnsupportedFields(req *dto.OpenAIResponsesRequest) error
 }
 
 // responsesRequestMessagesToChat 转换指令与输入历史，并在返回前校验当前请求内的工具调用结果关联。
-func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Message, error) {
+func responsesRequestMessagesToChat(ctx context.Context, req *dto.OpenAIResponsesRequest) ([]dto.Message, error) {
 	messages := make([]dto.Message, 0)
 	if rawJSONPresent(req.Instructions) {
 		instructions, err := responsesJSONString(req.Instructions)
@@ -166,12 +175,25 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 		if err := kitutil.Unmarshal(req.Input, &items); err != nil {
 			return nil, fmt.Errorf("invalid input array: %w", err)
 		}
+		// Chat Completions requires the tool messages answering one assistant tool_calls
+		// batch to stay contiguous, so media hoisted out of tool output items is
+		// held back and emitted as a single user message once the batch ends.
+		var pendingMedia []any
 		for _, item := range items {
-			nextMessages, err := responsesInputItemToChatMessages(item, messages)
+			itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
+			if len(pendingMedia) > 0 && itemType != responsesInputTypeFunctionCallOutput && itemType != responsesInputTypeCustomToolOutput {
+				messages = append(messages, dto.Message{Role: "user", Content: pendingMedia})
+				pendingMedia = nil
+			}
+			nextMessages, media, err := responsesInputItemToChatMessages(ctx, item, messages)
 			if err != nil {
 				return nil, err
 			}
 			messages = nextMessages
+			pendingMedia = append(pendingMedia, media...)
+		}
+		if len(pendingMedia) > 0 {
+			messages = append(messages, dto.Message{Role: "user", Content: pendingMedia})
 		}
 		if err := validateResponsesChatToolHistory(messages); err != nil {
 			return nil, err
@@ -182,30 +204,32 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 	}
 }
 
-// responsesInputItemToChatMessages 保留已有消息与工具调用顺序；不支持的项目类型或密文返回明确错误。
-func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message) ([]dto.Message, error) {
+// responsesInputItemToChatMessages appends the Chat messages for one Responses input item.
+// The second result carries media content parts hoisted out of a tool output item,
+// already in Chat shape; the caller decides where that user message lands.
+func responsesInputItemToChatMessages(ctx context.Context, item map[string]any, messages []dto.Message) ([]dto.Message, []any, error) {
 	itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
 	if item["encrypted_content"] != nil {
-		return nil, fmt.Errorf("responses to chat conversion does not support encrypted_content in input item %q", itemType)
+		return nil, nil, fmt.Errorf("responses to chat conversion does not support encrypted_content in input item %q", itemType)
 	}
 	switch itemType {
 	case "reasoning":
 		if item["content"] != nil {
-			return nil, errors.New("responses to chat conversion does not support reasoning content outside summary")
+			return nil, nil, errors.New("responses to chat conversion does not support reasoning content outside summary")
 		}
 		summary, ok := item["summary"].([]any)
 		if !ok {
-			return nil, errors.New("reasoning summary must be an array of summary_text items")
+			return nil, nil, errors.New("reasoning summary must be an array of summary_text items")
 		}
 		texts := make([]string, 0, len(summary))
 		for _, rawPart := range summary {
 			part, ok := rawPart.(map[string]any)
 			if !ok || part["type"] != "summary_text" {
-				return nil, errors.New("reasoning summary supports only summary_text items")
+				return nil, nil, errors.New("reasoning summary supports only summary_text items")
 			}
 			text, ok := part["text"].(string)
 			if !ok {
-				return nil, errors.New("reasoning summary_text must contain string text")
+				return nil, nil, errors.New("reasoning summary_text must contain string text")
 			}
 			texts = append(texts, text)
 		}
@@ -219,48 +243,51 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 			summaryText = previous + "\n\n" + summaryText
 		}
 		last.ReasoningContent = &summaryText
-		return messages, nil
+		return messages, nil, nil
 	case responsesInputTypeFunctionCall:
 		toolCall, err := responsesFunctionCallItemToChatToolCall(item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return appendToolCallToLastAssistant(messages, toolCall), nil
+		return appendToolCallToLastAssistant(messages, toolCall), nil, nil
 	case responsesInputTypeCustomToolCall:
 		toolCall, err := responsesCustomToolCallItemToChatToolCall(item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return appendToolCallToLastAssistant(messages, toolCall), nil
-	case responsesInputTypeFunctionCallOutput:
+		return appendToolCallToLastAssistant(messages, toolCall), nil, nil
+	case responsesInputTypeFunctionCallOutput, responsesInputTypeCustomToolOutput:
 		callID := strings.TrimSpace(kitutil.Interface2String(item["call_id"]))
 		if callID == "" {
-			return nil, errors.New("function_call_output item is missing call_id")
+			return nil, nil, fmt.Errorf("%s item is missing call_id", itemType)
 		}
-		content := responseToolOutputToChatContent(item["output"])
-		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), nil
+		if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" && len(messages[len(messages)-1].ParseToolCalls()) == 0 {
+			return nil, nil, fmt.Errorf("%s call_id has no matching earlier call", itemType)
+		}
+		content, media := responsesToolOutputToChat(ctx, item["output"])
+		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), media, nil
 	case "", "message":
 		// 简写消息可省略 type；其他项目不能作为普通消息丢失协议语义。
 	default:
-		return nil, fmt.Errorf("responses to chat conversion does not support input item type %q", itemType)
+		return nil, nil, fmt.Errorf("responses to chat conversion does not support input item type %q", itemType)
 	}
 
 	role := strings.TrimSpace(kitutil.Interface2String(item["role"]))
 	if role == "" {
 		role = "user"
 	}
-	content, err := responsesInputContentToChatContent(item["content"])
+	content, err := responsesInputContentToChatContent(ctx, item["content"])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if role == "assistant" && len(messages) > 0 {
 		last := &messages[len(messages)-1]
 		if last.Role == "assistant" && last.ReasoningContent != nil && last.Content == nil {
 			last.Content = content
-			return messages, nil
+			return messages, nil, nil
 		}
 	}
-	return append(messages, dto.Message{Role: role, Content: content}), nil
+	return append(messages, dto.Message{Role: role, Content: content}), nil, nil
 }
 
 // validateResponsesChatToolHistory 校验调用标识唯一且结果对应已出现的调用；允许并行结果乱序与末尾尚未返回的调用。
@@ -289,7 +316,7 @@ func validateResponsesChatToolHistory(messages []dto.Message) error {
 	return nil
 }
 
-func responsesInputContentToChatContent(content any) (any, error) {
+func responsesInputContentToChatContent(ctx context.Context, content any) (any, error) {
 	if content == nil {
 		return "", nil
 	}
@@ -298,22 +325,23 @@ func responsesInputContentToChatContent(content any) (any, error) {
 	case string:
 		return value, nil
 	case []any:
-		return responsesContentPartsToChatContent(value)
+		return responsesContentPartsToChatContent(ctx, value)
 	case []map[string]any:
 		parts := make([]any, 0, len(value))
 		for _, part := range value {
 			parts = append(parts, part)
 		}
-		return responsesContentPartsToChatContent(parts)
+		return responsesContentPartsToChatContent(ctx, parts)
 	default:
 		return content, nil
 	}
 }
 
-func responsesContentPartsToChatContent(parts []any) (any, error) {
+func responsesContentPartsToChatContent(ctx context.Context, parts []any) (any, error) {
 	chatParts := make([]any, 0, len(parts))
 	var textOnly strings.Builder
 	onlyText := true
+	droppedFile := false
 
 	for _, rawPart := range parts {
 		part, ok := rawPart.(map[string]any)
@@ -340,10 +368,18 @@ func responsesContentPartsToChatContent(parts []any) (any, error) {
 			})
 		case "input_file":
 			onlyText = false
-			chatParts = append(chatParts, map[string]any{
-				"type": dto.ContentTypeFile,
-				"file": responsesFilePartToChatFile(part),
-			})
+			chatPart, reason := responsesFilePartToChat(ctx, part)
+			if reason != "" {
+				convdiag.Add(ctx, types.ConversionDiagnostic{
+					Code:     "unsupported_media_type",
+					Path:     "input.content",
+					Message:  reason + "; the file was omitted",
+					Severity: types.ConversionDiagnosticError,
+				})
+				droppedFile = true
+				continue
+			}
+			chatParts = append(chatParts, chatPart)
 		case "input_audio":
 			onlyText = false
 			chatParts = append(chatParts, map[string]any{
@@ -365,12 +401,16 @@ func responsesContentPartsToChatContent(parts []any) (any, error) {
 	if onlyText {
 		return textOnly.String(), nil
 	}
+	if len(chatParts) == 0 && droppedFile {
+		// Chat rejects an empty content array; name what was omitted instead.
+		return "[file]", nil
+	}
 	return chatParts, nil
 }
 
 // responsesFunctionCallItemToChatToolCall 将函数历史转换为 Chat 工具调用；call_id 与 name 不能为空，项目 id 不能替代 call_id。
 func responsesFunctionCallItemToChatToolCall(item map[string]any) (dto.ToolCallRequest, error) {
-	name := strings.TrimSpace(kitutil.Interface2String(item["name"]))
+	name := responsesCallName(item)
 	if name == "" {
 		return dto.ToolCallRequest{}, errors.New("function_call item is missing name")
 	}
@@ -388,18 +428,26 @@ func responsesFunctionCallItemToChatToolCall(item map[string]any) (dto.ToolCallR
 	}, nil
 }
 
+// responsesCustomToolCallItemToChatToolCall encodes a custom tool call the same
+// way its definition reaches Chat Completions: a function call whose arguments
+// carry the raw input under the single "input" key.
 func responsesCustomToolCallItemToChatToolCall(item map[string]any) (dto.ToolCallRequest, error) {
-	raw, err := kitutil.Marshal(item)
+	name := responsesCallName(item)
+	if name == "" {
+		return dto.ToolCallRequest{}, errors.New("custom_tool_call item is missing name")
+	}
+	arguments, err := kitutil.Marshal(map[string]string{
+		convmeta.CustomToolInputArgument: responsesArgumentsString(item["input"]),
+	})
 	if err != nil {
 		return dto.ToolCallRequest{}, err
 	}
 	return dto.ToolCallRequest{
-		ID:     responsesCallID(item),
-		Type:   dto.CustomType,
-		Custom: raw,
+		ID:   responsesCallID(item),
+		Type: "function",
 		Function: dto.FunctionRequest{
-			Name:      strings.TrimSpace(kitutil.Interface2String(item["name"])),
-			Arguments: responsesArgumentsString(item["input"]),
+			Name:      name,
+			Arguments: string(arguments),
 		},
 	}, nil
 }
@@ -563,20 +611,52 @@ func responsesImagePartToChatImageURL(part map[string]any) any {
 	return imageURL
 }
 
-func responsesFilePartToChatFile(part map[string]any) any {
-	if file, ok := part["file"]; ok {
-		return file
+// responsesFilePartToChat maps a Responses input_file onto Chat Completions,
+// whose file part takes only PDF data or an uploaded file_id and no file URL.
+// Files given by data or URL are loaded through the media resolver: PDF
+// becomes a Chat file part with inline data and text files become a text
+// part. A non-empty reason means Chat cannot carry the file.
+func responsesFilePartToChat(ctx context.Context, part map[string]any) (map[string]any, string) {
+	fields := part
+	if nested, ok := part["file"].(map[string]any); ok {
+		fields = nested
 	}
-	file := map[string]any{}
-	for _, key := range []string{"file_id", "file_data", "filename", "file_url"} {
-		if value, ok := part[key]; ok {
-			file[key] = value
+	filename := strings.TrimSpace(kitutil.Interface2String(fields["filename"]))
+	source := ContentPartToFileSource(part)
+	if source == nil {
+		fileID := strings.TrimSpace(kitutil.Interface2String(fields["file_id"]))
+		if fileID == "" {
+			return nil, "input_file carries no file_data, file_url, or file_id"
 		}
+		file := map[string]any{"file_id": fileID}
+		if filename != "" {
+			file["filename"] = filename
+		}
+		return map[string]any{"type": dto.ContentTypeFile, "file": file}, ""
 	}
-	if len(file) == 0 {
-		return part
+	base64Data, mimeType, err := relaymedia.ResolveBase64Data(ctx, source, "formatting Responses input file for Chat")
+	if err != nil {
+		return nil, fmt.Sprintf("input_file could not be loaded: %s", err.Error())
 	}
-	return file
+	mediaType, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(mimeType)), ";")
+	mediaType = strings.TrimSpace(mediaType)
+	switch {
+	case mediaType == "application/pdf":
+		if filename == "" {
+			filename = "document.pdf"
+		}
+		return map[string]any{"type": dto.ContentTypeFile, "file": map[string]any{
+			"filename":  filename,
+			"file_data": "data:application/pdf;base64," + base64Data,
+		}}, ""
+	case relaymedia.IsTextMimeType(mediaType):
+		text, ok := relaymedia.DecodeText(base64Data)
+		if !ok {
+			return nil, fmt.Sprintf("input_file of MIME type %q could not be decoded as UTF-8 text", mimeType)
+		}
+		return map[string]any{"type": dto.ContentTypeText, "text": text}, ""
+	}
+	return nil, fmt.Sprintf("OpenAI Chat Completions file parts accept only PDF, not %q", mimeType)
 }
 
 func responsesVideoPartToChatVideoURL(part map[string]any) any {
@@ -620,6 +700,17 @@ func CallID(item map[string]any) string {
 	return responsesCallID(item)
 }
 
+// responsesCallName is the upstream function name of a function_call or
+// custom_tool_call item: a call made in a tool namespace uses the name its
+// flattened definition was sent with.
+func responsesCallName(item map[string]any) string {
+	name := strings.TrimSpace(kitutil.Interface2String(item["name"]))
+	if name == "" {
+		return ""
+	}
+	return convmeta.NamespacedToolName(strings.TrimSpace(kitutil.Interface2String(item["namespace"])), name)
+}
+
 func responsesArgumentsString(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -648,6 +739,57 @@ func responseToolOutputToChatContent(value any) any {
 		}
 		return string(raw)
 	}
+}
+
+// responsesToolOutputToChat maps a function_call_output payload onto Chat Completions, where a
+// tool message may only carry text. A Responses content-part array keeps its text on the tool
+// message and returns the media parts in Chat shape for the caller to hoist into a user message;
+// stringifying them instead would hand base64 image data to the upstream text tokenizer. Any
+// other payload shape (string, object, plain JSON array) keeps the historical stringified form.
+func responsesToolOutputToChat(ctx context.Context, value any) (any, []any) {
+	rawParts, ok := value.([]any)
+	if !ok || len(rawParts) == 0 {
+		return responseToolOutputToChatContent(value), nil
+	}
+
+	texts := make([]string, 0, len(rawParts))
+	mediaParts := make([]any, 0, len(rawParts))
+	labels := make([]string, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			return responseToolOutputToChatContent(value), nil
+		}
+		partType := strings.TrimSpace(kitutil.Interface2String(part["type"]))
+		switch partType {
+		case "input_text", "output_text", "text":
+			if text := kitutil.Interface2String(part["text"]); text != "" {
+				texts = append(texts, text)
+			}
+		case "input_image", "input_file", "input_audio", "input_video":
+			mediaParts = append(mediaParts, part)
+			label := "[" + strings.TrimPrefix(partType, "input_") + "]"
+			if !slices.Contains(labels, label) {
+				labels = append(labels, label)
+			}
+		default:
+			return responseToolOutputToChatContent(value), nil
+		}
+	}
+	if len(mediaParts) == 0 {
+		return strings.Join(texts, "\n"), nil
+	}
+
+	converted, err := responsesContentPartsToChatContent(ctx, mediaParts)
+	if err != nil {
+		return responseToolOutputToChatContent(value), nil
+	}
+	media, _ := converted.([]any)
+	if len(texts) == 0 {
+		// Upstreams reject empty tool content; the media itself rides on the hoisted user message.
+		return strings.Join(labels, " "), media
+	}
+	return strings.Join(texts, "\n"), media
 }
 
 func responsesRawFloat(raw json.RawMessage) (*float64, error) {

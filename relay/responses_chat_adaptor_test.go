@@ -34,10 +34,9 @@ func TestResponsesChatAdaptorRejectsUnsupportedInputs(t *testing.T) {
 		{"上下文管理", `{"model":"model-test","input":"hello","context_management":{"type":"auto"}}`, "context_management"},
 		{"内置工具", `{"model":"model-test","input":"hello","tools":[{"type":"web_search_preview"}]}`, "tool type"},
 		{"自定义工具", `{"model":"model-test","input":"hello","tools":[{"type":"custom","name":"apply_patch"}]}`, "tool type"},
-		{"自定义调用历史", `{"model":"model-test","input":[{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"patch"}]}`, "history tool type"},
 		{"未知输入项目", `{"model":"model-test","input":[{"type":"future_item","content":"value"}]}`, "future_item"},
 		{"推理密文", `{"model":"model-test","input":[{"type":"reasoning","encrypted_content":"test-encrypted-content"}]}`, "encrypted_content"},
-		{"不可表达自定义结果", `{"model":"model-test","input":[{"type":"custom_tool_call_output","call_id":"call_1","output":"result"}]}`, "custom_tool_call_output"},
+		{"孤立自定义结果", `{"model":"model-test","input":[{"type":"custom_tool_call_output","call_id":"call_1","output":"result"}]}`, "function_call_output call_id has no matching earlier call"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, recorder, info, _ := responsesChannelContext(t, constant.ChannelTypeSiliconFlow, "model-test", `"hello"`, false)

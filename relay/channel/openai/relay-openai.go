@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/tokenkit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -102,7 +103,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
-		logger.LogError(c, "invalid response or response body")
+		logger.LogError(c, common.LogText("invalid response or response body"))
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
@@ -124,7 +125,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
+				common.SysLog(common.LogText("error handling stream format: %s", err.Error()))
 				sr.Error(err)
 			}
 		}
@@ -134,20 +135,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 
 			lastStreamData = data
-			responseModel, terminal := collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
-			info.ObserveUpstreamResponseModel(responseModel, terminal)
-			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
-				logger.LogError(c, "error processing stream token data: "+err.Error())
+			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
+			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
+				logger.LogError(c, common.LogText("error processing stream token data: %s", err.Error()))
 				sr.Error(err)
 			}
 		}
 	})
 
+	info.StreamStatus.RequireTerminal()
+
 	// 处理最后的响应
 	shouldSendLastResp := true
 	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
 		&containStreamUsage, info, &shouldSendLastResp); err != nil {
-		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
+		logger.LogError(c, common.LogText("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
 	// 部分兼容网关把完整的累计usage附在倒数第二个事件上，随后发送一个空的最后事件。
@@ -195,14 +197,22 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	return usage, nil
 }
 
-// collectStreamFunctionCallNames 累计去重后的工具调用名，并复用同次解析返回模型声明和终态标记。
-// 无法解析的分片不改变调用名集合，模型声明返回空值。
-func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names *[]string) (model string, terminal bool) {
+// observeStreamChoices collects billable function call names and records the
+// finish reason facts used by health sampling from one parsed chunk.
+func observeStreamChoices(info *relaycommon.RelayInfo, data string, seen map[string]struct{}, names *[]string) {
 	var streamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-		return "", false
+		return
 	}
+	info.ObserveResponseModel(streamResponse.Model)
+	info.ObserveUpstreamResponseModel(streamResponse.Model, isChatCompletionStreamTerminal(&streamResponse))
 	for _, choice := range streamResponse.Choices {
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			if *choice.FinishReason == constant.FinishReasonContentFilter {
+				info.PerformanceBusinessRejection = true
+			}
+			info.StreamStatus.MarkCompleted()
+		}
 		for i, tc := range choice.Delta.ToolCalls {
 			name := strings.TrimSpace(tc.Function.Name)
 			if name == "" {
@@ -239,7 +249,6 @@ func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names
 			*names = append(*names, name)
 		}
 	}
-	return streamResponse.Model, isChatCompletionStreamTerminal(&streamResponse)
 }
 
 // isChatCompletionStreamTerminal 判断 Chat SSE 是否已到达 finish_reason 或最终 usage 分片。
@@ -275,7 +284,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if enterpriseResponse.Success {
 			responseBody = enterpriseResponse.Data
 		} else {
-			logger.LogError(c, fmt.Sprintf("openrouter enterprise response success=false, data: %s", enterpriseResponse.Data))
+			logger.LogError(c, common.LogText("openrouter enterprise response success=false, data: %s", enterpriseResponse.Data))
 			return nil, types.NewOpenAIError(fmt.Errorf("openrouter response success=false"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 	}
@@ -290,8 +299,10 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 	info.ObserveUpstreamResponseModel(simpleResponse.Model, true)
 
+	info.ObserveResponseModel(simpleResponse.Model)
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {
+			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "openai_finish_reason=content_filter")
 			break
 		}
@@ -302,6 +313,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			info.CountBillableToolCall(dto.BuildInCallFunctionCall, tc.Function.Name)
 		}
 	}
+	info.ApplyVendorToolUsage(responseBody)
 
 	forceFormat := false
 	if info.ChannelSetting.ForceFormat {
@@ -313,7 +325,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		completionTokens := simpleResponse.Usage.CompletionTokens
 		if completionTokens == 0 {
 			for _, choice := range simpleResponse.Choices {
-				ctkm := service.CountTextToken(choice.Message.StringContent()+choice.Message.GetReasoningContent(), info.UpstreamModelName)
+				ctkm := tokenkit.Count(info.UpstreamModelName, choice.Message.StringContent()+choice.Message.GetReasoningContent())
 				completionTokens += ctkm
 			}
 		}

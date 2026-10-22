@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   act,
+  cleanup,
   render as renderView,
   screen,
   waitFor,
@@ -32,6 +33,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { OAUTH_POPUP_CALLBACK_MESSAGE } from '@/features/auth/constants'
 import type { UserProfile } from '@/features/profile/types'
 import { api } from '@/lib/api'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
 
 import { AccountBindings } from '../components/account-bindings'
 import { PasskeyCard } from '../components/passkey-card'
@@ -44,7 +46,8 @@ const credentialsDescriptor = Object.getOwnPropertyDescriptor(
 const expiresAt = () => Math.floor(Date.now() / 1000) + 300
 
 /** 启用因子时通行密钥域名选择器需要与真实页面相同的查询上下文。 */
-function render(ui: ReactNode) {
+function render(ui: ReactNode, options?: Parameters<typeof renderView>[1]) {
+  if (options) return renderView(ui, options)
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
@@ -70,7 +73,11 @@ const credential = {
   getClientExtensionResults: () => ({}),
 }
 
+let client: QueryClient
 beforeEach(() => {
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   vi.stubGlobal(
     'PublicKeyCredential',
     class {
@@ -89,6 +96,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanup()
+  client.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   if (credentialsDescriptor) {
@@ -194,9 +203,6 @@ it('refreshes Telegram bindings from the server result after the callback popup 
   })
   const onUpdate = vi.fn()
   const user = userEvent.setup()
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
   render(
     <QueryClientProvider client={client}>
       <AccountBindings
@@ -362,7 +368,12 @@ it('consumes Passkey authorization at setup and activates using only the dedicat
   })
   const success = vi.spyOn(toast, 'success')
   const user = userEvent.setup()
-  render(<TwoFACard loading={false} />)
+  client.setQueryData(STATUS_QUERY_KEY, { passkey_rp_ids: ['localhost'] })
+  render(
+    <QueryClientProvider client={client}>
+      <TwoFACard loading={false} />
+    </QueryClientProvider>
+  )
   await user.click(await screen.findByRole('button', { name: 'Enable' }))
   await screen.findByText(
     'We will prompt your device to confirm using biometrics or your hardware key.'

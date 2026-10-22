@@ -13,6 +13,8 @@ export const meta = {
   models: ["sora-2", "sora-2-pro"],
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
   fetchMode: "per_task",
+  // A New API gateway serves /v1/videos as a host protocol, so no URL changes.
+  upstreams: ["vendor", "new_api"],
   usageSchema: {
     // Requested video duration in seconds.
     seconds: {

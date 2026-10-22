@@ -107,17 +107,17 @@ func TestRegistryChannelModelRouting(t *testing.T) {
 
 func TestRegistryChannelModelRoutingAllowsMultipleProtocols(t *testing.T) {
 	source := routingTestPluginSource("channel-multi-protocol", 0, `[]`,
-		`modelRouting: "channel", protocols: ["openai_video", {name: "openai_responses", supports: ["sync"]}, {name: "openai_image_tasks"}],`,
+		`modelRouting: "channel", protocols: ["openai_video", {name: "openai_responses", supports: ["sync"]}, {name: "openai_image"}],`,
 		`export const protocols = {
 		openai_video: {decodeRequest: function(ctx) { return ctx; }, render: function(ctx, task) { return task; }},
 		openai_responses: {decodeRequest: function(ctx) { return ctx; }, renderFinal: function(ctx, task) { return task; }},
-		openai_image_tasks: {decodeRequest: function(ctx) { return ctx; }, render: function(ctx, task) { return task; }}
+		openai_image: {decodeRequest: function(ctx) { return ctx; }, render: function(ctx, task) { return task; }}
 	};
 	 export function listArtifacts() { return []; }
 	 export function buildContentRequest() { return {}; }`)
 	plugin, err := CompilePlugin(source, Options{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"openai_video", "openai_responses", "openai_image_tasks"}, []string{plugin.Meta.Protocols[0].Name, plugin.Meta.Protocols[1].Name, plugin.Meta.Protocols[2].Name})
+	assert.Equal(t, []string{"openai_video", "openai_responses", "openai_image"}, []string{plugin.Meta.Protocols[0].Name, plugin.Meta.Protocols[1].Name, plugin.Meta.Protocols[2].Name})
 }
 
 func TestRegistryRejectsPluginKeyLongerThanTaskPlatformColumn(t *testing.T) {
@@ -658,6 +658,7 @@ func TestRegistryValidatesChannelTypes(t *testing.T) {
 		{name: "zero rejected", channelTypes: []int{0}, wantErr: "positive channel types"},
 		{name: "negative rejected", channelTypes: []int{-1}, wantErr: "positive channel types"},
 		{name: "task plugin type rejected", channelTypes: []int{constant.ChannelTypeTaskPlugin}, wantErr: "task plugin channel type"},
+		{name: "new api type rejected", channelTypes: []int{constant.ChannelTypeNewAPI}, wantErr: "New API channel type"},
 		{name: "duplicates rejected", channelTypes: []int{1, 1}, wantErr: "must be unique"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1154,11 +1155,11 @@ func TestRegistryModelDiscoveryAliases(t *testing.T) {
 
 func TestRegistryModelDiscoveryTypesAndPrefixes(t *testing.T) {
 	base := `modelRouting: "channel", protocols: ["openai_video"], modelDiscovery: {protocol: "openai", path: "/v1/models", `
-	valid := base + `modelTypes: ["image", "video"], typePrefixes: {image: "Image2Pro-Image-", video: "Image2Pro-Video-"}},`
+	valid := base + `modelTypes: ["image", "video"], typePrefixes: {image: "Example-Image-", video: "Example-Video-"}},`
 	plugin, err := CompilePlugin(routingTestPluginSource("discovery-types", 0, `[]`, valid, routingProtocolExport("openai_video")), Options{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"image", "video"}, plugin.Meta.ModelDiscovery.ModelTypes)
-	assert.Equal(t, map[string]string{"image": "Image2Pro-Image-", "video": "Image2Pro-Video-"}, plugin.Meta.ModelDiscovery.TypePrefixes)
+	assert.Equal(t, map[string]string{"image": "Example-Image-", "video": "Example-Video-"}, plugin.Meta.ModelDiscovery.TypePrefixes)
 
 	for _, tc := range []struct {
 		name, fields string
@@ -1188,7 +1189,7 @@ func TestRegistryModelDiscoveryTypesAndPrefixes(t *testing.T) {
 	snapshot.Override[0].ModelDiscovery.ModelTypes[0] = "video"
 	snapshot.Override[0].ModelDiscovery.TypePrefixes["image"] = "changed-"
 	assert.Equal(t, []string{"image", "video"}, loaded.Meta.ModelDiscovery.ModelTypes)
-	assert.Equal(t, "Image2Pro-Image-", loaded.Meta.ModelDiscovery.TypePrefixes["image"])
+	assert.Equal(t, "Example-Image-", loaded.Meta.ModelDiscovery.TypePrefixes["image"])
 }
 
 // TestRegistryModelMediaTypes 仅允许为已声明的精确模型补充兼容媒体类型。
@@ -1431,6 +1432,17 @@ usageProfiles: [
 	assert.Empty(t, schema)
 	assert.Nil(t, examples)
 
+	// A channel mapping may send a declared model to an undeclared endpoint ID:
+	// the first profiled candidate wins, otherwise the defaults apply.
+	schema, examples = plugin.Meta.UsageForModels("ep-endpoint", "image")
+	assert.Equal(t, plugin.Meta.UsageProfiles[0].Schema, schema)
+	assert.Nil(t, examples)
+	schema, _ = plugin.Meta.UsageForModels("video", "image")
+	assert.Equal(t, plugin.Meta.UsageProfiles[1].Schema, schema)
+	schema, examples = plugin.Meta.UsageForModels("ep-endpoint", "default")
+	assert.Equal(t, plugin.Meta.UsageSchema, schema)
+	assert.Equal(t, plugin.Meta.UsageExamples, examples)
+
 	snapshot := registry.Snapshot()
 	require.Len(t, snapshot.Override, 1)
 	profile := &snapshot.Override[0].UsageProfiles[1]
@@ -1593,6 +1605,9 @@ func TestSubmitResponseTypesContract(t *testing.T) {
 		{"host JSON utility", `requiredCapabilities:["json-clone@1"],`, "", true},
 		{"SSE delta", `submitResponseTypes:["sse"],requiredCapabilities:["submit-sse-delta@1"],`, `export function parseSubmitEventDelta(){return {changes:[],state:null,done:true};}`, true},
 		{"SSE delta missing hook", `submitResponseTypes:["sse"],requiredCapabilities:["submit-sse-delta@1"],`, `export function parseSubmitEvent(){return {state:null,done:true};}`, false},
+		{"SSE delta hook without declaration", `submitResponseTypes:["sse"],`, `export function parseSubmitEventDelta(){return {changes:[],state:null,done:true};}`, true},
+		{"SSE snapshot and delta hooks", `submitResponseTypes:["sse"],`, `export function parseSubmitEvent(){return {state:null,done:true};}
+export function parseSubmitEventDelta(){return {changes:[],state:null,done:true};}`, true},
 		{"delta requires SSE", `requiredCapabilities:["submit-sse-delta@1"],`, "", false},
 		{"unsupported capability version", `requiredCapabilities:["json-clone@2"],`, "", false},
 		{"duplicate capability", `requiredCapabilities:["json-clone@1","json-clone@1"],`, "", false},
@@ -1612,6 +1627,33 @@ func TestSubmitResponseTypesContract(t *testing.T) {
 			} else {
 				require.Error(t, err)
 			}
+		})
+	}
+}
+
+func TestUpstreamsManifestContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, metadata string
+		valid, newAPI  bool
+	}{
+		{"omitted implies vendor", "", true, false},
+		{"vendor only", `upstreams:["vendor"],`, true, false},
+		{"vendor and new api", `upstreams:["vendor","new_api"],`, true, true},
+		{"new api only still serves its vendor", `upstreams:["new_api"],`, true, true},
+		{"unknown kind", `upstreams:["gateway"],`, false, false},
+		{"duplicate", `upstreams:["new_api","new_api"],`, false, false},
+		{"null", `upstreams:null,`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, err := CompilePlugin(routingTestPluginSource("upstreams", 0, `["model"]`, tc.metadata, ""), Options{})
+			if !tc.valid {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, ValidateV1Meta(plugin.Meta))
+			assert.True(t, plugin.Meta.SupportsUpstream(UpstreamKindVendor))
+			assert.Equal(t, tc.newAPI, plugin.Meta.SupportsUpstream(UpstreamKindNewAPI))
 		})
 	}
 }

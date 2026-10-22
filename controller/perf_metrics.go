@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/QuantumNous/new-api/common"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -21,13 +22,18 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		}
 	}
 
+	recentModels := c.QueryArray("recent_model")
+	if len(recentModels) > perfmetrics.MaxRecentModels {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+		return
+	}
 	activeGroups := []string{"auto"}
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if service.IsGroupVisible(group, c.GetInt("role")) {
 			activeGroups = append(activeGroups, group)
 		}
 	}
-	result, err := perfmetrics.QuerySummaryAll(hours, activeGroups)
+	result, err := perfmetrics.QuerySummaryAll(hours, activeGroups, recentModels...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -61,9 +67,10 @@ func GetPerfMetrics(c *gin.Context) {
 	}
 
 	result, err := perfmetrics.Query(perfmetrics.QueryParams{
-		Model: modelName,
-		Group: c.Query("group"),
-		Hours: hours,
+		Model:         modelName,
+		Group:         c.Query("group"),
+		Hours:         hours,
+		AllowedGroups: append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto"),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

@@ -2,7 +2,6 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="google" content="notranslate" />
@@ -74,8 +73,15 @@
         var root = document.documentElement
         var theme = 'system'
         try {
+          var saved =
+            typeof localStorage === 'undefined'
+              ? null
+              : localStorage.getItem('newapi:theme:v1:mode')
+          if (saved && /^(light|dark|system)$/.test(saved)) {
+            theme = saved
+          }
           var stored = document.cookie.match(/(?:^|;\s*)vite-ui-theme=([^;]*)/)
-          if (stored && /^(light|dark|system)$/.test(stored[1])) {
+          if (!saved && stored && /^(light|dark|system)$/.test(stored[1])) {
             theme = stored[1]
           }
         } catch {

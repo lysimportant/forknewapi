@@ -32,7 +32,16 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     server: {
-      deps: { inline: [/@lobehub\//, /antd-style/, /@visactor\//] },
+      deps: {
+        inline: [
+          /@lobehub\//,
+          /antd-style/,
+          /@visactor\//,
+          /@codemirror\//,
+          /@lezer\//,
+          /i18next/,
+        ],
+      },
     },
     deps: {
       optimizer: {
@@ -55,10 +64,18 @@ export default defineConfig({
       },
     },
     setupFiles: ['./src/test-setup.ts'],
+    // Several heavy jsdom suites (channel-configuration, visual-billing-editor)
+    // legitimately take >5s per test on contended CI runners; the vitest
+    // default of 5000ms fails whichever of them crosses the line first. The
+    // heaviest test measures ~3.2s uncontended, so 20s keeps headroom for the
+    // ~4x slowdown observed on shared runners.
+    testTimeout: 20000,
     clearMocks: true,
     restoreMocks: true,
-    // 限制 JSDOM 并发，避免高核数机器同时编译重型依赖耗尽交互等待窗口。
     maxWorkers: 4,
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx}',
+      'scripts/oxlint/__tests__/*.test.ts',
+    ],
   },
 })

@@ -39,10 +39,14 @@ import { QuotaSettingsSection } from '../quota-settings-section'
 /** 额度表单只保存计费字段，文档链接由公告页独立管理。 */
 const defaultValues = {
   QuotaForNewUser: 0,
-  PreConsumedQuota: 0,
+  QuotaForInviter: 0,
   QuotaForInvitee: 0,
   TopUpLink: '',
-  quota_setting: { enable_free_model_pre_consume: true },
+  quota_setting: {
+    enable_free_model_pre_consume: true,
+    trust_quota_usd: 0,
+    pre_consume_multiplier: 1,
+  },
 }
 
 /** 隔离请求传输，保留实际表单校验、路由和保存钩子。 */

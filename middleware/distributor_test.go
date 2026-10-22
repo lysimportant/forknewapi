@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -16,7 +17,6 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
@@ -33,38 +33,6 @@ func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T)
 	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-alpha"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-beta"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, ""))
-}
-
-func TestGetModelRequestOpenAIImageTaskRoutes(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	for _, tc := range []struct {
-		name              string
-		method            string
-		path              string
-		body              string
-		wantModel         string
-		wantRelayMode     int
-		wantSelectChannel bool
-	}{
-		{name: "create", method: http.MethodPost, path: "/v1/images/tasks", body: `{"model":"image-model"}`, wantModel: "image-model", wantRelayMode: relayconstant.RelayModeVideoSubmit, wantSelectChannel: true},
-		{name: "retrieve", method: http.MethodGet, path: "/v1/images/tasks/task_123", wantRelayMode: relayconstant.RelayModeOpenAIImageTaskFetch, wantSelectChannel: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(recorder)
-			c.Request = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
-			if tc.body != "" {
-				c.Request.Header.Set("Content-Type", "application/json")
-			}
-
-			got, shouldSelectChannel, err := getModelRequest(c)
-
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantModel, got.Model)
-			assert.Equal(t, tc.wantSelectChannel, shouldSelectChannel)
-			assert.Equal(t, tc.wantRelayMode, c.GetInt("relay_mode"))
-		})
-	}
 }
 
 func TestChannelMatchesExpectedTaskPluginUsesPinnedLegacyIndex(t *testing.T) {
@@ -195,15 +163,36 @@ export const protocols = {openai_responses: {
 
 func TestTokenModelLimitAllowsLegacyAliasAndModifierVariant(t *testing.T) {
 	aliasOnly := map[string]bool{"claude-3-7-sonnet-thinking": true}
-	assert.True(t, tokenModelLimitAllows(aliasOnly, "claude-3-7-sonnet-thinking"))
-	assert.False(t, tokenModelLimitAllows(aliasOnly, "claude-3-7-sonnet"))
+	assert.True(t, TokenModelLimitAllows(aliasOnly, "claude-3-7-sonnet-thinking"))
+	assert.False(t, TokenModelLimitAllows(aliasOnly, "claude-3-7-sonnet"))
 
 	baseOnly := map[string]bool{"claude-3-7-sonnet": true}
-	assert.True(t, tokenModelLimitAllows(baseOnly, "claude-3-7-sonnet@thinking:on"))
-	assert.True(t, tokenModelLimitAllows(baseOnly, "claude-3-7-sonnet-thinking"))
+	assert.True(t, TokenModelLimitAllows(baseOnly, "claude-3-7-sonnet@thinking:on"))
+	assert.True(t, TokenModelLimitAllows(baseOnly, "claude-3-7-sonnet-thinking"))
 
 	wildcard := map[string]bool{"gemini-2.5-flash-thinking-*": true}
-	assert.True(t, tokenModelLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"))
+	assert.True(t, TokenModelLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"))
+}
+
+// /v1/tools/search and /v1/tools/fetch always route and bill by the DeepSeek
+// routing names. A model named in the body is ignored: a chat model there
+// would price the call at zero tokens.
+func TestGetModelRequestAssignsDeepSeekToolRoutingNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct{ path, body, want string }{
+		{"/v1/tools/search", `{"query":"deepseek","count":3}`, constant.DeepSeekSearchModel},
+		{"/v1/tools/fetch", `{"url":"https://example.com/"}`, constant.DeepSeekFetchModel},
+		{"/v1/tools/search", `{"query":"deepseek","model":"deepseek-flash"}`, constant.DeepSeekSearchModel},
+		{"/v1/tools/fetch", `{"url":"https://example.com/","model":"deepseek-v4-pro"}`, constant.DeepSeekFetchModel},
+	} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		modelRequest, shouldSelectChannel, err := getModelRequest(c)
+		require.NoError(t, err, tc.body)
+		assert.True(t, shouldSelectChannel, tc.body)
+		assert.Equal(t, tc.want, modelRequest.Model, tc.body)
+	}
 }
 
 func TestTokenModelLimitAllowsExemptAtNameByFullName(t *testing.T) {
@@ -213,27 +202,90 @@ func TestTokenModelLimitAllowsExemptAtNameByFullName(t *testing.T) {
 	settings.ThinkingModelBlacklist = append(original, "re:.*@sha256:.*")
 
 	fullOnly := map[string]bool{"opaque@sha256:deadbeef": true}
-	assert.True(t, tokenModelLimitAllows(fullOnly, "opaque@sha256:deadbeef"))
+	assert.True(t, TokenModelLimitAllows(fullOnly, "opaque@sha256:deadbeef"))
 
 	baseOnly := map[string]bool{"opaque": true}
-	assert.False(t, tokenModelLimitAllows(baseOnly, "opaque@sha256:deadbeef"))
+	assert.False(t, TokenModelLimitAllows(baseOnly, "opaque@sha256:deadbeef"))
 }
 
-func TestNoAvailableChannelMessageNamesClaimingTaskPlugin(t *testing.T) {
+func TestDistributeHidesTaskPluginDetailsButLogsDiagnostics(t *testing.T) {
 	require.NoError(t, i18n.Init())
-	registry := jsplugin.NewRegistry()
-	plugin, err := registry.Register(distributorTaskPluginSource("claimer", constant.ChannelTypeKling), jsplugin.Options{})
-	require.NoError(t, err)
+	previousCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCacheEnabled })
 
-	pinned, _ := gin.CreateTestContext(nil)
-	pinned.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
-	pinned.Request.Header.Set("Accept-Language", "en")
-	pinned.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
-	message := noAvailableChannelMessage(pinned, "default", "kling-v1")
-	assert.Contains(t, message, `"claimer"`)
-	assert.Contains(t, message, "disable or override")
-	assert.Contains(t, message, "kling-v1")
+	const group = "private-plugin-error-test-group"
+	for _, locale := range []struct{ language, message string }{
+		{"en", "No available channel for model task-model under group " + group + ": the model is claimed by a task plugin, which has no enabled channel serving it (distributor)"},
+		{"zh-CN", "分组 " + group + " 下模型 task-model 无可用渠道：该模型由任务插件认领，但当前没有启用的渠道可服务此模型（distributor）"},
+		{"zh-TW", "分組 " + group + " 下模型 task-model 無可用管道：該模型由任務插件認領，但目前沒有啟用的管道可服務此模型（distributor）"},
+	} {
+		for _, providerCount := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/%d_providers", locale.language, providerCount), func(t *testing.T) {
+				registry := jsplugin.NewRegistry()
+				keys := []string{"private-provider-alpha", "private-provider-beta"}[:providerCount]
+				for index, key := range keys {
+					_, err := registry.Register(distributorEndpointPluginSource(key, constant.ChannelTypeKling+index), jsplugin.Options{})
+					require.NoError(t, err)
+				}
+				generation := registry.Generation()
+				candidates := generation.LookupEndpointCandidates("POST", "/v1/responses", "task-model")
+				require.Len(t, candidates, providerCount)
 
+				var logs bytes.Buffer
+				common.LogWriterMu.Lock()
+				previousWriter := gin.DefaultErrorWriter
+				gin.DefaultErrorWriter = &logs
+				common.LogWriterMu.Unlock()
+				t.Cleanup(func() {
+					common.LogWriterMu.Lock()
+					gin.DefaultErrorWriter = previousWriter
+					common.LogWriterMu.Unlock()
+				})
+
+				router := gin.New()
+				router.POST("/v1/responses", RequestId(), func(c *gin.Context) {
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+					c.Set("resolved_task_model", "task-model")
+					c.Set("expected_task_plugin_key", keys[0])
+					c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: generation, Plugin: candidates[0].Plugin})
+					if providerCount > 1 {
+						c.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{
+							Generation: generation, Plugin: candidates[0].Plugin,
+							Protocol: candidates[0].Protocol, Operation: candidates[0].Operation,
+							Model: "task-model", Candidates: candidates,
+						})
+					}
+				}, Distribute(), func(c *gin.Context) {
+					t.Error("unavailable requests must stop before the relay handler")
+					c.Status(http.StatusNoContent)
+				})
+				request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				request.Header.Set("Accept-Language", locale.language)
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+
+				require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+				requestID := recorder.Header().Get(common.RequestIdKey)
+				require.NotEmpty(t, requestID)
+				assert.JSONEq(t, fmt.Sprintf(`{"error":{"message":%q,"type":"new_api_error","code":"model_not_found"}}`,
+					locale.message+" (request id: "+requestID+")"), recorder.Body.String())
+				assert.NotContains(t, recorder.Body.String(), "disable or override")
+				for _, key := range keys {
+					assert.NotContains(t, recorder.Body.String(), key)
+					assert.Contains(t, logs.String(), key)
+				}
+				assert.Contains(t, logs.String(), requestID)
+				assert.Contains(t, logs.String(), `group="`+group+`"`)
+				assert.Contains(t, logs.String(), `model="task-model"`)
+				assert.Contains(t, logs.String(), "reason=no_eligible_channel")
+			})
+		}
+	}
+}
+
+func TestNoAvailableChannelMessageWithoutPlugin(t *testing.T) {
+	require.NoError(t, i18n.Init())
 	plain, _ := gin.CreateTestContext(nil)
 	plain.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	plain.Request.Header.Set("Accept-Language", "en")
@@ -264,9 +316,57 @@ func TestSharedEndpointRebindsToSelectedType61Plugin(t *testing.T) {
 	assert.Equal(t, "beta", c.GetString("task_plugin_key"))
 	assert.Equal(t, "beta", c.GetString("expected_task_plugin_key"))
 	assert.Equal(t, "beta", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
-	require.NoError(t, i18n.Init())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	assert.Contains(t, noAvailableChannelMessage(c, "default", "task-model"), "alpha, beta")
+}
+
+func TestChannelMatchesExpectedTaskPluginUsesNewAPIExtensions(t *testing.T) {
+	channel := &model.Channel{Type: constant.ChannelTypeNewAPI}
+	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: "single", TaskExtendPluginKeys: []string{"ext-alpha", "ext-beta"}})
+
+	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, "ext-alpha"))
+	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, "single"), "the single key stays valid on a New API channel")
+	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, "ext-gamma"))
+	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, ""), "requests without a pinned plugin still use the gateway")
+	assert.False(t, channelMatchesExpectedTaskPlugin(nil, &model.Channel{Type: constant.ChannelTypeNewAPI}, "ext-alpha"))
+}
+
+func TestSharedEndpointRebindsToBoundNewAPIExtension(t *testing.T) {
+	registry := jsplugin.NewRegistry()
+	for _, key := range []string{"alpha", "beta"} {
+		source := strings.Replace(distributorEndpointPluginSource(key, 0), "channelTypes: [0],", "", 1)
+		_, err := registry.Register(source, jsplugin.Options{})
+		require.NoError(t, err)
+	}
+	generation := registry.Generation()
+	candidates := generation.LookupEndpointCandidates("POST", "/v1/responses", "task-model")
+	require.Len(t, candidates, 2)
+	pin := func(expected string) *gin.Context {
+		pinned := candidates[0]
+		if candidates[1].Plugin.Meta.Key == expected {
+			pinned = candidates[1]
+		}
+		c, _ := gin.CreateTestContext(nil)
+		c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: generation, Plugin: pinned.Plugin})
+		c.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{Generation: generation, Plugin: pinned.Plugin, Protocol: pinned.Protocol, Operation: pinned.Operation, Model: "task-model", Candidates: candidates})
+		c.Set("expected_task_plugin_key", expected)
+		return c
+	}
+
+	channel := &model.Channel{Id: 3, Type: constant.ChannelTypeNewAPI}
+	channel.SetSetting(dto.ChannelSettings{TaskExtendPluginKeys: []string{"unrelated"}})
+	assert.False(t, channelMatchesExpectedTaskPlugin(pin("alpha"), channel, "alpha"))
+
+	channel.SetSetting(dto.ChannelSettings{TaskExtendPluginKeys: []string{"beta"}})
+	c := pin("alpha")
+	require.Nil(t, SetupContextForSelectedChannel(c, channel, "task-model"))
+	assert.Equal(t, "beta", c.GetString("task_plugin_key"), "the only bound candidate executes")
+	assert.Equal(t, "beta", c.GetString("expected_task_plugin_key"))
+	assert.Equal(t, "beta", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
+
+	channel.SetSetting(dto.ChannelSettings{TaskExtendPluginKeys: []string{"alpha", "beta"}})
+	c = pin("beta")
+	require.Nil(t, SetupContextForSelectedChannel(c, channel, "task-model"))
+	assert.Equal(t, "alpha", c.GetString("task_plugin_key"), "the first bound candidate executes regardless of the earlier pin")
+	assert.Equal(t, "alpha", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
 }
 
 // TestCanvasExecutionAcceptance 验证管理 Token 在下游计费和供应商处理器执行前完成冻结授权复核。
@@ -369,11 +469,10 @@ func TestCanvasExecutionAcceptance(t *testing.T) {
 	}{
 		{name: "ordinary valid", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload), status: http.StatusNoContent, downstream: true},
 		{name: "auto valid", method: http.MethodPost, path: "/v1/images/generations", tokenID: autoToken.Id, usingGroup: "auto", header: encodeCanvasExecutionPayloadForTest(t, autoPayload), status: http.StatusNoContent, downstream: true},
-		{name: "image task valid", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload), status: http.StatusNoContent, downstream: true},
-		{name: "auto image task valid", method: http.MethodPost, path: "/v1/images/tasks", tokenID: autoToken.Id, usingGroup: "auto", header: encodeCanvasExecutionPayloadForTest(t, autoPayload), status: http.StatusNoContent, downstream: true},
-		{name: "image task missing header", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusBadRequest},
-		{name: "image task user mismatch", method: http.MethodPost, path: "/v1/images/tasks", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, mutateCanvasExecutionPayload(ordinaryPayload, func(payload *canvasExecutionPayload) { payload.UserID = strconv.Itoa(user.Id + 1) })), status: http.StatusForbidden},
-		{name: "image task polling without header", method: http.MethodGet, path: "/v1/images/tasks/task-1", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusNoContent, downstream: true},
+		{name: "image generation valid", method: http.MethodPost, path: "/v1/images/generations", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload), status: http.StatusNoContent, downstream: true},
+		{name: "auto image generation valid", method: http.MethodPost, path: "/v1/images/generations", tokenID: autoToken.Id, usingGroup: "auto", header: encodeCanvasExecutionPayloadForTest(t, autoPayload), status: http.StatusNoContent, downstream: true},
+		{name: "image generation missing header", method: http.MethodPost, path: "/v1/images/generations", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusBadRequest},
+		{name: "image generation user mismatch", method: http.MethodPost, path: "/v1/images/generations", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, mutateCanvasExecutionPayload(ordinaryPayload, func(payload *canvasExecutionPayload) { payload.UserID = strconv.Itoa(user.Id + 1) })), status: http.StatusForbidden},
 		{name: "missing header", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", status: http.StatusBadRequest},
 		{name: "padded header", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: encodeCanvasExecutionPayloadForTest(t, ordinaryPayload) + "=", status: http.StatusBadRequest},
 		{name: "duplicate json field", method: http.MethodPost, path: "/v1/chat/completions", tokenID: ordinaryToken.Id, usingGroup: "default", header: duplicateIssuerHeader, status: http.StatusBadRequest},

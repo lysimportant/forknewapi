@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // OaiResponsesHandler 原样转发非流式 Responses，并将输入、输出、缓存及推理 token 映射到既有结算用量。
@@ -47,11 +49,15 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	}
 
+	info.ObserveResponseModel(responsesResponse.Model)
+	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
+
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	// compute usage
-	usage := relayconvert.NormalizeResponsesUsage(responsesResponse.Usage)
+	usage := &dto.Usage{}
+	service.ApplyResponsesUsage(usage, responsesResponse.Usage)
 	// Count actual tool invocations from Output (not tool declarations).
 	for _, output := range responsesResponse.Output {
 		switch output.Type {
@@ -63,13 +69,11 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			info.CountBillableToolCall(dto.BuildInCallFunctionCall, output.Name)
 		}
 	}
+	info.ApplyVendorToolUsage(responseBody)
 
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
-	if !relaycommon.IsNonBillableResponsesStatus(responsesResponse.Status) {
-		for i := range responsesResponse.Output {
-			idx := i
-			imageCounter.Observe(&responsesResponse.Output[i], &idx)
-		}
+	for i := range responsesResponse.Output {
+		imageCounter.Observe(&responsesResponse.Output[i], &i)
 	}
 	imageCounter.Commit(info)
 
@@ -80,7 +84,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 // 开流后的失败通过 SSE 和 StreamStatus 传达，返回已有用量及 nil 错误，避免重复请求、整笔退款或追加普通 JSON。
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
-		logger.LogError(c, "invalid response or response body")
+		logger.LogError(c, common.LogText("invalid response or response body"))
 		return nil, types.NewError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse)
 	}
 
@@ -120,6 +124,20 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		if responseModel.Type == gjson.String {
 			info.ObserveUpstreamResponseModel(responseModel.String(), isTerminal)
+			info.ObserveResponseModel(responseModel.String())
+		}
+		service.ObserveResponsesOutcome(info, &dto.ResponsesStreamResponse{
+			Type: eventType.Str,
+			Code: event.Get("code").String(),
+			Response: &dto.OpenAIResponsesResponse{
+				Status:            []byte(event.Get("response.status").Raw),
+				Error:             event.Get("response.error").Value(),
+				IncompleteDetails: &dto.IncompleteDetails{Reason: event.Get("response.incomplete_details.reason").String()},
+			},
+		})
+
+		if created := event.Get("response.created_at"); created.Exists() {
+			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", dto.IntValue(created.Int())))
 		}
 
 		// 只解析计费字段；未知事件的 delta、content 等扩展字段不参与共享 DTO 的反序列化。
@@ -171,25 +189,20 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 		var terminalErr error
 		if isTerminal {
+			info.ApplyVendorToolUsage([]byte(data))
 			terminalSeen = true
 			failed := eventType.Str != "response.completed" && eventType.Str != "response.done"
 			switch event.Get("response.status").Str {
 			case "failed", "incomplete", "cancelled", "canceled":
 				failed = true
 			}
-			if failed {
-				message := ""
-				for _, path := range []string{"response.error.message", "error.message", "message", "response.incomplete_details.reason"} {
-					if message = event.Get(path).String(); message != "" {
-						break
-					}
-				}
-				terminalErr = fmt.Errorf("upstream Responses %s: %s", eventType.Str, message)
+			if failed && info.StreamStatus.ResponseOutcome() != string(relaycommon.ResponseOutcomeIncomplete) {
+				// 协议结果已单独记录；错误原文只随原始事件转发，不能进入消费日志。
+				// incomplete 是有效终态，达到输出上限不属于流传输错误。
+				terminalErr = fmt.Errorf("upstream Responses stream ended without completing the response")
 			}
 			if !imageCommitted {
-				if failed {
-					imageCounter.Reset()
-				} else {
+				if !failed {
 					for i, output := range event.Get("response.output").Array() {
 						if output.Get("type").Str != dto.ResponsesOutputTypeImageGenerationCall {
 							continue
@@ -260,7 +273,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 	}
 	if !outputUsageKnown && responseTextBuilder.Len() > 0 {
-		usage.CompletionTokens = service.CountTextToken(responseTextBuilder.String(), info.UpstreamModelName)
+		usage.CompletionTokens = service.CountTokenInput(responseTextBuilder.String(), info.UpstreamModelName)
 	}
 	if !inputUsageKnown && usage.CompletionTokens != 0 {
 		usage.PromptTokens = info.GetEstimatePromptTokens()
@@ -270,7 +283,23 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
 	}
 
+	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
+	info.StreamStatus.RequireTerminal()
 	return usage, nil
+}
+
+func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte, path string, createdAt dto.IntValue) []byte {
+	if info.GetChannelType() != constant.ChannelTypeSGLang {
+		return payload
+	}
+	if !gjson.GetBytes(payload, path).Exists() {
+		return payload
+	}
+	patched, err := sjson.SetBytes(payload, path, int(createdAt))
+	if err != nil {
+		return payload
+	}
+	return patched
 }
 
 // writeNativeResponsesEvent 一次写入完整的原生 SSE 帧，并返回写入、短写或刷新错误。

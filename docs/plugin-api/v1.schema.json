@@ -17,14 +17,14 @@
     "modelAliases": {"type": "object", "propertyNames": {"type": "string", "minLength": 1, "maxLength": 200}, "additionalProperties": {"type": "string", "minLength": 1}, "description": "模型导入建议的客户端别名到 models 中精确上游 ID 的映射；每个上游最多一个别名，不扩大生成能力，不覆盖已有渠道映射"},
     "modelMediaTypes": {"type": "object", "additionalProperties": {"enum": ["image", "video"]}, "description": "已知模型的兼容媒体类型；键必须精确匹配 models 中的原始 ID，由宿主校验。渠道保存的目录类型优先，省略或空对象兼容旧插件，不限制目录新型号"},
     "fetchMode": {"enum": ["per_task", "batch"]}, "allowedHosts": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "upstreams": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/upstreamKind"}, "description": "Upstream kinds the driver addresses. vendor is implied; new_api makes the plugin bindable to type-60 New API channels."},
     "protocols": {"type": "array", "uniqueItems": true, "items": {"oneOf": [
-      {"enum": ["openai_video", "openai_image_tasks"]},
+      {"enum": ["openai_video", "openai_image"]},
       {"type": "object", "additionalProperties": false, "required": ["name", "supports"], "properties": {"name": {"const": "openai_responses"}, "supports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["stream", "sync", "background"]}}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}},
-      {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"const": "openai_video"}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}},
-      {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"const": "openai_image_tasks"}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
+      {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"enum": ["openai_video", "openai_image"]}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
     ]}},
     "submitResponseTypes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["json", "sse"]}},
-    "requiredCapabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["json-clone@1", "submit-sse-delta@1", "task-submit-no-retry@1"]}},
+    "requiredCapabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["json-clone@1", "submit-sse-delta@1", "json-order@1", "duration-auto@1", "task-submit-no-retry@1"]}},
     "routes": {"type": "array", "items": {"$ref": "#/$defs/route"}}, "usageSchema": {"type": "object", "additionalProperties": {"$ref": "#/$defs/usageField"}}, "usageExamples": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["label", "facts"], "properties": {"label": {"type": "string"}, "facts": {"type": "object"}}}}, "usageProfiles": {"type": "array", "items": {"$ref": "#/$defs/usageProfile"}}, "auth": {}
   },
   "allOf": [
@@ -36,9 +36,9 @@
         "properties": {
           "channelTypes": {"maxItems": 0}, "routes": {"maxItems": 0}, "modelAliases": {"maxProperties": 0},
           "protocols": {"minItems": 1, "items": {"oneOf": [
-            {"enum": ["openai_video", "openai_image_tasks"]},
+            {"enum": ["openai_video", "openai_image"]},
             {"type": "object", "additionalProperties": false, "required": ["name", "supports"], "properties": {"name": {"const": "openai_responses"}, "supports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["stream", "sync", "background"]}}}},
-            {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"enum": ["openai_video", "openai_image_tasks"]}}}
+            {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"enum": ["openai_video", "openai_image"]}}}
           ]}}
         }
       },
@@ -130,11 +130,19 @@
         "maxBytes": {"type": "integer", "exclusiveMinimum": 0}
       }
     },
-    "route": {"type": "object", "additionalProperties": false, "required": ["method", "path", "type", "render"], "properties": {"method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]}, "path": {"type": "string", "pattern": "^/"}, "type": {"enum": ["submit", "query", "dynamic"]}, "action": {"type": "string"}, "taskIdParam": {"type": "string"}, "decode": {"type": "string"}, "render": {"type": "string"}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}, "allOf": [{"if": {"properties": {"type": {"const": "query"}}}, "then": {"allOf": [{"not": {"required": ["decode"]}}, {"not": {"required": ["models"]}}]}}, {"if": {"properties": {"type": {"enum": ["submit", "dynamic"]}}}, "then": {"required": ["decode"]}}]},
+    "route": {"type": "object", "additionalProperties": false, "required": ["method", "path", "type", "render"], "properties": {"method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]}, "path": {"type": "string", "pattern": "^/"}, "type": {"enum": ["submit", "query", "dynamic"]}, "action": {"type": "string"}, "taskIdParam": {"type": "string"}, "retainResult": {"type": "boolean"}, "decode": {"type": "string"}, "render": {"type": "string"}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}, "allOf": [{"if": {"properties": {"type": {"const": "query"}}}, "then": {"allOf": [{"not": {"required": ["decode"]}}, {"not": {"required": ["models"]}}, {"not": {"required": ["retainResult"]}}]}}, {"if": {"properties": {"type": {"enum": ["submit", "dynamic"]}}}, "then": {"required": ["decode"]}}]},
+    "upstreamKind": {"enum": ["vendor", "new_api"]},
+    "upstreamContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {"kind": {"$ref": "#/$defs/upstreamKind"}},
+      "description": "Host-injected on every driver hook context; new_api means the executing channel is a type-60 New API channel with Bearer credentials already applied."
+    },
     "taskQueryContext": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["taskId", "publicTaskId", "action", "model", "upstreamModel", "baseUrl", "authHeader", "data", "state"],
+      "required": ["taskId", "publicTaskId", "action", "model", "upstreamModel", "baseUrl", "authHeader", "upstream", "data", "state"],
       "properties": {
         "taskId": {"type": "string"},
         "publicTaskId": {"type": "string"},
@@ -145,6 +153,7 @@
         "apiKey": {"type": "string"},
         "authHeader": {"type": "string"},
         "auth": true,
+        "upstream": {"$ref": "#/$defs/upstreamContext"},
         "data": true,
         "state": true
       }
@@ -152,12 +161,13 @@
     "batchQueryContext": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseUrl", "authHeader", "tasks"],
+      "required": ["baseUrl", "authHeader", "upstream", "tasks"],
       "properties": {
         "baseUrl": {"type": "string"},
         "apiKey": {"type": "string"},
         "authHeader": {"type": "string"},
         "auth": true,
+        "upstream": {"$ref": "#/$defs/upstreamContext"},
         "tasks": {"type": "array", "items": {"$ref": "#/$defs/taskQueryContext"}}
       }
     },

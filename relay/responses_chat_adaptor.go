@@ -136,6 +136,12 @@ func (a *responsesChatAdaptor) ConvertOpenAIResponsesRequest(c *gin.Context, inf
 	if !ok {
 		return nil, responsesChatRequestError(fmt.Errorf("expected Chat request, got %T", result.Value))
 	}
+	if len(request.ParallelToolCalls) > 0 {
+		var parallelToolCalls bool
+		if err := common.Unmarshal(request.ParallelToolCalls, &parallelToolCalls); err == nil {
+			chat.ParallelTooCalls = &parallelToolCalls
+		}
+	}
 	for _, tool := range chat.Tools {
 		if tool.Type != "function" {
 			return nil, responsesChatRequestError(fmt.Errorf("Responses Chat conversion cannot preserve tool type %q", tool.Type))

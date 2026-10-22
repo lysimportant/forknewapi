@@ -38,6 +38,8 @@ const STATUS_RELATED_KEYS = new Set([
   'SidebarModulesAdmin',
   'Notice',
   'LogConsumeEnabled',
+  'log_setting.user_export_enabled',
+  'log_setting.max_range_days',
   'QuotaPerUnit',
   'USDExchangeRate',
   'DisplayInCurrencyEnabled',
@@ -68,6 +70,8 @@ const STATUS_RELATED_KEYS = new Set([
   'passkey.rp_id',
   'passkey.legacy_rp_ids',
   'passkey.origins',
+  'QuotaRemindEnabled',
+  'QuotaRemindThreshold',
 ])
 
 /** 保存配置的输入；silent 仅控制本地提示，不发送至 API。 */

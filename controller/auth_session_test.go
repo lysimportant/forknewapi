@@ -149,7 +149,7 @@ func TestSessionLimitDoesNotRecordRejectedLoginAsSuccessful(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", nil)
 	// 登录协议确认是会话建立的前置条件，这里显式确认以便验证会话上限路径。
 	setLoginConsent(c, true, system_setting.CurrentLegalConsentVersion)
-	setupLogin(user, c)
+	setupLogin(user, nil, c)
 
 	assert.Equal(t, http.StatusConflict, recorder.Code)
 	var stored model.User

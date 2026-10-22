@@ -48,7 +48,7 @@
 
 ### 本轮验证与交付
 
-- `go test -mod=readonly ./plugins -run '^TestYuanliu' -count=1` 通过；`go test -mod=readonly ./plugins -skip '^TestImage2Pro' -count=1` 通过。组合测试 `go test -mod=readonly ./plugins ./pkg/jsplugin ./controller -count=1` 中宿主运行时和 controller 全包通过，plugins 仅 Image2Pro 并行改动的 `TestImage2ProH3VideoContracts` 失败，日志 `.local-tests/yuanliu/lw-go-tests.log`；该并行修改不纳入本次提交，不能把组合测试记为全通过。
+- `go test -mod=readonly ./plugins -run '^TestYuanliu' -count=1` 通过；其他插件定向测试 通过。组合测试 `go test -mod=readonly ./plugins ./pkg/jsplugin ./controller -count=1` 中宿主运行时和 controller 全包通过，plugins 存在当时并行插件改动导致的失败，日志 `.local-tests/yuanliu/lw-go-tests.log`；该并行修改不纳入本次提交，不能把组合测试记为全通过。
 - `go vet -mod=readonly ./plugins ./pkg/jsplugin ./controller` 的对应分包检查通过。`go build -mod=readonly -o .local-tests/yuanliu/new-api-lw.exe .` 与该二进制 `plugin lint plugins/tasks/yuanliu/plugin.js` 通过，插件版本为 `1.1.0`。计费描述仍使用“视频生成单价”，单位独立放在 `unit`，未新增 UI 文案或价格常量。
 - 前端 pricing/model-cards、pricing/pricing-controls、channels/channel-configuration、channels/upstream-model-selection 四个既有套件 121/121 通过（`npm run test -- … --testTimeout=60000 --maxWorkers=1`），日志 `.local-tests/yuanliu/lw-web-tests.log`；存在原有 `TimeoutNaNWarning`，退出码 0。`npm run typecheck`、`npm run build`、改动前端及插件的 oxlint/oxfmt 检查均通过，没有依赖或锁文件变更。
 - 最终二进制 SHA256 为 `e7132caf2bae0e8fdd76661fbfddc87fb1812d0331dafa21259033ee98978a82`，嵌入源流插件与工作区源码逐字一致。隔离新 SQLite、回环模拟上游与合成凭据的 HTTP 报告为 `.local-tests/yuanliu/run-1791629694482-c60b4f/http-report.json`：14 个历史已适配别名完整创建和轮询；LW 的两种请求格式各 30 图、10 音频保持顺序；27 个非法请求出站 0 次、扣费 0；目录获取、按秒结算、内容下载和 503 不重发通过。20 次 POST 均为模拟请求，14 项模拟目录不代表当前真实目录仍有 14 项。

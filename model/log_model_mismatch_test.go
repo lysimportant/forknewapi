@@ -216,9 +216,9 @@ func TestLogModelMismatchQueries(t *testing.T) {
 						var total int64
 						var err error
 						if tc.user == 0 {
-							logs, total, err = GetAllLogs(tc.logType, tc.start, tc.end, tc.model, tc.username, tc.token, tc.offset, limit, tc.channel, tc.group, tc.request, tc.upstream)
+							logs, total, err = GetAllLogs(LogFilter{Type: tc.logType, StartTimestamp: tc.start, EndTimestamp: tc.end, ModelName: tc.model, Username: tc.username, TokenName: tc.token, Channel: tc.channel, Group: tc.group, RequestId: tc.request, UpstreamRequestId: tc.upstream}, tc.offset, limit)
 						} else {
-							logs, total, err = GetUserLogs(tc.user, tc.logType, tc.start, tc.end, tc.model, tc.token, tc.offset, limit, tc.group, tc.request, tc.upstream)
+							logs, total, err = GetUserLogs(tc.user, LogFilter{Type: tc.logType, StartTimestamp: tc.start, EndTimestamp: tc.end, ModelName: tc.model, TokenName: tc.token, Group: tc.group, RequestId: tc.request, UpstreamRequestId: tc.upstream}, tc.offset, limit)
 						}
 						require.NoError(t, err)
 						assert.Equal(t, tc.total, total)
@@ -249,7 +249,7 @@ func TestLogModelMismatchQueries(t *testing.T) {
 			})
 
 			t.Run("role_projection", func(t *testing.T) {
-				logs, total, err := GetAllLogs(-1, 0, 0, "", "", "", 0, 10, 0, "", "req-02", "")
+				logs, total, err := GetAllLogs(LogFilter{Type: -1, RequestId: "req-02"}, 0, 10)
 				require.NoError(t, err)
 				require.EqualValues(t, 1, total)
 				require.Len(t, logs, 1)

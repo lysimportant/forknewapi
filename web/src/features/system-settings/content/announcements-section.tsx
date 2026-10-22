@@ -55,7 +55,9 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { sortAnnouncements } from '@/features/announcements/lib/announcement-sort'
+import { toIntlLocale } from '@/i18n/languages'
 import dayjs from '@/lib/dayjs'
+import { formatTimestampRelative } from '@/lib/format'
 
 import {
   SettingsSwitchContent,
@@ -136,7 +138,8 @@ export function AnnouncementsSection({
   enabled,
   data,
 }: AnnouncementsSectionProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const queryClient = useQueryClient()
   const updateOption = useUpdateOption()
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
@@ -340,19 +343,6 @@ export function AnnouncementsSection({
     [announcements]
   )
 
-  const getRelativeTime = (date: string) => {
-    const now = new Date()
-    const past = new Date(date)
-    const diffMs = now.getTime() - past.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-    const diffHours = Math.floor(diffMins / 60)
-    const diffDays = Math.floor(diffHours / 24)
-
-    if (diffMins < 60) return `${diffMins}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
-    return `${diffDays}d ago`
-  }
-
   return (
     <SettingsSection title={t('Announcements')}>
       <div className='space-y-4'>
@@ -446,7 +436,11 @@ export function AnnouncementsSection({
               cell: (announcement) => (
                 <div className='flex flex-col gap-1'>
                   <span className='text-sm font-medium'>
-                    {getRelativeTime(announcement.publishDate)}
+                    {formatTimestampRelative(
+                      new Date(announcement.publishDate).getTime(),
+                      'milliseconds',
+                      locale
+                    )}
                   </span>
                   <span className='text-muted-foreground text-xs'>
                     {dayjs(announcement.publishDate).format(

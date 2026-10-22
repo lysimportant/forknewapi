@@ -128,7 +128,6 @@ func (failure *canvasEstimateFailure) Error() string { return failure.Message }
 var canvasProfiles = []canvasProfile{
 	{MediaType: "text", Contract: "openai-chat-completions", Path: "/v1/chat/completions"},
 	{MediaType: "image", Contract: "openai-images", Path: "/v1/images/generations"},
-	{MediaType: "image", Contract: "image2pro-image-task-v1", Path: "/v1/images/tasks"},
 	{MediaType: "video", Contract: "newapi-video-v1", Path: "/v1/videos"},
 	{MediaType: "audio", Contract: "openai-audio", Path: "/v1/audio/speech"},
 }
@@ -138,8 +137,8 @@ func (profile canvasProfile) taskProtocol() string {
 	switch profile.Contract {
 	case "newapi-video-v1":
 		return "openai_video"
-	case "image2pro-image-task-v1":
-		return "openai_image_tasks"
+	case "openai-images":
+		return "openai_image"
 	default:
 		return ""
 	}
@@ -292,15 +291,18 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 		}
 	}
 	if candidate.Plugin == nil {
-		return candidate.Channel.Type != constant.ChannelTypeTaskPlugin && profile.taskProtocol() == ""
+		return candidate.Channel.Type != constant.ChannelTypeTaskPlugin && (profile.taskProtocol() == "" || profile.Contract == "openai-images")
+	}
+	if profile.Contract == "openai-images" && candidate.Plugin.Meta.ModelRouting == "channel" {
+		return candidate.supportsTaskPluginImage(name)
 	}
 	protocol := profile.taskProtocol()
 	if protocol == "" {
 		return false
 	}
 	mediaType := model.TaskPluginModelType(candidate.Plugin, candidate.ChannelSetting, candidate.UpstreamModel)
-	if protocol == "openai_image_tasks" {
-		if candidate.Plugin.Meta.Key != "image2pro" || mediaType != "image" {
+	if protocol == "openai_image" {
+		if mediaType == "video" {
 			return false
 		}
 	} else if mediaType == "image" || (mediaType == "" && candidate.pluginMayGenerateImages()) {
@@ -336,6 +338,32 @@ func (candidate canvasCandidate) supports(name string, profile canvasProfile) bo
 	})
 }
 
+func (candidate canvasCandidate) supportsTaskPluginImage(name string) bool {
+	if candidate.Plugin == nil || !slices.ContainsFunc(candidate.Plugin.Meta.Protocols, func(claim jsplugin.ProtocolClaim) bool {
+		return claim.Name == "openai_image"
+	}) ||
+		!slices.Contains(candidate.Plugin.Meta.Models, candidate.UpstreamModel) {
+		return false
+	}
+	if candidate.Channel.Type == constant.ChannelTypeTaskPlugin && candidate.Plugin.Meta.ModelRouting == "channel" {
+		if _, declared := candidate.Generation.CanonicalModel(name); declared {
+			return false
+		}
+		target, resolved := model.ResolveTaskModelAlias(candidate.Generation, name)
+		if !resolved || !target.ChannelScoped || target.Alias != name || target.PluginKey != candidate.Plugin.Meta.Key {
+			return false
+		}
+		binding, found := candidate.Generation.LookupPluginEndpoint(http.MethodPost, "/v1/images/generations", target.PluginKey)
+		return found && binding.Plugin == candidate.Plugin && binding.Protocol == "openai_image"
+	}
+	if _, declared := candidate.Generation.CanonicalModel(name); !declared {
+		return false
+	}
+	return slices.ContainsFunc(candidate.Generation.LookupEndpointCandidates(http.MethodPost, "/v1/images/generations", name), func(binding jsplugin.ProtocolBinding) bool {
+		return binding.Plugin == candidate.Plugin && binding.Protocol == "openai_image"
+	})
+}
+
 // Unknown IDs in a mixed plugin cannot safely inherit its video endpoint.
 func (candidate canvasCandidate) pluginMayGenerateImages() bool {
 	if candidate.Plugin == nil {
@@ -350,7 +378,9 @@ func (candidate canvasCandidate) pluginMayGenerateImages() bool {
 			return true
 		}
 	}
-	return slices.ContainsFunc(meta.Protocols, func(claim jsplugin.ProtocolClaim) bool { return claim.Name == "openai_image_tasks" })
+	return slices.ContainsFunc(meta.Protocols, func(claim jsplugin.ProtocolClaim) bool {
+		return claim.Name == "openai_image"
+	})
 }
 
 func canvasKnownModelMediaType(candidates []canvasCandidate) string {
@@ -380,7 +410,7 @@ func (candidate canvasCandidate) endpointTypes(name string) []constant.EndpointT
 // preferredProfile 返回渠道为当前模型提供的首个 Canvas 标准合同；渠道端点顺序就是站点的优先顺序。
 func (candidate canvasCandidate) preferredProfile(name string) (canvasProfile, bool) {
 	for _, profile := range canvasProfiles {
-		if profile.taskProtocol() != "" && candidate.supports(name, profile) {
+		if candidate.Plugin != nil && profile.taskProtocol() != "" && candidate.supports(name, profile) {
 			return profile, true
 		}
 	}
@@ -489,7 +519,7 @@ func canvasPricingConfigurationVersion() string {
 		"image": ratio_setting.GetImageRatioCopy(), "audio": ratio_setting.GetAudioRatioCopy(),
 		"audio_completion": ratio_setting.GetAudioCompletionRatioCopy(), "cache": ratio_setting.GetCacheRatioCopy(),
 		"create_cache": ratio_setting.GetCreateCacheRatioCopy(), "quota_per_unit": common.QuotaPerUnit,
-		"usd_to_cny": operation_setting.USDExchangeRate, "preconsume": common.PreConsumedQuota,
+		"usd_to_cny": operation_setting.USDExchangeRate, "quota_setting": operation_setting.GetQuotaSetting(),
 	})
 }
 
@@ -562,15 +592,6 @@ func canvasYuanModel(name string) bool {
 // canvasInputMediaProfile 返回所有可执行且已定价路由的参考能力交集；未知插件、映射或公开身份失败关闭。
 func canvasInputMediaProfile(name string, profile canvasProfile, candidates []canvasCandidate) (canvasVideoInputProfile, bool) {
 	var result canvasVideoInputProfile
-	if profile.Contract == "image2pro-image-task-v1" {
-		// 图片合同只接收普通参考图；供应商未声明统一数量上限，不按型号臆造限制。
-		for _, candidate := range candidates {
-			if candidate.supports(name, profile) && candidate.priced(name) {
-				return canvasVideoInputProfile{unlimited: true}, true
-			}
-		}
-		return result, false
-	}
 	if profile.Contract != "newapi-video-v1" || (name != "MiniMax-H3" && name != "Minimax-H3" && !canvasYuanModel(name)) {
 		return result, false
 	}
@@ -619,9 +640,6 @@ func canvasInputMediaTypes(name string, profile canvasProfile, candidates []canv
 	input, supported := canvasInputMediaProfile(name, profile, candidates)
 	if !supported {
 		return types
-	}
-	if profile.Contract == "image2pro-image-task-v1" {
-		return append(types, "image")
 	}
 	if input.unlimited || input.images > 0 {
 		types = append(types, "image")
@@ -729,8 +747,7 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 		if yuanModel {
 			maxMedia = 40
 		}
-		imageTask := request.Contract == "image2pro-image-task-v1"
-		if !ok || (request.Contract != "newapi-video-v1" && !imageTask) {
+		if !ok || request.Contract != "newapi-video-v1" {
 			return request, canvasProfile{}, errors.New("input_media 仅接受已适配任务合同的媒体描述数组")
 		}
 		if maxMedia >= 0 && len(items) > maxMedia {
@@ -751,13 +768,10 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 			if !typeOK || !roleOK || mediaType == "" || roleTypes[role] != mediaType {
 				return request, canvasProfile{}, errors.New("媒体类型与角色不匹配或尚未支持")
 			}
-			if imageTask && (mediaType != "image" || role != "reference_image") {
-				return request, canvasProfile{}, errors.New("图片任务仅支持 reference_image 图片输入")
-			}
 			counts[mediaType]++
 			counts[role]++
 		}
-		if !imageTask && request.Model != "Minimax-H3" && !yuanModel && ((counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3) ||
+		if request.Model != "Minimax-H3" && !yuanModel && ((counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3) ||
 			counts["first_frame"] > 1 || counts["last_frame"] > 1) {
 			return request, canvasProfile{}, errors.New("媒体输入超过数量限制：图片 9 张、视频 3 段、音频 3 段，首尾帧各 1 张")
 		}
@@ -781,9 +795,6 @@ func canvasCanonicalBody(request canvasEstimateRequest, profile canvasProfile) (
 		"image": {"n", "size", "quality", "aspect_ratio", "style", "background", "output_format", "watermark"},
 		"video": {"seconds", "duration", "size", "resolution", "aspect_ratio", "quality", "seed", "generate_audio", "audio", "watermark", "negative_prompt"},
 		"audio": {"voice", "speed", "response_format", "instructions"},
-	}
-	if profile.Contract == "image2pro-image-task-v1" {
-		allowed["image"] = []string{"n", "size", "aspect_ratio"}
 	}
 	if profile.MediaType == "video" && (canvasYuanModel(request.Model) || request.Model == "Minimax-H3") {
 		allowed["video"] = append(allowed["video"], "mode")
@@ -854,25 +865,18 @@ func canvasCanonicalBody(request canvasEstimateRequest, profile canvasProfile) (
 func (candidate canvasCandidate) estimateQuota(c *gin.Context, groups modelListGroups, request canvasEstimateRequest, profile canvasProfile, body map[string]any) (int, error) {
 	if len(request.InputMedia) != 0 {
 		body = maps.Clone(body)
-		if profile.Contract == "image2pro-image-task-v1" {
-			images := make([]string, len(request.InputMedia))
-			for i := range images {
-				images[i] = fmt.Sprintf("https://canvas-estimate.invalid/%d", i)
-			}
-			body["images"] = images
-		} else {
-			content := make([]any, 0, len(request.InputMedia)+1)
-			content = append(content, map[string]any{"type": "text", "text": request.InputText})
-			for i, media := range request.InputMedia {
-				mediaType := media.Type + "_url"
-				content = append(content, map[string]any{
-					"type": mediaType, "role": media.Role,
-					mediaType: map[string]any{"url": fmt.Sprintf("https://canvas-estimate.invalid/%d", i)},
-				})
-			}
-			// 占位地址只用于本地插件计量；此路径不调用提交、下载或查询 hook。
-			body["metadata"] = map[string]any{"content": content}
+		content := make([]any, 0, len(request.InputMedia)+1)
+		content = append(content, map[string]any{"type": "text", "text": request.InputText})
+		for i, media := range request.InputMedia {
+			mediaType := media.Type + "_url"
+			content = append(content, map[string]any{
+				"type": mediaType, "role": media.Role,
+				mediaType: map[string]any{"url": fmt.Sprintf("https://canvas-estimate.invalid/%d", i)},
+			})
 		}
+		// 占位地址只用于本地插件计量；此路径不调用提交、下载或查询 hook。
+		body["metadata"] = map[string]any{"content": content}
+
 	}
 	encoded, err := common.Marshal(body)
 	if err != nil {
@@ -895,7 +899,7 @@ func (candidate canvasCandidate) estimateQuota(c *gin.Context, groups modelListG
 	info := &relaycommon.RelayInfo{UserId: c.GetInt("id"), TokenId: c.GetInt("token_id"), UserGroup: groups.userGroup, UsingGroup: candidate.Group,
 		OriginModelName: request.Model, ChannelMeta: &relaycommon.ChannelMeta{ChannelType: candidate.Channel.Type, ChannelId: candidate.Channel.Id, UpstreamModelName: candidate.UpstreamModel},
 		TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
-	if protocol := profile.taskProtocol(); protocol != "" {
+	if protocol := profile.taskProtocol(); protocol != "" && candidate.Plugin != nil {
 		plugin := candidate.Plugin
 		route := jsplugin.RouteRequestContext{Path: profile.Path, Method: http.MethodPost, Body: map[string]any{"kind": "json", "value": body}, RequestBody: body}
 		decoded, err := plugin.Engine.CallPath(c.Request.Context(), "protocols", []string{protocol, "decodeRequest"}, jsplugin.ProtocolRequestContext{
@@ -973,7 +977,7 @@ func (candidate canvasCandidate) estimateQuota(c *gin.Context, groups modelListG
 	input.Body = encoded
 	info.BillingRequestInput = &input
 	meta := relayRequest.GetTokenCountMeta()
-	promptTokens := service.EstimateTokenByModel(request.Model, request.InputText)
+	promptTokens := service.CountTokenInput(request.InputText, request.Model)
 	if profile.MediaType == "audio" && meta.TokenType == "text_number" {
 		promptTokens = len([]rune(request.InputText))
 	}
@@ -1013,13 +1017,6 @@ func EstimateCanvasPrice(c *gin.Context) {
 	if len(candidates) == 0 || (meta.Id != 0 && meta.Status != 1) {
 		canvasBridgeError(c, http.StatusForbidden, "model_not_allowed", "当前 Key 无权使用该模型或模型已停用")
 		return
-	}
-	if profile.Contract == "image2pro-image-task-v1" {
-		profiles := canvasCatalogProfiles(meta, candidates, request.Model)
-		if len(profiles) != 1 || profiles[0].Contract != profile.Contract {
-			canvasBridgeError(c, http.StatusUnprocessableEntity, "estimate_unavailable", "当前模型未声明唯一可执行的图片任务合同，请刷新模型目录或检查端点配置")
-			return
-		}
 	}
 	if len(request.InputMedia) != 0 {
 		input, supported := canvasInputMediaProfile(request.Model, profile, candidates)

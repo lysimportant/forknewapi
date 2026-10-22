@@ -106,6 +106,7 @@ type Meta struct {
 	ModelDiscovery       *ModelDiscovery             `json:"modelDiscovery,omitempty"`
 	FetchMode            string                      `json:"fetchMode"`
 	AllowedHosts         []string                    `json:"allowedHosts"`
+	Upstreams            []string                    `json:"upstreams,omitempty"`
 	Routes               []Route                     `json:"routes"`
 	Protocols            []ProtocolClaim             `json:"protocols"`
 	UsageSchema          map[string]UsageFieldSchema `json:"usageSchema,omitempty"`
@@ -127,6 +128,47 @@ type ModelDiscovery struct {
 	TypePrefixes map[string]string `json:"typePrefixes,omitempty"` // 按模型类型声明的 ID 前缀；仅渠道路由模式支持。
 }
 
+// Upstream kinds a plugin driver can address. Every driver speaks to its
+// vendor; a driver that also builds its own native-route URLs when the channel
+// points at another New API gateway declares UpstreamKindNewAPI in
+// meta.upstreams, which is what makes it bindable to a type-60 channel.
+const (
+	UpstreamKindVendor = "vendor"
+	UpstreamKindNewAPI = "new_api"
+)
+
+// SupportsUpstream reports whether the driver handles channels of the given
+// upstream kind. The vendor kind is implied for every plugin.
+func (m Meta) SupportsUpstream(kind string) bool {
+	return kind == UpstreamKindVendor || slices.Contains(m.Upstreams, kind)
+}
+
+// PreservesJSONOrder reports whether the plugin declared json-order@1: its
+// hooks receive JSON request bodies with members in the order the client sent
+// them, and its JSON request bodies go upstream as JSON.stringify writes them.
+// Other plugins keep the cheaper Go-map path, whose members enumerate sorted.
+func (m Meta) PreservesJSONOrder() bool {
+	return slices.Contains(m.RequiredCapabilities, CapabilityJSONOrder)
+}
+
+// AcceptsAutoDuration reports whether the plugin declared duration-auto@1:
+// request validation lets a duration of -1, the vendor's "the model picks the
+// length", through to its hooks. The plugin reserves the longest duration the
+// model can produce and settles the task on the usage the vendor reports.
+func (m Meta) AcceptsAutoDuration() bool {
+	return slices.Contains(m.RequiredCapabilities, CapabilityDurationAuto)
+}
+
+// JSONTextMember names the member of a hook result (a decoded requestBody, a
+// request descriptor's body) that the host also takes as JSON text, for a
+// plugin that preserves JSON order; it is empty for other plugins.
+func (m Meta) JSONTextMember(member string) string {
+	if !m.PreservesJSONOrder() {
+		return ""
+	}
+	return member
+}
+
 // UsageProfile replaces the plugin's default usage metadata for its models or
 // explicitly identified channel model types.
 type UsageProfile struct {
@@ -140,18 +182,33 @@ type UsageProfile struct {
 // must be resolved by the host first; an unknown or ambiguous model uses the
 // plugin defaults. Profile examples never inherit the default examples.
 func (m Meta) UsageForModel(model string) (map[string]UsageFieldSchema, []UsageExample) {
-	return m.UsageForModelType(model, "")
+	return m.UsageForModels(model)
 }
 
 // UsageForModelType first selects a declared model profile, then a channel model
-// type profile when the host supplies an unambiguous image or video type. It
-// never infers a type from the model name; unmatched models keep the defaults.
+// type profile when the host supplies an unambiguous image or video type.
 func (m Meta) UsageForModelType(model, modelType string) (map[string]UsageFieldSchema, []UsageExample) {
-	folded := asciiFold(model)
-	for _, profile := range m.UsageProfiles {
-		for _, declared := range profile.Models {
-			if asciiFold(declared) == folded {
-				return profile.Schema, profile.Examples
+	return m.UsageForModelsType(modelType, model)
+}
+
+// UsageForModels returns the usage metadata of the first candidate that a
+// profile declares. Runtime callers pass the final upstream model before the
+// client-facing model, so mappings to vendor endpoint IDs retain the declared
+// model's profile. When no candidate is profiled, the defaults apply.
+func (m Meta) UsageForModels(models ...string) (map[string]UsageFieldSchema, []UsageExample) {
+	return m.UsageForModelsType("", models...)
+}
+
+// UsageForModelsType combines ordered model candidates with the explicitly
+// supplied channel model type. It never infers types from model names.
+func (m Meta) UsageForModelsType(modelType string, models ...string) (map[string]UsageFieldSchema, []UsageExample) {
+	for _, model := range models {
+		folded := asciiFold(model)
+		for _, profile := range m.UsageProfiles {
+			for _, declared := range profile.Models {
+				if asciiFold(declared) == folded {
+					return profile.Schema, profile.Examples
+				}
 			}
 		}
 	}
@@ -206,6 +263,15 @@ type UsageFieldSchema struct {
 type LoadedPlugin struct {
 	Meta   Meta
 	Engine *Engine
+}
+
+// UsesSubmitEventDelta reports whether SSE submissions go through
+// parseSubmitEventDelta: the plugin declares submit-sse-delta@1, or exports
+// parseSubmitEventDelta without parseSubmitEvent. A plugin that exports both
+// and declares nothing keeps the snapshot hook, as before.
+func UsesSubmitEventDelta(meta Meta, engine *Engine) bool {
+	return slices.Contains(meta.RequiredCapabilities, CapabilitySubmitSSEDelta) ||
+		engine.HasExport("parseSubmitEventDelta") && !engine.HasExport("parseSubmitEvent")
 }
 
 // RegistrySnapshot is a read-only copy of the metadata currently stored in
@@ -331,7 +397,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	engine.version = meta.Version
 	requiredHooks := []string{"buildSubmitRequest", "parseSubmitResponse", "parseTaskResult"}
 	if slices.Contains(meta.SubmitResponseTypes, "sse") {
-		if slices.Contains(meta.RequiredCapabilities, CapabilitySubmitSSEDelta) {
+		if UsesSubmitEventDelta(meta, engine) {
 			requiredHooks = append(requiredHooks, "parseSubmitEventDelta")
 		} else {
 			requiredHooks = append(requiredHooks, "parseSubmitEvent")
@@ -353,11 +419,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	}
 	artifactHooks := make(map[string]bool, 2)
 	for _, hook := range []string{"listArtifacts", "buildContentRequest"} {
-		exported, exportErr := engine.HasExport(context.Background(), hook)
-		if exportErr != nil {
-			return nil, exportErr
-		}
-		if !exported {
+		if !engine.HasExport(hook) {
 			continue
 		}
 		callable, callableErr := engine.HasCallablePath(context.Background(), hook)
@@ -505,11 +567,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 		}
 	}
 	for _, removed := range []string{"resolveRequest", "renderError", "renderers"} {
-		has, e := engine.HasExport(context.Background(), removed)
-		if e != nil {
-			return nil, e
-		}
-		if has {
+		if engine.HasExport(removed) {
 			return nil, fmt.Errorf("plugin %s export %q is no longer supported", meta.Key, removed)
 		}
 	}
@@ -877,6 +935,7 @@ func cloneMeta(meta Meta) Meta {
 	meta.ChannelTypes = append([]int(nil), meta.ChannelTypes...)
 	meta.Models = slices.Clone(meta.Models)
 	meta.AllowedHosts = append([]string(nil), meta.AllowedHosts...)
+	meta.Upstreams = slices.Clone(meta.Upstreams)
 	meta.Routes = append([]Route(nil), meta.Routes...)
 	for index := range meta.Routes {
 		meta.Routes[index].Models = append([]string(nil), meta.Routes[index].Models...)
@@ -1019,7 +1078,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "modelRouting", "models", "modelAliases", "modelMediaTypes", "modelDiscovery", "fetchMode", "allowedHosts", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "modelRouting", "models", "modelAliases", "modelMediaTypes", "modelDiscovery", "fetchMode", "allowedHosts", "upstreams", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}
@@ -1208,6 +1267,10 @@ func decodeMeta(value any) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
+	meta.Upstreams, err = strictStringSlice(object, "upstreams")
+	if err != nil {
+		return Meta{}, err
+	}
 	meta.Routes, err = decodeRoutes(object["routes"])
 	if err != nil {
 		return Meta{}, err
@@ -1298,6 +1361,13 @@ func normalizeV1Meta(meta *Meta) error {
 			return fmt.Errorf("%s requires submitResponseTypes to include sse", name)
 		}
 		seenCapabilities[name] = true
+	}
+	seenUpstreams := make(map[string]bool, len(meta.Upstreams))
+	for _, kind := range meta.Upstreams {
+		if (kind != UpstreamKindVendor && kind != UpstreamKindNewAPI) || seenUpstreams[kind] {
+			return fmt.Errorf("unsupported or duplicate upstream kind %q", kind)
+		}
+		seenUpstreams[kind] = true
 	}
 	if meta.SortPriority < math.MinInt32 || meta.SortPriority > math.MaxInt32 {
 		return fmt.Errorf("plugin meta sortPriority must be a signed 32-bit integer")
@@ -1510,8 +1580,8 @@ func normalizeV1Meta(meta *Meta) error {
 			return fmt.Errorf("plugin meta modelRouting channel requires at least one supported protocol without protocol models")
 		}
 		for _, claim := range meta.Protocols {
-			if claim.Name != "openai_video" && claim.Name != "openai_responses" && claim.Name != "openai_image_tasks" {
-				return fmt.Errorf("plugin meta modelRouting channel supports only openai_video, openai_responses and openai_image_tasks")
+			if claim.Name != "openai_video" && claim.Name != "openai_responses" && claim.Name != "openai_image" {
+				return fmt.Errorf("plugin meta modelRouting channel supports only openai_video, openai_responses and openai_image")
 			}
 			if claim.Models != nil {
 				return fmt.Errorf("plugin meta modelRouting channel protocol claims must be declared without protocol models")
@@ -1530,6 +1600,9 @@ func normalizeV1Meta(meta *Meta) error {
 		}
 		if channelType == constant.ChannelTypeTaskPlugin {
 			return fmt.Errorf("plugin meta channelTypes must not contain the task plugin channel type")
+		}
+		if channelType == constant.ChannelTypeNewAPI {
+			return fmt.Errorf("plugin meta channelTypes must not contain the New API channel type; bind the plugin through task_extend_plugin_keys instead")
 		}
 		if _, duplicate := seenChannelTypes[channelType]; duplicate {
 			return fmt.Errorf("plugin meta channelTypes must be unique")
@@ -2050,7 +2123,7 @@ func decodeRoutes(value any) ([]Route, error) {
 		}
 		for key := range object {
 			switch key {
-			case "method", "path", "type", "action", "decode", "render", "taskIdParam", "models":
+			case "method", "path", "type", "action", "decode", "render", "taskIdParam", "models", "retainResult":
 			default:
 				return nil, fmt.Errorf("plugin meta route %d has unknown field %q", index, key)
 			}
@@ -2087,6 +2160,13 @@ func decodeRoutes(value any) ([]Route, error) {
 			if len(route.Models) == 0 {
 				return nil, fmt.Errorf("plugin meta route %d models must contain at least one model", index)
 			}
+		}
+		if value, exists := object["retainResult"]; exists {
+			retain, ok := value.(bool)
+			if !ok {
+				return nil, fmt.Errorf("plugin meta route %d retainResult must be a boolean", index)
+			}
+			route.RetainResult = &retain
 		}
 		routes = append(routes, route)
 	}

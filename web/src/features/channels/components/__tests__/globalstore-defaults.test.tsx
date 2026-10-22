@@ -18,6 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterContextProvider,
+} from '@tanstack/react-router'
+import {
   act,
   cleanup,
   fireEvent,
@@ -26,6 +32,7 @@ import {
   waitFor,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -70,15 +77,23 @@ let catalog: { success: boolean; data?: Record<number, string[]> }
 let saved: Channel
 
 function Harness(props: { editing?: boolean }) {
+  const [router] = useState(() =>
+    createRouter({
+      routeTree: createRootRoute(),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+  )
   return (
     <QueryClientProvider client={client}>
-      <ChannelsProvider>
-        <ChannelMutateDrawer
-          open
-          onOpenChange={() => {}}
-          currentRow={props.editing ? saved : undefined}
-        />
-      </ChannelsProvider>
+      <RouterContextProvider router={router}>
+        <ChannelsProvider>
+          <ChannelMutateDrawer
+            open
+            onOpenChange={() => {}}
+            currentRow={props.editing ? saved : undefined}
+          />
+        </ChannelsProvider>
+      </RouterContextProvider>
     </QueryClientProvider>
   )
 }
@@ -113,6 +128,14 @@ beforeEach(() => {
   })
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/models') return { data: catalog }
+    if (url === '/api/channel/default_base_urls') {
+      return {
+        data: {
+          success: true,
+          data: { 62: 'https://saas.globalstore.ai/kyyReactApiServer' },
+        },
+      }
+    }
     if (url === '/api/channel/42') {
       return { data: { success: true, data: saved } }
     }
@@ -217,15 +240,15 @@ test('switching GlobalStore media providers replaces their model list while pres
   expect(
     screen.queryByRole('button', { name: 'seedream_5.0Pro' })
   ).not.toBeInTheDocument()
-  expect(screen.getByLabelText('Base URL *')).toHaveValue(
-    'https://my-proxy.example'
-  )
+  expect(
+    screen.getByRole('textbox', { name: /Base URL/ })
+  ).toHaveValue('https://my-proxy.example')
   await user.click(screen.getByRole('button', { name: 'Change provider' }))
   await user.click(screen.getByRole('option', { name: /GlobalStore Images/ }))
   await screen.findByRole('button', { name: 'seedream_5.0Pro' })
-  expect(screen.getByLabelText('Base URL')).toHaveValue(
-    'https://my-proxy.example'
-  )
+  expect(
+    screen.getByRole('textbox', { name: /Base URL/ })
+  ).toHaveValue('https://my-proxy.example')
   expect(screen.getByLabelText('API Key *')).toHaveValue('fixture-key')
   await user.click(screen.getByRole('button', { name: 'Create Channel' }))
   await waitFor(() => expect(post).toHaveBeenCalled())

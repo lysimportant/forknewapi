@@ -88,6 +88,7 @@ export default defineConfig(({ envMode }) => {
     },
     html: {
       template: './index.html',
+      favicon: './public/favicon.ico',
       templateParameters: { bootTranslations },
     },
     server: {

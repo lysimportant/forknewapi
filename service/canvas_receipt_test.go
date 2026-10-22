@@ -152,11 +152,11 @@ func verifyCanvasAccounting(t *testing.T, db *gorm.DB, scenario string) {
 		switch scenario {
 		case "async_token_failure":
 			require.NoError(t, db.Delete(token).Error)
-			RecalculateTaskQuota(context.Background(), task, 150, "receipt test")
-			RecalculateTaskQuota(context.Background(), task, 150, "receipt retry")
+			RecalculateTaskQuota(context.Background(), task, 150, common.NewMessage("receipt test"))
+			RecalculateTaskQuota(context.Background(), task, 150, common.NewMessage("receipt retry"))
 		case "async_funding_failure":
 			require.NoError(t, db.Delete(user).Error)
-			RecalculateTaskQuota(context.Background(), task, 150, "receipt test")
+			RecalculateTaskQuota(context.Background(), task, 150, common.NewMessage("receipt test"))
 		case "async_refund":
 			task.Status = model.TaskStatusFailure
 			require.True(t, RefundTaskQuota(context.Background(), task, "receipt test"))
@@ -164,7 +164,7 @@ func verifyCanvasAccounting(t *testing.T, db *gorm.DB, scenario string) {
 			task.PrivateData.BillingContext.PerCallBilling = true
 			assert.False(t, settleTaskBillingOnComplete(context.Background(), &mockAdaptor{}, task, &relaycommon.TaskInfo{}))
 		default:
-			RecalculateTaskQuota(context.Background(), task, 150, "receipt test")
+			RecalculateTaskQuota(context.Background(), task, 150, common.NewMessage("receipt test"))
 		}
 	}
 	receipt, err = model.GetCanvasReceipt(token.Id, user.Id, info.RequestId)

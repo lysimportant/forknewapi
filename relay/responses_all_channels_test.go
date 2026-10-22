@@ -54,6 +54,9 @@ func (b *responsesBillingObserver) GetPreConsumedQuota() int { return 100 }
 // Reserve 记录补预扣尝试，不修改账户。
 func (b *responsesBillingObserver) Reserve(int) error { b.mutations++; return nil }
 
+// ReserveBeforeSubmit records a retry reservation without touching an account.
+func (b *responsesBillingObserver) ReserveBeforeSubmit(target int) error { return b.Reserve(target) }
+
 // responsesChannelContext 构造独立的 Responses 客户端请求和渠道信息，测试凭据仅为明确的占位值。
 func responsesChannelContext(t *testing.T, channelType int, model, input string, stream bool) (*gin.Context, *httptest.ResponseRecorder, *relaycommon.RelayInfo, *dto.OpenAIResponsesRequest) {
 	t.Helper()

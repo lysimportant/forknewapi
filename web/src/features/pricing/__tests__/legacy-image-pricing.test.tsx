@@ -40,7 +40,7 @@ const imageSchema: BillingUsageSchema = {
 const legacyExpression = 'tier("base", u("count")*3.5 + u("seconds")*0)'
 const imageModel: PricingModel = {
   id: 1,
-  model_name: 'Nano-banana-Pro',
+  model_name: 'image-model',
   quota_type: 0,
   model_ratio: 1,
   completion_ratio: 1,
@@ -133,8 +133,29 @@ it('shows base and group image prices without video rows in details for a legacy
   ).not.toBeInTheDocument()
 })
 
+it('projects image pricing onto a narrowed profile while keeping the declared prices exact', () => {
+  // RC.46 projects saved expressions onto the current plugin profile. Dropped
+  // numeric facts are assumed to remain zero in the plugin's measured usage.
+  const expression = 'tier("base", u("count")*3.5 + u("seconds")*0.1)'
+  expect(
+    parseTaskTiersFromExpr(expression, {
+      ...imageSchema,
+      seconds: { type: 'number', unit: 'second' },
+    })
+  ).toEqual([
+    {
+      label: 'base',
+      conditions: [],
+      constant: 0,
+      unitPrices: { count: 3.5, seconds: 0.1 },
+    },
+  ])
+  expect(parseTaskTiersFromExpr(expression, imageSchema)).toEqual([
+    { label: 'base', conditions: [], constant: 0, unitPrices: { count: 3.5 } },
+  ])
+})
+
 it.each([
-  ['nonzero unknown price', 'tier("base", u("count")*3.5 + u("seconds")*0.1)'],
   ['computed zero price', 'tier("base", u("count")*3.5 + u("seconds")*(1-1))'],
   ['no schema-backed price', 'tier("base", u("seconds")*0)'],
   ['reversed product', 'tier("base", u("count")*3.5 + 0*u("seconds"))'],

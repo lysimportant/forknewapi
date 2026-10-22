@@ -15,8 +15,6 @@ type RequestInput struct {
 	// 空字符串表示请求未显式指定档位；模型后缀优先于请求体字段。
 	Effort string
 	// ImageCount 是经过校验的图片计费数量，与冻结的请求 n 分开；结算可使用实际返回数量。
-	// 同步图片表达式显式引用 u("count") 时，该字段覆盖同名 Usage，表达式按美元金额执行。
-	// nil 保留任务插件及既有 token/fixed 表达式的原有语义，不补默认 usage。
 	ImageCount *int
 }
 
@@ -74,6 +72,7 @@ type BillingSnapshot struct {
 	GroupRatio                float64        `json:"group_ratio"`
 	EstimatedPromptTokens     int            `json:"estimated_prompt_tokens"`
 	EstimatedCompletionTokens int            `json:"estimated_completion_tokens"`
+	PreConsumeMultiplier      float64        `json:"pre_consume_multiplier,omitempty"` // Reservation only; zero in older snapshots means 1.
 	EstimatedQuotaBeforeGroup float64        `json:"estimated_quota_before_group"`
 	EstimatedQuotaAfterGroup  int            `json:"estimated_quota_after_group"`
 	EstimatedTier             string         `json:"estimated_tier"`

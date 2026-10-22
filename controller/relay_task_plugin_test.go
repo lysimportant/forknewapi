@@ -58,6 +58,8 @@ func (b *taskSubmissionTestBilling) Reserve(int) error {
 	return b.reserveErr
 }
 
+func (b *taskSubmissionTestBilling) ReserveBeforeSubmit(quota int) error { return b.Reserve(quota) }
+
 func TestPresentTaskSubmissionUsesNativePresenterAfterPersistence(t *testing.T) {
 	plugin, err := pluginruntime.CompilePlugin(`
 export const meta = {apiVersion:1,key:"presenter-test",name:"Presenter",version:"1.0.0",author:{name:"Test"},models:["model"],fetchMode:"per_task",routes:[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decode",render:"created"}]};
@@ -129,44 +131,6 @@ func TestPresentTaskSubmissionUsesHostOpenAIVideoCreateReceipt(t *testing.T) {
 
 	assert.JSONEq(t, `{"id":"task_public","object":"video","model":"video-model","status":"queued","progress":0,"created_at":456}`, recorder.Body.String())
 	assert.NotContains(t, recorder.Body.String(), "task_id")
-}
-
-func TestPresentTaskSubmissionUsesAcceptedOpenAIImageTaskReceipt(t *testing.T) {
-	plugin, err := pluginruntime.DefaultRegistry.Register(`
-export const meta = {
-  apiVersion: 1, key: "image-task-receipt-test", name: "Image task receipt", version: "1.0.0",
-  author: {name: "Test"}, models: ["image-model"], fetchMode: "per_task",
-  protocols: ["openai_image_tasks"],
-};
-export function buildSubmitRequest() { return {url: "https://example.com"}; }
-export function parseSubmitResponse() { return {taskId: "upstream"}; }
-export function buildQueryRequest() { return {url: "https://example.com"}; }
-export function parseTaskResult() { return {status: "SUCCESS"}; }
-export const protocols = {openai_image_tasks: {
-  decodeRequest: function(ctx) { return {kind: "submit", model: ctx.model, requestBody: ctx.body.value}; },
-  render: function(_ctx, task) { return {id: task.task_id, object: "image.task", status: "queued", provider_field: "kept"}; },
-}};
-`, pluginruntime.Options{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, pluginruntime.DefaultRegistry.Unregister("image-task-receipt-test")) })
-
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/tasks", strings.NewReader(`{"model":"image-model"}`))
-	c.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{
-		Plugin: plugin, Protocol: "openai_image_tasks", Operation: pluginruntime.HostProtocolOperation{Name: "create"},
-	})
-	task := &model.Task{
-		TaskID: "task_public", Status: model.TaskStatusQueued, SubmitTime: 456,
-		Platform:   constant.TaskPlatform("image-task-receipt-test"),
-		Properties: model.Properties{OriginModelName: "image-model"},
-	}
-	outcome := &taskSubmissionOutcome{Result: &relay.TaskSubmitResult{}, Task: task, RelayInfo: &relaycommon.RelayInfo{OriginModelName: "image-model"}}
-
-	presentTaskSubmission(c, outcome)
-
-	assert.Equal(t, http.StatusAccepted, recorder.Code)
-	assert.JSONEq(t, `{"id":"task_public","object":"image.task","status":"queued","progress":0,"created_at":456,"model":"image-model","provider_field":"kept"}`, recorder.Body.String())
 }
 
 func TestExecuteTaskSubmissionRefundsWhenInsertFails(t *testing.T) {
@@ -269,6 +233,75 @@ func TestExecuteTaskSubmissionPersistsPinnedPluginProvenance(t *testing.T) {
 	require.NotNil(t, stored.PrivateData.Execution.TaskPlugin.Author)
 	assert.Equal(t, "Community Author", stored.PrivateData.Execution.TaskPlugin.Author.Name)
 	assert.Equal(t, "upstream-private", stored.PrivateData.UpstreamTaskID)
+}
+
+// A submit route declaring retainResult: false persists the task row for
+// billing but never writes the upstream snapshot for an immediate terminal
+// result, while the in-memory task still carries it for the presenter. An
+// asynchronous result on the same route is retained because polling and
+// retrieval depend on it.
+func TestExecuteTaskSubmissionHonorsRouteRetainResult(t *testing.T) {
+	retainFalse := false
+	for _, tc := range []struct {
+		name          string
+		immediate     *relaycommon.TaskInfo
+		wantDiscarded bool
+	}{
+		{"immediate success is discarded", &relaycommon.TaskInfo{Status: model.TaskStatusSuccess, Progress: "100%"}, true},
+		{"immediate failure is discarded", &relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "rejected"}, true},
+		{"asynchronous result is retained", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := make([]string, 0, 3)
+			database, _ := openTaskDialectDatabase(t, &model.Task{}, &model.User{}, &model.Channel{})
+			previousDB := model.DB
+			model.DB = database
+			t.Cleanup(func() { model.DB = previousDB })
+			previousLogConsumeEnabled := common.LogConsumeEnabled
+			common.LogConsumeEnabled = false
+			t.Cleanup(func() { common.LogConsumeEnabled = previousLogConsumeEnabled })
+
+			c := taskSubmissionTestContext()
+			c.Set(pluginruntime.ContextKeyPinnedRoute, pluginruntime.PinnedRoute{
+				Plugin: &pluginruntime.LoadedPlugin{Meta: pluginruntime.Meta{Key: "sync-images"}},
+				Route:  pluginruntime.Route{Method: http.MethodPost, Path: "/sync/images", Type: pluginruntime.RouteTypeSubmit, RetainResult: &retainFalse},
+			})
+			info := taskSubmissionRelayInfo(&taskSubmissionTestBilling{events: &events})
+			upstream := []byte(`{"data":[{"url":"https://cdn.example/a.png"}]}`)
+
+			outcome, taskErr := executeTaskSubmissionWith(c, info, func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+				return &relay.TaskSubmitResult{
+					UpstreamTaskID: "task_public",
+					Platform:       constant.TaskPlatform("sync-images"),
+					TaskData:       upstream,
+					Immediate:      tc.immediate,
+				}, nil
+			})
+			require.Nil(t, taskErr)
+			require.NotNil(t, outcome)
+			assert.JSONEq(t, string(upstream), string(outcome.Task.Data), "presenter keeps the in-memory snapshot")
+			assert.Equal(t, tc.wantDiscarded, outcome.Task.PrivateData.ResultDiscarded)
+			assert.Equal(t, !tc.wantDiscarded, outcome.Task.ResultRetrievable())
+
+			var stored model.Task
+			require.NoError(t, database.Where("task_id = ?", "task_public").First(&stored).Error)
+			assert.Equal(t, tc.wantDiscarded, stored.PrivateData.ResultDiscarded)
+			var nullCount int64
+			require.NoError(t, database.Model(&model.Task{}).Where("task_id = ? AND data IS NULL", "task_public").Count(&nullCount).Error)
+			if tc.wantDiscarded {
+				assert.Equal(t, int64(1), nullCount, "snapshot column must stay NULL")
+				artifacts, err := projectTaskArtifacts(&stored)
+				require.NoError(t, err)
+				assert.Empty(t, artifacts)
+			} else {
+				assert.Equal(t, int64(0), nullCount)
+				assert.JSONEq(t, string(upstream), string(stored.Data))
+			}
+			listed := model.TaskGetAllUserTask(1, 0, 10, model.SyncTaskQueryParams{})
+			require.Len(t, listed, 1)
+			assert.Empty(t, listed[0].Data, "task lists never select the snapshot column")
+		})
+	}
 }
 
 func TestExecuteTaskSubmissionRefundsCancellationBeforeDurableBarrier(t *testing.T) {
@@ -395,17 +428,21 @@ func TestExecuteTaskSubmissionDisconnectAfterDurableInsertDoesNotRefund(t *testi
 	assert.False(t, c.Writer.Written())
 }
 
+// setupTaskSubmissionDatabase opens the dialect selected by
+// TEST_TASK_DB_DIALECT (SQLite in memory by default) and records every task
+// INSERT in events so tests can assert the reserve → insert → settle order.
+// Without migrate the task table does not exist and inserts fail.
 func setupTaskSubmissionDatabase(t *testing.T, migrate bool, events *[]string) *gorm.DB {
 	t.Helper()
 	previousDB := model.DB
-	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
+	var models []any
+	if migrate {
+		models = append(models, &model.Task{})
+	}
+	database, _ := openTaskDialectDatabase(t, models...)
 	require.NoError(t, database.Callback().Create().Before("gorm:create").Register("test:task-submit-order", func(*gorm.DB) {
 		*events = append(*events, "insert")
 	}))
-	if migrate {
-		require.NoError(t, database.AutoMigrate(&model.Task{}))
-	}
 	model.DB = database
 	t.Cleanup(func() { model.DB = previousDB })
 	return database
@@ -436,7 +473,13 @@ func taskSubmissionRelayInfo(billing relaycommon.BillingSettler) *relaycommon.Re
 // and consume log. Set TEST_TASK_DB_DIALECT plus TEST_MYSQL_DSN or
 // TEST_POSTGRES_DSN to exercise the same contract on an external test database.
 // Unique table prefixes keep the fixture isolated from all existing tables.
-func TestImmediateTaskSettlementDatabase(t *testing.T) {
+// openTaskDialectDatabase opens the engine selected by TEST_TASK_DB_DIALECT
+// (default SQLite in memory; MySQL and PostgreSQL through TEST_MYSQL_DSN and
+// TEST_POSTGRES_DSN) with a unique table prefix, migrates the given models and
+// drops them on cleanup. It logs the engine version so database verification
+// runs leave a record.
+func openTaskDialectDatabase(t *testing.T, models ...any) (*gorm.DB, common.DatabaseType) {
+	t.Helper()
 	dialect := common.DatabaseType(os.Getenv("TEST_TASK_DB_DIALECT"))
 	var driver gorm.Dialector
 	switch dialect {
@@ -458,7 +501,6 @@ func TestImmediateTaskSettlementDatabase(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	models := []any{&model.User{}, &model.Channel{}, &model.Task{}, &model.Log{}}
 	require.NoError(t, db.AutoMigrate(models...))
 	t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(models...)) })
 	var version string
@@ -468,6 +510,11 @@ func TestImmediateTaskSettlementDatabase(t *testing.T) {
 		require.NoError(t, db.Raw("SELECT version()").Scan(&version).Error)
 	}
 	t.Logf("database: %s %s", dialect, version)
+	return db, dialect
+}
+
+func TestImmediateTaskSettlementDatabase(t *testing.T) {
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Channel{}, &model.Task{}, &model.Log{})
 	oldDB, oldLogDB := model.DB, model.LOG_DB
 	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
 	oldRedis, oldMemory, oldBatch, oldConsume, oldExport := common.RedisEnabled, common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled
@@ -582,7 +629,24 @@ export function buildQueryRequest(){throw new Error("completed submissions must 
 
 func TestAcceptedSubmitStreamNeverRetries(t *testing.T) {
 	c := taskSubmissionTestContext()
-	assert.False(t, shouldRetryTaskRelay(c, 1, &dto.TaskError{StatusCode: 502, LocalError: true, NoRetry: true}, 3))
+	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "task_accepted", Source: "system"}, decideTaskRetry(c, &dto.TaskError{StatusCode: 502, LocalError: true, NoRetry: true}, 3))
+}
+
+// Local task rejections carry a message but no cause; the response and the
+// decision record must still be produced.
+func TestRespondTaskSubmissionErrorWithoutCause(t *testing.T) {
+	previousErrorLog := constant.ErrorLogEnabled
+	constant.ErrorLogEnabled = false
+	t.Cleanup(func() { constant.ErrorLogEnabled = previousErrorLog })
+	c := taskSubmissionTestContext()
+	taskErr := &dto.TaskError{Code: "get_channel_failed", Message: "no channel", StatusCode: http.StatusServiceUnavailable, LocalError: true}
+	require.NotPanics(t, func() { respondTaskSubmissionError(c, taskErr) })
+	assert.Equal(t, http.StatusServiceUnavailable, c.Writer.Status())
+	events := service.RequestPolicy(c).Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "request_failed", Source: "system"}, events[0].Decision)
+	assert.Equal(t, http.StatusServiceUnavailable, events[0].Status)
+	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "system"}, decideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusForbidden, LocalError: true, Message: "billing"}, 2), "local errors stop once the status rules do not force a retry")
 }
 
 func TestDefinitiveSubmissionRejectionClassification(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,7 @@ import (
 func TestTransferAffQuotaEnforcesFreezeAndIdempotency(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupManageUserTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.InviteReward{}, &model.InviteRewardWithdrawal{}))
+	require.NoError(t, db.AutoMigrate(&model.InviteReward{}, &model.InviteRewardWithdrawal{}, &model.Log{}))
 	require.NoError(t, db.Exec("DELETE FROM invite_reward_withdrawals").Error)
 	require.NoError(t, db.Exec("DELETE FROM invite_rewards").Error)
 
@@ -100,7 +101,7 @@ func TestTransferAffQuotaEnforcesFreezeAndIdempotency(t *testing.T) {
 	require.NoError(t, db.Model(&model.InviteRewardWithdrawal{}).Where("user_id = ?", user.Id).Count(&withdrawalCount).Error)
 	assert.Equal(t, int64(1), withdrawalCount)
 
-	assertWithdrawalLogPlacement(t, db, user.Id)
+	assertWithdrawalLogPlacement(t, db, user.Id, quotaPerUnit)
 }
 
 // assertWithdrawalLogPlacement 校验提现审计记录的落库位置。
@@ -108,7 +109,7 @@ func TestTransferAffQuotaEnforcesFreezeAndIdempotency(t *testing.T) {
 // 日志库独立配置（LOG_SQL_DSN 指向另一个库）时，主库事务与日志库不具备跨库事务，
 // 因此按配置分别断言：独立日志库必须收到且只收到一条提现日志，而主库不得出现该日志，
 // 避免「日志缺失」或「同一条日志写两处」两种失败被掩盖。
-func assertWithdrawalLogPlacement(t *testing.T, mainDB *gorm.DB, userId int) {
+func assertWithdrawalLogPlacement(t *testing.T, mainDB *gorm.DB, userId, quota int) {
 	t.Helper()
 	logDB := model.LOG_DB
 	require.NotNil(t, logDB)
@@ -119,17 +120,24 @@ func assertWithdrawalLogPlacement(t *testing.T, mainDB *gorm.DB, userId int) {
 		require.Same(t, mainDB, logDB, "未配置独立日志库时应共用同一连接")
 	}
 
-	var logCount int64
-	require.NoError(t, logDB.Model(&model.Log{}).
-		Where("user_id = ? AND content LIKE ?", userId, "%邀请奖励%").Count(&logCount).Error)
-	assert.Equal(t, int64(1), logCount, "提现必须在日志库留下且只留下一条审计记录")
+	var logs []model.Log
+	require.NoError(t, logDB.Where("user_id = ?", userId).Find(&logs).Error)
+	require.Len(t, logs, 1, "提现必须在日志库留下且只留下一条审计记录")
+	assert.Equal(t, model.LogTypeTopup, logs[0].Type)
+	expected := common.NewMessage("Transferred invitation rewards to site balance {{quota}}", map[string]any{
+		"quota": logger.FormatQuota(quota),
+	})
+	assert.Equal(t, expected.Error(), logs[0].Content)
+	var other struct {
+		ContentParts []*common.Message `json:"content_parts"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+	assert.Equal(t, []*common.Message{expected}, other.ContentParts)
 
 	if !separateLogDB {
 		return
 	}
 	var mainLogCount int64
-	require.NoError(t, mainDB.Migrator().DropTable(&model.Log{}))
-	require.NoError(t, mainDB.AutoMigrate(&model.Log{}))
 	require.NoError(t, mainDB.Model(&model.Log{}).Where("user_id = ?", userId).Count(&mainLogCount).Error)
 	assert.Zero(t, mainLogCount, "独立日志库配置下主库不得写入日志")
 }

@@ -66,6 +66,9 @@ func InitOptionMap() {
 	common.OptionMap["EmailAliasRestrictionEnabled"] = strconv.FormatBool(common.EmailAliasRestrictionEnabled)
 	common.OptionMap["EmailDomainWhitelist"] = strings.Join(common.EmailDomainWhitelist, ",")
 	common.OptionMap["SMTPServer"] = ""
+	common.OptionMap["EmailProvider"] = "smtp"
+	common.OptionMap["ResendApiKey"] = ""
+	common.OptionMap["ResendFrom"] = ""
 	common.OptionMap["SMTPFrom"] = ""
 	common.OptionMap["SMTPPort"] = strconv.Itoa(common.SMTPPort)
 	common.OptionMap["SMTPAccount"] = ""
@@ -144,6 +147,7 @@ func InitOptionMap() {
 	common.OptionMap["QuotaForInviter"] = strconv.Itoa(common.QuotaForInviter)
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
 	common.OptionMap["InviteRewardFreezeHours"] = strconv.Itoa(common.InviteRewardFreezeHours)
+	common.OptionMap["QuotaRemindEnabled"] = strconv.FormatBool(common.QuotaRemindEnabled)
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
 	common.OptionMap["PreConsumedQuota"] = strconv.Itoa(common.PreConsumedQuota)
 	common.OptionMap["ModelRequestRateLimitCount"] = strconv.Itoa(setting.ModelRequestRateLimitCount)
@@ -196,6 +200,13 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
+	requestPolicyOptionMutex.Lock()
+	defer requestPolicyOptionMutex.Unlock()
+	defer func() {
+		if err := refreshRequestPolicySnapshot(); err != nil {
+			common.SysError(common.LogText("invalid request policy: %s", err.Error()))
+		}
+	}()
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
@@ -207,7 +218,7 @@ func loadOptionsFromDatabase() {
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
-			common.SysLog("failed to update option map: " + err.Error())
+			common.SysLog(common.LogText("failed to update option map: %s", err.Error()))
 		}
 	}
 	applyPasskeyDomainOptions(passkeyOptions)
@@ -216,17 +227,47 @@ func loadOptionsFromDatabase() {
 func SyncOptions(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
-		common.SysLog("syncing options from database")
+		common.SysLog(common.LogText("syncing options from database"))
 		loadOptionsFromDatabase()
 	}
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == legacyAccessTokenRetireAtKey {
+		return errLegacyRetireAtReadOnly
+	}
+	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
+		return err
+	}
+	if key == "EmailProvider" || key == "ResendApiKey" || key == "ResendFrom" {
+		if key == "EmailProvider" && value != "smtp" && value != "resend" {
+			return common.NewMessage("Email sending method must be SMTP or Resend")
+		}
+		common.OptionMapRWMutex.RLock()
+		settings := map[string]string{
+			"EmailProvider": common.OptionMap["EmailProvider"],
+			"ResendApiKey":  common.OptionMap["ResendApiKey"],
+			"ResendFrom":    common.OptionMap["ResendFrom"],
+		}
+		common.OptionMapRWMutex.RUnlock()
+		settings[key] = value
+		// While Resend is the active method, a change must keep settings it can
+		// send with. Inactive drafts are checked when Resend is turned on.
+		if settings["EmailProvider"] == "resend" {
+			return common.ValidateResendConfiguration(settings["ResendApiKey"], settings["ResendFrom"])
+		}
+	}
+	if key == "ResendKeyConfigured" {
+		return common.NewMessage("Resend key configuration status is read-only")
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
 	if key == operation_setting.ChannelTestConcurrencyOptionKey {
 		return operation_setting.ValidateChannelTestConcurrency(value)
+	}
+	if key == operation_setting.LogMaxRangeDaysOptionKey {
+		return operation_setting.ValidateLogMaxRangeDays(value)
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
@@ -237,6 +278,9 @@ func validateOptionValue(key string, value string) error {
 // UpdateOption 按配置键保存字符串值，持久化成功后发布到内存配置。
 // 返回校验、数据库或内存配置更新错误；数据库事务失败时不发布新值。
 func UpdateOption(key string, value string) error {
+	if IsRequestPolicyOption(key) {
+		return UpdateRequestPolicyOptions(map[string]string{key: value})
+	}
 	if IsPasskeyDomainOption(key) {
 		_, err := UpdatePasskeyDomainOptions(map[string]string{key: value}, false, "")
 		return err
@@ -281,6 +325,26 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	var policySnapshot *RequestPolicySnapshot
+	for key := range values {
+		if IsRequestPolicyOption(key) {
+			requestPolicyOptionMutex.Lock()
+			defer requestPolicyOptionMutex.Unlock()
+			options := maps.Clone(CurrentRequestPolicy().Options)
+			for key, value := range values {
+				if IsRequestPolicyOption(key) {
+					options[key] = value
+				}
+			}
+			var err error
+			policySnapshot, err = BuildRequestPolicy(options)
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}
@@ -302,11 +366,14 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	if policySnapshot != nil {
+		requestPolicySnapshot.Store(policySnapshot)
+	}
 	return nil
 }
 
 func updateOptionMap(key string, value string) (err error) {
-	if key == retiredThemeOptionKey {
+	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
@@ -364,6 +431,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticDisableChannelEnabled = boolValue
 		case "AutomaticEnableChannelEnabled":
 			common.AutomaticEnableChannelEnabled = boolValue
+		case "QuotaRemindEnabled":
+			common.QuotaRemindEnabled = boolValue
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
 		case "DisplayInCurrencyEnabled":

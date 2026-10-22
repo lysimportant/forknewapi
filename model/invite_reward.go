@@ -363,7 +363,7 @@ func WithdrawInviteRewardsAt(userId int, requestId string, requested int, now in
 	}
 
 	syncCreditUserQuotaCache(userId, requested, "invite reward withdrawal")
-	RecordLog(userId, LogTypeTopup, fmt.Sprintf("提取邀请奖励至站内余额 %s", logger.LogQuota(requested)))
+	RecordLog(userId, LogTypeTopup, common.NewMessage("Transferred invitation rewards to site balance {{quota}}", map[string]any{"quota": logger.FormatQuota(requested)}))
 	return requested, nil
 }
 

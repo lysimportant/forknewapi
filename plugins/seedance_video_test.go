@@ -481,7 +481,7 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 			artifacts, err := adaptor.ListArtifacts(task)
 			require.NoError(t, err)
 			require.Len(t, artifacts, 1)
-			content, err := adaptor.BuildContentRequest(task, artifacts[0].Key, channel.TaskArtifactClientRequest{Method: http.MethodGet})
+			content, err := adaptor.BuildContentRequest(t.Context(), task, artifacts[0].Key, channel.TaskArtifactClientRequest{Method: http.MethodGet})
 			require.NoError(t, err)
 			assert.True(t, content.Credentialless)
 			assert.Empty(t, content.Headers)

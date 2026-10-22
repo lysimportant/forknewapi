@@ -1,6 +1,8 @@
 package router
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
@@ -68,17 +70,18 @@ func SetRelayRouter(router *gin.Engine) {
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
 	relayV1Router := router.Group("/v1")
-	// 版本化入口与根路径别名共用中间件，避免别名绕过访问和流量控制。
-	relayAccessHandlers := gin.HandlersChain{
-		middleware.RouteTag("relay"),
-		middleware.SystemPerformanceCheck(),
-		middleware.TokenAuth(),
-		middleware.ModelRequestRateLimit(),
+	relayV1Router.Use(middleware.RouteTag("relay"))
+	relayV1Router.Use(middleware.SystemPerformanceCheck())
+	relayV1Router.Use(middleware.TokenAuth())
+	{
+		// Responses WebSocket route. Channel selection happens after the first
+		// response.create event; each event runs the ordinary request limiter.
+		relayV1Router.GET("/responses", controller.ResponsesWebSocket)
 	}
-	relayV1Router.Use(relayAccessHandlers...)
+	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	responsesAliasRouter := router.Group("")
 	responsesAliasRouter.Use(normalizeResponsesAlias)
-	responsesAliasRouter.Use(relayAccessHandlers...)
+	responsesAliasRouter.Use(middleware.RouteTag("relay"), middleware.SystemPerformanceCheck(), middleware.TokenAuth(), middleware.ModelRequestRateLimit())
 	// 根路径同样支持 rc35 的插件端点固定与准备流程，普通文本渠道继续回落到 Responses 中继。
 	responsesAliasRouter.POST("/responses", middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(), func(c *gin.Context) {
 		controller.RelayTaskPluginEndpoint(c, func(c *gin.Context) { controller.Relay(c, types.RelayFormatOpenAIResponses) })
@@ -124,14 +127,18 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatOpenAIAlphaSearch)
 		})
 
-		// image related routes
+		// DeepSeek Search and Fetch API routes
+		httpRouter.POST("/tools/search", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatDeepSeekTools)
+		})
+		httpRouter.POST("/tools/fetch", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatDeepSeekTools)
+		})
+
+		// image related routes. /images/generations and /images/edits are
+		// host protocol endpoints (openai_image) registered by
+		// SetTaskPluginProtocolRouter; unclaimed models fall back to Relay.
 		httpRouter.POST("/edits", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/generations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/edits", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
 
@@ -196,6 +203,15 @@ func SetRelayRouter(router *gin.Engine) {
 	//relayMjRouter.Use()
 
 	relayGeminiRouter := router.Group("/v1beta")
+	// :countTokens is not implemented. Answer it like an unregistered route
+	// before auth/channel selection instead of silently relaying it as
+	// generateContent (#7283).
+	relayGeminiRouter.Use(func(c *gin.Context) {
+		if strings.HasSuffix(c.Request.URL.Path, ":countTokens") {
+			controller.RelayNotFound(c)
+			c.Abort()
+		}
+	})
 	relayGeminiRouter.Use(middleware.RouteTag("relay"))
 	relayGeminiRouter.Use(middleware.SystemPerformanceCheck())
 	relayGeminiRouter.Use(middleware.TokenAuth())

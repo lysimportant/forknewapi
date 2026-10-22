@@ -22,7 +22,7 @@ func TestResponsesRequestToChatCompletionsRequestInstructionsAndScalarInput(t *t
 	maxOutputTokens := uint(128)
 	parallelToolCalls := true
 
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model:                "gpt-test",
 		Instructions:         mustRawMessage(t, "system rules"),
 		Input:                mustRawMessage(t, "hello"),
@@ -59,9 +59,41 @@ func TestResponsesRequestToChatCompletionsRequestInstructionsAndScalarInput(t *t
 	assert.Equal(t, "abc", gjson.GetBytes(got.Metadata, "trace").String())
 }
 
+func TestResponsesRequestToChatCompletionsRequestPreservesQwenThinkingBudget(t *testing.T) {
+	tests := []struct {
+		name   string
+		budget json.RawMessage
+		want   int64
+	}{
+		{name: "positive budget", budget: json.RawMessage(`128`), want: 128},
+		{name: "zero budget", budget: json.RawMessage(`0`), want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+				Model:          "qwen-plus",
+				Input:          mustRawMessage(t, "hello"),
+				EnableThinking: json.RawMessage(`true`),
+				ThinkingBudget: tt.budget,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.budget, got.ThinkingBudget)
+
+			encoded, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+
+			assert.True(t, gjson.GetBytes(encoded, "enable_thinking").Bool())
+			value := gjson.GetBytes(encoded, "thinking_budget")
+			assert.True(t, value.Exists())
+			assert.Equal(t, tt.want, value.Int())
+		})
+	}
+}
+
 // TestResponsesRequestToChatCompletionsRequestMultimodalInput 保护多模态输入内容及图片 detail 的转换语义。
 func TestResponsesRequestToChatCompletionsRequestMultimodalInput(t *testing.T) {
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "gpt-test",
 		Input: mustRawMessage(t, []map[string]any{
 			{
@@ -96,7 +128,7 @@ func TestResponsesRequestToChatCompletionsRequestMultimodalInput(t *testing.T) {
 }
 
 func TestResponsesRequestToChatCompletionsRequestAssistantTextAndFunctionCallCoexist(t *testing.T) {
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "gpt-test",
 		Input: mustRawMessage(t, []map[string]any{
 			{
@@ -135,7 +167,7 @@ func TestResponsesRequestToChatCompletionsRequestAssistantTextAndFunctionCallCoe
 }
 
 func TestResponsesRequestToChatCompletionsRequestOnlyFunctionCallCreatesAssistant(t *testing.T) {
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "gpt-test",
 		Input: mustRawMessage(t, []map[string]any{
 			{
@@ -157,7 +189,7 @@ func TestResponsesRequestToChatCompletionsRequestOnlyFunctionCallCreatesAssistan
 }
 
 func TestResponsesRequestToChatCompletionsRequestToolsToolChoiceAndTextFormat(t *testing.T) {
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "gpt-test",
 		Input: mustRawMessage(t, "hello"),
 		Tools: mustRawMessage(t, []map[string]any{
@@ -205,29 +237,44 @@ func TestResponsesRequestToChatCompletionsRequestToolsToolChoiceAndTextFormat(t 
 	assert.True(t, gjson.GetBytes(got.ResponseFormat.JsonSchema, "strict").Bool())
 }
 
-func TestResponsesRequestToChatCompletionsRequestCustomToolCallPreservesRawShape(t *testing.T) {
-	got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+func TestResponsesRequestToChatCompletionsRequestEncodesCustomToolHistoryAsFunction(t *testing.T) {
+	got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "gpt-test",
 		Input: mustRawMessage(t, []map[string]any{
 			{
 				"type":    "custom_tool_call",
 				"call_id": "call_custom",
-				"name":    "apply_patch",
-				"input":   "patch body",
+				"name":    "exec",
+				"input":   "echo \"hi\" && ls",
+			},
+			{
+				"type":    "custom_tool_call_output",
+				"call_id": "call_custom",
+				"output":  "hi",
 			},
 		}),
 	})
 	require.NoError(t, err)
 
-	require.Len(t, got.Messages, 1)
+	require.Len(t, got.Messages, 2)
 	toolCalls := got.Messages[0].ParseToolCalls()
 	require.Len(t, toolCalls, 1)
-	assert.Equal(t, dto.CustomType, toolCalls[0].Type)
+	assert.Equal(t, "function", toolCalls[0].Type)
 	assert.Equal(t, "call_custom", toolCalls[0].ID)
-	assert.Equal(t, "apply_patch", toolCalls[0].Function.Name)
-	assert.Equal(t, "patch body", toolCalls[0].Function.Arguments)
-	assert.Equal(t, "custom_tool_call", gjson.GetBytes(toolCalls[0].Custom, "type").String())
-	assert.Equal(t, "patch body", gjson.GetBytes(toolCalls[0].Custom, "input").String())
+	assert.Equal(t, "exec", toolCalls[0].Function.Name)
+	assert.Equal(t, `echo "hi" && ls`, gjson.Get(toolCalls[0].Function.Arguments, "input").String())
+	assert.Empty(t, toolCalls[0].Custom)
+	assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_custom", Content: "hi"}, got.Messages[1])
+}
+
+func TestResponsesRequestToChatCompletionsRequestRejectsNamelessCustomToolCall(t *testing.T) {
+	_, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+		Model: "gpt-test",
+		Input: mustRawMessage(t, []map[string]any{
+			{"type": "custom_tool_call", "call_id": "call_custom", "input": "ls"},
+		}),
+	})
+	require.ErrorContains(t, err, "custom_tool_call item is missing name")
 }
 
 func TestResponsesRequestToChatCompletionsRequestRejectsStatefulFields(t *testing.T) {
@@ -260,7 +307,7 @@ func TestResponsesRequestToChatCompletionsRequestRejectsStatefulFields(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ResponsesRequestToChatCompletionsRequest(tt.req)
+			_, err := ResponsesRequestToChatCompletionsRequest(context.Background(), tt.req)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
 			assert.Contains(t, err.Error(), "stateful fields")
@@ -279,7 +326,7 @@ func TestResponsesRequestToChatRejectsUnrepresentableInput(t *testing.T) {
 		{"状态引用", map[string]any{"type": "item_reference", "id": "sensitive-payload"}, "item_reference"},
 		{"推理密文", map[string]any{"type": "reasoning", "encrypted_content": "sensitive-payload"}, "reasoning"},
 		{"消息密文", map[string]any{"type": "message", "role": "assistant", "content": "hello", "encrypted_content": "sensitive-payload"}, "encrypted_content"},
-		{"自定义工具结果", map[string]any{"type": "custom_tool_call_output", "call_id": "call_1", "output": "sensitive-payload"}, "custom_tool_call_output"},
+		{"孤立自定义工具结果", map[string]any{"type": "custom_tool_call_output", "call_id": "call_1", "output": "sensitive-payload"}, "no matching earlier call"},
 		{"缺失摘要", map[string]any{"type": "reasoning"}, "summary"},
 		{"未知推理内容", map[string]any{"type": "reasoning", "content": []any{map[string]any{"type": "reasoning_text", "text": "sensitive-payload"}}}, "content"},
 		{"摘要类型错误", map[string]any{"type": "reasoning", "summary": "sensitive-payload"}, "summary"},
@@ -287,7 +334,7 @@ func TestResponsesRequestToChatRejectsUnrepresentableInput(t *testing.T) {
 		{"摘要文本类型错误", map[string]any{"type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": map[string]any{"content": "sensitive-payload"}}}}, "summary_text"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 				Model: "gpt-test", Input: mustRawMessage(t, []map[string]any{test.item}),
 			})
 			require.Error(t, err)
@@ -314,7 +361,7 @@ func TestResponsesReasoningSummaryToolHistory(t *testing.T) {
 			map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
 			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "OK"},
 		)
-		chat, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{Model: "model-test", Input: mustRawMessage(t, items)})
+		chat, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{Model: "model-test", Input: mustRawMessage(t, items)})
 		require.NoError(t, err)
 		require.Len(t, chat.Messages, 2)
 		assert.Equal(t, "assistant", chat.Messages[0].Role)
@@ -344,7 +391,7 @@ func TestResponsesRequestToChatFunctionHistory(t *testing.T) {
 		{"重复结果", []map[string]any{call, output, output}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 				Model: "gpt-test", Input: mustRawMessage(t, test.items),
 			})
 			require.Error(t, err)
@@ -354,7 +401,7 @@ func TestResponsesRequestToChatFunctionHistory(t *testing.T) {
 	}
 
 	t.Run("并行调用可按不同顺序返回", func(t *testing.T) {
-		got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+		got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 			Model: "gpt-test", Input: mustRawMessage(t, []map[string]any{
 				call,
 				{"type": "function_call", "call_id": "call_2", "name": "lookup", "arguments": "{}"},
@@ -388,7 +435,7 @@ func TestResponsesRequestToChatFunctionStrict(t *testing.T) {
 			if test.present {
 				tool["strict"] = test.strict
 			}
-			got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 				Model: "gpt-test", Input: mustRawMessage(t, "hello"), Tools: mustRawMessage(t, []map[string]any{tool}),
 			})
 			if test.wantErr {
@@ -410,7 +457,7 @@ func TestResponsesRequestToChatFunctionStrict(t *testing.T) {
 
 // TestResponsesChatFunctionHistoryToClaudeAndGemini 保护经过 Chat 公共格式后二次转换的工具调用、参数与结果关联。
 func TestResponsesChatFunctionHistoryToClaudeAndGemini(t *testing.T) {
-	chat, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	chat, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model: "model-test", MaxOutputTokens: lo.ToPtr(uint(128)),
 		Input: mustRawMessage(t, []map[string]any{
 			{"role": "user", "content": "lookup"},
@@ -436,14 +483,6 @@ func TestResponsesChatFunctionHistoryToClaudeAndGemini(t *testing.T) {
 	assert.Equal(t, "value", gjson.GetBytes(rawGemini, "contents.1.parts.0.functionCall.args.q").String())
 	assert.Equal(t, "lookup", gjson.GetBytes(rawGemini, "contents.2.parts.0.functionResponse.name").String())
 	assert.True(t, gjson.GetBytes(rawGemini, "contents.2.parts.0.functionResponse.response.ok").Bool())
-}
-
-// mustRawMessage 将测试输入编码为项目 DTO 使用的 JSON，编码失败时终止当前测试。
-func mustRawMessage(t *testing.T, value any) []byte {
-	t.Helper()
-	raw, err := kitutil.Marshal(value)
-	require.NoError(t, err)
-	return raw
 }
 
 func TestResponsesRequestToChatCompletionsRequestPreservesPenalties(t *testing.T) {
@@ -477,7 +516,7 @@ func TestResponsesRequestToChatCompletionsRequestPreservesPenalties(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 				Model:            "gpt-test",
 				Input:            mustRawMessage(t, "hello"),
 				FrequencyPenalty: tt.frequencyRaw,
@@ -492,11 +531,190 @@ func TestResponsesRequestToChatCompletionsRequestPreservesPenalties(t *testing.T
 }
 
 func TestResponsesRequestToChatCompletionsRequestRejectsMalformedPenalty(t *testing.T) {
-	_, err := ResponsesRequestToChatCompletionsRequest(&dto.OpenAIResponsesRequest{
+	_, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
 		Model:            "gpt-test",
 		Input:            mustRawMessage(t, "hello"),
 		FrequencyPenalty: json.RawMessage(`"not-a-number"`),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "frequency_penalty")
+}
+
+func TestResponsesRequestToChatCompletionsRequestToolOutputContentParts(t *testing.T) {
+	const dataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	imagePart := map[string]any{"type": "input_image", "image_url": dataURL}
+
+	tests := []struct {
+		name        string
+		output      any
+		wantContent string
+		jsonContent bool
+		wantMedia   []string
+	}{
+		{
+			name:        "text and image keep text on tool message",
+			output:      []any{map[string]any{"type": "input_text", "text": "screenshot taken"}, imagePart},
+			wantContent: "screenshot taken",
+			wantMedia:   []string{dto.ContentTypeImageURL},
+		},
+		{
+			name:        "image only uses placeholder",
+			output:      []any{imagePart},
+			wantContent: "[image]",
+			wantMedia:   []string{dto.ContentTypeImageURL},
+		},
+		{
+			name:        "mixed media dedupes placeholder labels",
+			output:      []any{imagePart, map[string]any{"type": "input_file", "file_id": "file_1"}, imagePart},
+			wantContent: "[image] [file]",
+			wantMedia:   []string{dto.ContentTypeImageURL, dto.ContentTypeFile, dto.ContentTypeImageURL},
+		},
+		{
+			name: "text parts join with newline",
+			output: []any{
+				map[string]any{"type": "input_text", "text": "first"},
+				map[string]any{"type": "output_text", "text": ""},
+				map[string]any{"type": "text", "text": "second"},
+			},
+			wantContent: "first\nsecond",
+		},
+		{
+			name:        "string passes through",
+			output:      "done",
+			wantContent: "done",
+		},
+		{
+			name:        "object stays json",
+			output:      map[string]any{"ok": true},
+			wantContent: `{"ok":true}`,
+			jsonContent: true,
+		},
+		{
+			name:        "plain array stays json",
+			output:      []any{1, 2},
+			wantContent: `[1,2]`,
+			jsonContent: true,
+		},
+		{
+			name:        "unknown part keeps whole array",
+			output:      []any{imagePart, map[string]any{"type": "refusal", "refusal": "no"}},
+			wantContent: `[{"type":"input_image","image_url":"` + dataURL + `"},{"type":"refusal","refusal":"no"}]`,
+			jsonContent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+				Model: "gpt-test",
+				Input: mustRawMessage(t, []map[string]any{
+					{"type": "function_call", "call_id": "call_1", "name": "view_image", "arguments": "{}"},
+					{"type": "function_call_output", "call_id": "call_1", "output": tt.output},
+					{"role": "user", "content": "next"},
+				}),
+			})
+			require.NoError(t, err)
+
+			wantLen := 3
+			if tt.wantMedia != nil {
+				wantLen = 4
+			}
+			require.Len(t, got.Messages, wantLen)
+			assert.Equal(t, "tool", got.Messages[1].Role)
+			assert.Equal(t, "call_1", got.Messages[1].ToolCallId)
+			if tt.jsonContent {
+				assert.JSONEq(t, tt.wantContent, got.Messages[1].StringContent())
+			} else {
+				assert.Equal(t, tt.wantContent, got.Messages[1].StringContent())
+			}
+			assert.Equal(t, dto.Message{Role: "user", Content: "next"}, got.Messages[wantLen-1])
+			if tt.wantMedia == nil {
+				return
+			}
+
+			assert.Equal(t, "user", got.Messages[2].Role)
+			parts := got.Messages[2].ParseContent()
+			require.Len(t, parts, len(tt.wantMedia))
+			for i, wantType := range tt.wantMedia {
+				assert.Equal(t, wantType, parts[i].Type)
+			}
+			require.NotNil(t, parts[0].GetImageMedia())
+			assert.Equal(t, dataURL, parts[0].GetImageMedia().Url)
+		})
+	}
+}
+
+func TestResponsesRequestToChatCompletionsRequestHoistsToolOutputMediaAfterToolBatch(t *testing.T) {
+	const dataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	imageOutput := []any{map[string]any{"type": "input_image", "image_url": dataURL}}
+
+	t.Run("parallel outputs stay contiguous", func(t *testing.T) {
+		got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+			Model: "gpt-test",
+			Input: mustRawMessage(t, []map[string]any{
+				{"type": "function_call", "call_id": "call_1", "name": "screenshot", "arguments": "{}"},
+				{"type": "function_call", "call_id": "call_2", "name": "read_file", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_1", "output": imageOutput},
+				{"type": "function_call_output", "call_id": "call_2", "output": "file contents"},
+				{"role": "user", "content": "what do you see?"},
+			}),
+		})
+		require.NoError(t, err)
+
+		require.Len(t, got.Messages, 5)
+		assert.Equal(t, "assistant", got.Messages[0].Role)
+		assert.Len(t, got.Messages[0].ParseToolCalls(), 2)
+		assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_1", Content: "[image]"}, got.Messages[1])
+		assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_2", Content: "file contents"}, got.Messages[2])
+		assert.Equal(t, "user", got.Messages[3].Role)
+		parts := got.Messages[3].ParseContent()
+		require.Len(t, parts, 1)
+		assert.Equal(t, dto.ContentTypeImageURL, parts[0].Type)
+		assert.Equal(t, dto.Message{Role: "user", Content: "what do you see?"}, got.Messages[4])
+	})
+
+	t.Run("custom tool outputs stay in the same batch", func(t *testing.T) {
+		got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+			Model: "gpt-test",
+			Input: mustRawMessage(t, []map[string]any{
+				{"type": "function_call", "call_id": "call_1", "name": "screenshot", "arguments": "{}"},
+				{"type": "custom_tool_call", "call_id": "call_2", "name": "exec", "input": "ls"},
+				{"type": "function_call_output", "call_id": "call_1", "output": imageOutput},
+				{"type": "custom_tool_call_output", "call_id": "call_2", "output": "file.txt"},
+			}),
+		})
+		require.NoError(t, err)
+
+		require.Len(t, got.Messages, 4)
+		assert.Len(t, got.Messages[0].ParseToolCalls(), 2)
+		assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_1", Content: "[image]"}, got.Messages[1])
+		assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_2", Content: "file.txt"}, got.Messages[2])
+		assert.Equal(t, "user", got.Messages[3].Role)
+	})
+
+	t.Run("trailing output flushes media at end of input", func(t *testing.T) {
+		got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), &dto.OpenAIResponsesRequest{
+			Model: "gpt-test",
+			Input: mustRawMessage(t, []map[string]any{
+				{"type": "function_call", "call_id": "call_1", "name": "screenshot", "arguments": "{}"},
+				{"type": "function_call_output", "call_id": "call_1", "output": imageOutput},
+			}),
+		})
+		require.NoError(t, err)
+
+		require.Len(t, got.Messages, 3)
+		assert.Equal(t, dto.Message{Role: "tool", ToolCallId: "call_1", Content: "[image]"}, got.Messages[1])
+		assert.Equal(t, "user", got.Messages[2].Role)
+		parts := got.Messages[2].ParseContent()
+		require.Len(t, parts, 1)
+		require.NotNil(t, parts[0].GetImageMedia())
+		assert.Equal(t, dataURL, parts[0].GetImageMedia().Url)
+	})
+}
+
+func mustRawMessage(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := kitutil.Marshal(value)
+	require.NoError(t, err)
+	return raw
 }

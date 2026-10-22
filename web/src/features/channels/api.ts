@@ -21,6 +21,8 @@ import { api, type ApiRequestConfig } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { TaskPluginModelDiscovery } from '../task-plugins/types'
+import type { PriorityMove, PriorityOrder } from './lib/channel-priority-order'
+import type { InferenceStatus } from './lib/inference-status'
 import type {
   AddChannelRequest,
   BatchDeleteParams,
@@ -50,6 +52,36 @@ const channelActionConfig = (
   skipErrorHandler: true,
 })
 
+export async function getChannelPriorityOrder(): Promise<PriorityOrder> {
+  const response = await api.get<{ success: boolean; data: PriorityOrder }>(
+    '/api/channel/priority/order',
+    { disableDuplicate: true }
+  )
+  return requireServerSuccess(response.data).data
+}
+
+export async function reorderChannelPriority(
+  move: PriorityMove
+): Promise<PriorityOrder> {
+  const response = await api.post<{ success: boolean; data: PriorityOrder }>(
+    '/api/channel/priority/reorder',
+    move
+  )
+  return requireServerSuccess(response.data).data
+}
+
+export async function getInferenceStatus(
+  channelId: number,
+  provider: 'vllm' | 'sglang',
+  signal?: AbortSignal
+): Promise<InferenceStatus> {
+  const response = await api.get<{ success: boolean; data: InferenceStatus }>(
+    `/api/channel/${channelId}/${provider}/status`,
+    { signal, disableDuplicate: true }
+  )
+  return requireServerSuccess(response.data).data
+}
+
 export type TaskPluginOption = {
   sortPriority?: number
   website?: string
@@ -64,6 +96,7 @@ export type TaskPluginOption = {
   /** 插件建议的公开别名；模型目录响应决定本次可导入范围。 */
   modelAliases?: Record<string, string>
   channelTypes?: number[] | null
+  upstreams?: string[] | null
 }
 
 export async function getTaskPluginOptions(): Promise<TaskPluginOption[]> {
@@ -134,9 +167,24 @@ export async function getChannel(id: number): Promise<GetChannelResponse> {
 /**
  * Get channel operations summary for administrators
  */
-export async function getChannelOps(): Promise<ChannelOpsResponse> {
-  const res = await api.get('/api/channel/ops', channelActionConfig())
+export async function getChannelOps(
+  autoBan?: boolean
+): Promise<ChannelOpsResponse> {
+  const res = await api.get('/api/channel/ops', {
+    ...channelActionConfig(),
+    params: autoBan === undefined ? undefined : { auto_ban: autoBan },
+  })
   return res.data
+}
+
+export async function getChannelDefaultBaseURLs(): Promise<
+  Partial<Record<number, string>>
+> {
+  const response = await api.get<{
+    success: boolean
+    data: Partial<Record<number, string>>
+  }>('/api/channel/default_base_urls')
+  return requireServerSuccess(response.data).data
 }
 
 /**

@@ -35,10 +35,10 @@ const modelTypes = {
 test('new plugin models retain exact upstream IDs and metadata in the saved setting', () => {
   const form = channelFormSchema.parse({
     ...CHANNEL_FORM_DEFAULT_VALUES,
-    name: 'Image2Pro',
+    name: 'Mixed media plugin',
     type: 61,
-    task_plugin_key: 'image2pro',
-    base_url: 'https://image2pro.example',
+    task_plugin_key: 'mixed-media',
+    base_url: 'https://mixed-media.example',
     models: Object.keys(modelTypes).join(','),
     task_plugin_model_types: modelTypes,
   })
@@ -51,7 +51,7 @@ test('new plugin models retain exact upstream IDs and metadata in the saved sett
 test('editing a plugin preserves model types and unknown administrator settings', () => {
   const channel = channelSchema.parse({
     id: 42,
-    name: 'Image2Pro',
+    name: 'Mixed media plugin',
     type: 61,
     key: '',
     status: 1,
@@ -62,7 +62,7 @@ test('editing a plugin preserves model types and unknown administrator settings'
     models: Object.keys(modelTypes).join(','),
     group: 'default',
     setting: JSON.stringify({
-      task_plugin_key: 'image2pro',
+      task_plugin_key: 'mixed-media',
       task_plugin_model_types: modelTypes,
       administrator_option: { enabled: true },
       http_protocol: 'http1',
@@ -84,7 +84,7 @@ test('switching from a plugin to a built-in channel removes saved plugin type me
       ...CHANNEL_FORM_DEFAULT_VALUES,
       type: 1,
       setting: JSON.stringify({
-        task_plugin_key: 'image2pro',
+        task_plugin_key: 'mixed-media',
         task_plugin_model_types: modelTypes,
         administrator_option: true,
       }),
