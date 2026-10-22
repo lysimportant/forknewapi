@@ -127,21 +127,37 @@ type ModelDiscovery struct {
 	TypePrefixes map[string]string `json:"typePrefixes,omitempty"` // 按模型类型声明的 ID 前缀；仅渠道路由模式支持。
 }
 
-// UsageProfile replaces the plugin's default usage metadata for its models.
+// UsageProfile replaces the plugin's default usage metadata for its models or
+// explicitly identified channel model types.
 type UsageProfile struct {
-	Models   []string                    `json:"models"`
-	Schema   map[string]UsageFieldSchema `json:"schema"`
-	Examples []UsageExample              `json:"examples,omitempty"`
+	Models     []string                    `json:"models,omitempty"`
+	ModelTypes []string                    `json:"modelTypes,omitempty"`
+	Schema     map[string]UsageFieldSchema `json:"schema"`
+	Examples   []UsageExample              `json:"examples,omitempty"`
 }
 
 // UsageForModel returns read-only usage metadata for a declared model. Aliases
 // must be resolved by the host first; an unknown or ambiguous model uses the
 // plugin defaults. Profile examples never inherit the default examples.
 func (m Meta) UsageForModel(model string) (map[string]UsageFieldSchema, []UsageExample) {
+	return m.UsageForModelType(model, "")
+}
+
+// UsageForModelType first selects a declared model profile, then a channel model
+// type profile when the host supplies an unambiguous image or video type. It
+// never infers a type from the model name; unmatched models keep the defaults.
+func (m Meta) UsageForModelType(model, modelType string) (map[string]UsageFieldSchema, []UsageExample) {
 	folded := asciiFold(model)
 	for _, profile := range m.UsageProfiles {
 		for _, declared := range profile.Models {
 			if asciiFold(declared) == folded {
+				return profile.Schema, profile.Examples
+			}
+		}
+	}
+	if m.ModelRouting == "channel" && (modelType == "image" || modelType == "video") {
+		for _, profile := range m.UsageProfiles {
+			if slices.Contains(profile.ModelTypes, modelType) {
 				return profile.Schema, profile.Examples
 			}
 		}
@@ -879,6 +895,7 @@ func cloneMeta(meta Meta) Meta {
 	for index := range meta.UsageProfiles {
 		profile := &meta.UsageProfiles[index]
 		profile.Models = append([]string(nil), profile.Models...)
+		profile.ModelTypes = slices.Clone(profile.ModelTypes)
 		profile.Schema = CloneUsageSchema(profile.Schema)
 		profile.Examples = CloneUsageExamples(profile.Examples)
 	}
@@ -1655,9 +1672,13 @@ func normalizeV1Meta(meta *Meta) error {
 		return err
 	}
 	profileModels := make(map[string]struct{})
+	profileTypes := make(map[string]struct{})
 	for index, profile := range meta.UsageProfiles {
-		if len(profile.Models) == 0 {
-			return fmt.Errorf("plugin meta usageProfiles[%d] models must contain at least one model", index)
+		if len(profile.Models) == 0 && len(profile.ModelTypes) == 0 {
+			return fmt.Errorf("plugin meta usageProfiles[%d] models or modelTypes must contain at least one model or model type", index)
+		}
+		if profile.ModelTypes != nil && meta.ModelRouting != "channel" {
+			return fmt.Errorf("plugin meta usageProfiles[%d] modelTypes require modelRouting channel", index)
 		}
 		if err := validateModelScope(profile.Models, fmt.Sprintf("usageProfiles[%d]", index)); err != nil {
 			return err
@@ -1670,6 +1691,15 @@ func normalizeV1Meta(meta *Meta) error {
 				return fmt.Errorf("plugin meta usageProfiles model %q belongs to multiple profiles", model)
 			}
 			profileModels[model] = struct{}{}
+		}
+		for _, modelType := range profile.ModelTypes {
+			if modelType != "image" && modelType != "video" {
+				return fmt.Errorf("plugin meta usageProfiles[%d] modelTypes may contain only image and video", index)
+			}
+			if _, duplicate := profileTypes[modelType]; duplicate {
+				return fmt.Errorf("plugin meta usageProfiles modelType %q belongs to multiple profiles or is repeated", modelType)
+			}
+			profileTypes[modelType] = struct{}{}
 		}
 		if profile.Schema == nil {
 			return fmt.Errorf("plugin meta usageProfiles[%d] schema must be an object", index)
@@ -1708,7 +1738,7 @@ func decodeUsageProfiles(value any) ([]UsageProfile, error) {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d] must be an object", index)
 		}
 		for key := range object {
-			if key != "models" && key != "schema" && key != "examples" {
+			if key != "models" && key != "modelTypes" && key != "schema" && key != "examples" {
 				return nil, fmt.Errorf("plugin meta usageProfiles[%d] has unknown field %q", index, key)
 			}
 		}
@@ -1716,11 +1746,18 @@ func decodeUsageProfiles(value any) ([]UsageProfile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
 		}
+		var modelTypes []string
+		if _, exists := object["modelTypes"]; exists {
+			modelTypes, err = strictStringSlice(object, "modelTypes")
+			if err != nil {
+				return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
+			}
+		}
 		schema, err := decodeUsageSchema(object["schema"])
 		if err != nil {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
 		}
-		profile := UsageProfile{Models: models, Schema: schema}
+		profile := UsageProfile{Models: models, ModelTypes: modelTypes, Schema: schema}
 		if examples, exists := object["examples"]; exists {
 			profile.Examples, err = decodeUsageExamples(examples)
 			if err != nil {

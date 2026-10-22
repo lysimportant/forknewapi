@@ -378,7 +378,14 @@ func TestImage2ProBillingLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
-	assert.Equal(t, "2.4.1", plugin.Meta.Version)
+	assert.Equal(t, "2.4.2", plugin.Meta.Version)
+	imageSchema, imageExamples := plugin.Meta.UsageForModelType("future-catalog-image", "image")
+	require.Len(t, imageSchema, 1)
+	assert.Equal(t, "count", imageSchema["count"].Unit)
+	assert.Equal(t, "张", imageSchema["count"].UnitLabel["zh"])
+	assert.Empty(t, imageExamples)
+	unknownSchema, _ := plugin.Meta.UsageForModel("future-catalog-image")
+	assert.Contains(t, unknownSchema, "seconds", "missing directory types must preserve the default schema")
 	for _, tc := range []struct {
 		name, upstream, unit string
 		maximum              int

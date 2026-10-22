@@ -42,7 +42,7 @@
           ]}}
         }
       },
-      "else": {"properties": {"models": {"minItems": 1}}}
+      "else": {"properties": {"models": {"minItems": 1}, "usageProfiles": {"items": {"not": {"required": ["modelTypes"]}}}}}
     }
   ],
   "$defs": {
@@ -66,13 +66,18 @@
     "usageProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["models", "schema"],
+      "required": ["schema"],
+      "anyOf": [
+        {"required": ["models"], "properties": {"models": {"minItems": 1}}},
+        {"required": ["modelTypes"], "properties": {"modelTypes": {"minItems": 1}}}
+      ],
       "properties": {
-        "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "models": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "modelTypes": {"type": "array", "uniqueItems": true, "items": {"enum": ["image", "video"]}},
         "schema": {"type": "object", "additionalProperties": {"$ref": "#/$defs/usageField"}},
         "examples": {"type": "array", "maxItems": 16, "items": {"$ref": "#/properties/usageExamples/items"}}
       },
-      "description": "Complete usage metadata for declared models. The host validates model membership, unique profile ownership and examples, including required token-unit examples."
+      "description": "Complete usage metadata for declared models or explicit image/video channel model types. Declared models take precedence. The host validates channel-only type selectors, unique model/type profile ownership and examples, including required token-unit examples."
     },
     "usageField": {
       "type": "object",

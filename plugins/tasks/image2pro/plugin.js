@@ -103,7 +103,7 @@ export const meta = {
   key: "image2pro",
   name: "Image2Pro",
   icon: "text:I2P",
-  version: "2.4.1",
+  version: "2.4.2",
   author: { name: "lysimportant/forknewapi" },
   description: {
     en: "Image2Pro image and video generation with dynamic model discovery and reference audio",
@@ -146,6 +146,7 @@ export const meta = {
     },
     {
       models: IMAGE_MODELS,
+      modelTypes: ["image"],
       schema: {
         count: {
           type: "number",

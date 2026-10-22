@@ -388,20 +388,11 @@ func updatePricing() {
 		// A task plugin may declare an existing model with fixed request pricing.
 		// Its usage metadata must not reclassify that price as task-usage billing.
 		usesFixedPricing := billingexpr.UsesFixedPricing(pricing.BillingExpr)
-		usageModel := model
-		plugin, ok := pluginGeneration.GetByModel(model)
-		if !ok {
-			if target, resolved := ResolveTaskModelAlias(pluginGeneration, model); resolved {
-				plugin, ok = pluginGeneration.Get(target.PluginKey)
-				usageModel = target.Declared
-			}
+		if _, usage, ok := taskPricingUsage(pluginGeneration, model); ok && !usesFixedPricing {
+			pricing.BillingUsageSchema = jsplugin.CloneUsageSchema(usage.schema)
+			pricing.BillingUsageExamples = jsplugin.CloneUsageExamples(usage.examples)
 		}
-		if ok && plugin != nil && !usesFixedPricing {
-			usageSchema, usageExamples := plugin.Meta.UsageForModel(usageModel)
-			pricing.BillingUsageSchema = jsplugin.CloneUsageSchema(usageSchema)
-			pricing.BillingUsageExamples = jsplugin.CloneUsageExamples(usageExamples)
-		}
-		providers := pluginGeneration.PluginsByModel(model)
+		providers := taskPricingPlugins(pluginGeneration, model)
 		hasProviderOverride := false
 		for _, provider := range providers {
 			if _, configured := billing_setting.GetPluginBillingExpr(provider.Meta.Key, model); configured {
@@ -411,7 +402,8 @@ func updatePricing() {
 		}
 		if hasProviderOverride || (!usesFixedPricing && len(providers) >= 2 && pricing.BillingMode == billing_setting.BillingModeTieredExpr) {
 			for _, provider := range providers {
-				schema, examples := provider.Meta.UsageForModel(model)
+				usage := taskPricingProviderUsage(pluginGeneration, model, provider)
+				schema, examples := usage.schema, usage.examples
 				if schema == nil {
 					schema = map[string]jsplugin.UsageFieldSchema{}
 				}
@@ -420,7 +412,7 @@ func updatePricing() {
 				if hasExpression || billing_setting.GetBillingMode(model) == billing_setting.BillingModeTieredExpr {
 					mode = billing_setting.BillingModeTieredExpr
 				}
-				if mode == billing_setting.BillingModeTieredExpr && !billing_setting.TaskExprCompatible(expression, schema) {
+				if mode == billing_setting.BillingModeTieredExpr && !billing_setting.TaskExprCompatible(expression, taskPricingValidationSchema(pluginGeneration, model, provider)) {
 					expression = ""
 				}
 				pricing.BillingPluginVariants = append(pricing.BillingPluginVariants, PricingPluginVariant{

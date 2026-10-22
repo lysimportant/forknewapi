@@ -1501,6 +1501,88 @@ usageProfiles: [{models:["image"], schema:{tokens:{type:"number", unit:"token"}}
 	require.ErrorContains(t, ValidateV1Meta(plugin.Meta), "schema must be an object")
 }
 
+func TestRegistryUsageProfilesByModelType(t *testing.T) {
+	source := routingTestPluginSource("usage-types", 0, `["specific"]`, `
+modelRouting: "channel", protocols: ["openai_video"],
+usageSchema: {requests: {type: "number", unit: "count"}},
+usageExamples: [{label: "default", facts: {requests: 1}}],
+usageProfiles: [
+  {modelTypes: ["image"], schema: {images: {type: "number", unit: "count", unitLabel: {en: "image", zh: "张"}}}},
+  {models: ["specific"], schema: {tokens: {type: "number", unit: "token"}}, examples: [{label: "specific", facts: {tokens: 10}}]},
+  {models: [], modelTypes: ["video"], schema: {seconds: {type: "number", unit: "second"}}, examples: [{label: "video", facts: {seconds: 5}}]}
+],`, routingProtocolExport("openai_video"))
+	registry := NewRegistry()
+	plugin, err := registry.Register(source, Options{})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, model, modelType, field, example string
+	}{
+		{"declared model wins over earlier type profile", "SPECIFIC", "image", "tokens", "specific"},
+		{"declared model without type", "specific", "", "tokens", "specific"},
+		{"dynamic image", "future-image", "image", "images", ""},
+		{"dynamic video", "future-video", "video", "seconds", "video"},
+		{"type not inferred from name", "image-future", "", "requests", "default"},
+		{"unsupported type", "future-audio", "audio", "requests", "default"},
+		{"type must be explicit and canonical", "future-image", "IMAGE", "requests", "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema, examples := plugin.Meta.UsageForModelType(tc.model, tc.modelType)
+			require.Len(t, schema, 1)
+			assert.Contains(t, schema, tc.field)
+			if tc.example == "" {
+				assert.Empty(t, examples, "type profiles must not inherit default examples")
+			} else {
+				require.Len(t, examples, 1)
+				assert.Equal(t, tc.example, examples[0].Label)
+			}
+		})
+	}
+
+	legacySchema, legacyExamples := plugin.Meta.UsageForModel("future-image")
+	assert.Equal(t, plugin.Meta.UsageSchema, legacySchema, "the existing method must not apply type profiles")
+	assert.Equal(t, plugin.Meta.UsageExamples, legacyExamples)
+	withoutChannel := plugin.Meta
+	withoutChannel.ModelRouting = ""
+	schema, _ := withoutChannel.UsageForModelType("future-image", "image")
+	assert.Equal(t, withoutChannel.UsageSchema, schema, "type fallback is channel-only")
+
+	snapshot := registry.Snapshot()
+	require.Len(t, snapshot.Override, 1)
+	snapshot.Override[0].UsageProfiles[0].ModelTypes[0] = "video"
+	snapshot.Override[0].UsageProfiles[0].Schema["images"].UnitLabel["zh"] = "changed"
+	schema, _ = registry.Snapshot().Override[0].UsageForModelType("future-image", "image")
+	require.Contains(t, schema, "images", "snapshot model type mutations must not change the registry")
+	assert.Equal(t, "张", schema["images"].UnitLabel["zh"])
+}
+
+func TestRegistryRejectsInvalidUsageProfileModelTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name, routing, profiles, errorText string
+	}{
+		{"nonchannel", "", `[{models:["known"], modelTypes:["image"], schema:{}}]`, "require modelRouting channel"},
+		{"nonchannel empty type list", "", `[{models:["known"], modelTypes:[], schema:{}}]`, "require modelRouting channel"},
+		{"null type list", "channel", `[{modelTypes:null, schema:{}}]`, "modelTypes must be an array of strings"},
+		{"nonarray type list", "channel", `[{modelTypes:"image", schema:{}}]`, "modelTypes must be an array of strings"},
+		{"nonstring type", "channel", `[{modelTypes:[1], schema:{}}]`, "modelTypes must be an array of strings"},
+		{"empty selectors", "channel", `[{models:[], modelTypes:[], schema:{}}]`, "at least one model or model type"},
+		{"unsupported type", "channel", `[{modelTypes:["audio"], schema:{}}]`, "only image and video"},
+		{"noncanonical type", "channel", `[{modelTypes:["Image"], schema:{}}]`, "only image and video"},
+		{"duplicate type", "channel", `[{modelTypes:["image","image"], schema:{}}]`, "multiple profiles or is repeated"},
+		{"overlapping types", "channel", `[{modelTypes:["image"], schema:{}}, {modelTypes:["image"], schema:{}}]`, "multiple profiles or is repeated"},
+		{"type profile needs schema", "channel", `[{modelTypes:["image"]}]`, "must be an object"},
+		{"type tokens need own examples", "channel", `[{modelTypes:["image"], schema:{tokens:{type:"number", unit:"token"}}}]`, "usageExamples is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := `protocols:["openai_video"], usageProfiles:` + tc.profiles + `,`
+			if tc.routing != "" {
+				fields = `modelRouting:"` + tc.routing + `",` + fields
+			}
+			_, err := CompilePlugin(routingTestPluginSource("invalid-usage-types", 0, `["known"]`, fields, routingProtocolExport("openai_video")), Options{})
+			require.ErrorContains(t, err, tc.errorText)
+		})
+	}
+}
+
 func TestSubmitResponseTypesContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, metadata, hook string

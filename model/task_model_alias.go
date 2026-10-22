@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,10 +24,82 @@ type TaskAliasTarget struct {
 }
 
 type taskAliasView struct {
-	generation uint64
-	expiresAt  time.Time
-	byExact    map[string]TaskAliasTarget
-	byFold     map[string]TaskAliasTarget
+	generation   uint64
+	expiresAt    time.Time
+	byExact      map[string]TaskAliasTarget
+	byFold       map[string]TaskAliasTarget
+	usageByExact map[string]taskAliasUsage
+}
+
+type taskAliasUsage struct {
+	schema   map[string]jsplugin.UsageFieldSchema
+	examples []jsplugin.UsageExample
+}
+
+// taskPricingUsage resolves display metadata without changing the routing
+// target. Channel-scoped targets intentionally have no global Declared model.
+func taskPricingUsage(g *jsplugin.RoutingGeneration, name string) (*jsplugin.LoadedPlugin, taskAliasUsage, bool) {
+	if plugin, ok := g.GetByModel(name); ok {
+		schema, examples := plugin.Meta.UsageForModel(name)
+		return plugin, taskAliasUsage{schema, examples}, true
+	}
+	target, ok := ResolveTaskModelAlias(g, name)
+	if !ok {
+		return nil, taskAliasUsage{}, false
+	}
+	plugin, ok := g.Get(target.PluginKey)
+	if !ok {
+		return nil, taskAliasUsage{}, false
+	}
+	if target.ChannelScoped {
+		if view := loadFreshTaskAliasView(g); view != nil {
+			if usage, found := view.usageByExact[name]; found {
+				return plugin, usage, true
+			}
+		}
+	}
+	schema, examples := plugin.Meta.UsageForModel(target.Declared)
+	return plugin, taskAliasUsage{schema, examples}, true
+}
+
+func taskPricingPlugins(g *jsplugin.RoutingGeneration, name string) []*jsplugin.LoadedPlugin {
+	providers := g.PluginsByModel(name)
+	if len(providers) > 0 {
+		return providers
+	}
+	if target, ok := ResolveTaskModelAlias(g, name); ok && target.ChannelScoped {
+		if plugin, ok := g.Get(target.PluginKey); ok {
+			return []*jsplugin.LoadedPlugin{plugin}
+		}
+	}
+	return nil
+}
+
+func taskPricingProviderUsage(g *jsplugin.RoutingGeneration, name string, provider *jsplugin.LoadedPlugin) taskAliasUsage {
+	if plugin, usage, ok := taskPricingUsage(g, name); ok && plugin.Meta.Key == provider.Meta.Key {
+		return usage
+	}
+	schema, examples := provider.Meta.UsageForModel(name)
+	return taskAliasUsage{schema, examples}
+}
+
+// Keep the channel plugin's existing billing fields for saved expressions,
+// including harmless legacy fields such as seconds*0, while allowing fields
+// introduced by its selected profile. This must not rewrite stored prices.
+func taskPricingValidationSchema(g *jsplugin.RoutingGeneration, name string, provider *jsplugin.LoadedPlugin) map[string]jsplugin.UsageFieldSchema {
+	if target, ok := ResolveTaskModelAlias(g, name); ok && target.ChannelScoped && target.PluginKey == provider.Meta.Key {
+		schema := jsplugin.CloneUsageSchema(provider.Meta.UsageSchema)
+		if schema == nil {
+			schema = make(map[string]jsplugin.UsageFieldSchema)
+		}
+		usage := taskPricingProviderUsage(g, name, provider)
+		for key, field := range usage.schema {
+			schema[key] = field
+		}
+		return schema
+	}
+	schema, _ := provider.Meta.UsageForModel(name)
+	return schema
 }
 
 const taskAliasViewTTL = 60 * time.Second
@@ -84,6 +157,7 @@ type taskAliasDraft struct {
 	spellings     []string
 	byPlugin      map[string]map[string]struct{}
 	channelScoped bool
+	usageByExact  map[string][]taskAliasUsage
 }
 
 func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
@@ -92,10 +166,11 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 		genNum = generation.Number
 	}
 	view := &taskAliasView{
-		generation: genNum,
-		expiresAt:  time.Now().Add(taskAliasViewTTL),
-		byExact:    make(map[string]TaskAliasTarget),
-		byFold:     make(map[string]TaskAliasTarget),
+		generation:   genNum,
+		expiresAt:    time.Now().Add(taskAliasViewTTL),
+		byExact:      make(map[string]TaskAliasTarget),
+		byFold:       make(map[string]TaskAliasTarget),
+		usageByExact: make(map[string]taskAliasUsage),
 	}
 	if DB == nil {
 		return view
@@ -114,8 +189,8 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 	for i := range channels {
 		channel := &channels[i]
 		var channelPlugin *jsplugin.LoadedPlugin
+		var setting dto.ChannelSettings
 		if channel.Type == constant.ChannelTypeTaskPlugin && channel.Setting != nil && *channel.Setting != "" {
-			var setting dto.ChannelSettings
 			// GetSetting 在解析失败时保存渠道；这里只加载部分列，必须保持只读。
 			if err := common.UnmarshalJsonStr(*channel.Setting, &setting); err != nil {
 				common.SysError(fmt.Sprintf("task alias view: channel %d invalid setting JSON (%T)", channel.Id, err))
@@ -168,7 +243,7 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 			fold := jsplugin.ASCIIFold(alias)
 			draft := drafts[fold]
 			if draft == nil {
-				draft = &taskAliasDraft{byPlugin: make(map[string]map[string]struct{})}
+				draft = &taskAliasDraft{byPlugin: make(map[string]map[string]struct{}), usageByExact: make(map[string][]taskAliasUsage)}
 				drafts[fold] = draft
 			}
 			draft.spellings = append(draft.spellings, alias)
@@ -179,6 +254,11 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 				draft.byPlugin[plugin.Meta.Key] = declareds
 			}
 			declareds[declared] = struct{}{}
+			if channelPlugin != nil {
+				modelType := TaskPluginModelType(channelPlugin, setting, tail)
+				schema, examples := channelPlugin.Meta.UsageForModelType(tail, modelType)
+				draft.usageByExact[alias] = append(draft.usageByExact[alias], taskAliasUsage{schema, examples})
+			}
 		}
 	}
 
@@ -216,6 +296,17 @@ func buildTaskAliasView(generation *jsplugin.RoutingGeneration) *taskAliasView {
 			for _, spelling := range draft.spellings {
 				target.Alias = spelling
 				view.byExact[spelling] = target
+				if usages := draft.usageByExact[spelling]; len(usages) > 0 {
+					usage := usages[0]
+					for _, other := range usages[1:] {
+						if !reflect.DeepEqual(usage, other) {
+							plugin, _ := generation.Get(pluginKey)
+							usage = taskAliasUsage{plugin.Meta.UsageSchema, plugin.Meta.UsageExamples}
+							break
+						}
+					}
+					view.usageByExact[spelling] = usage
+				}
 			}
 		} else {
 			view.byFold[jsplugin.ASCIIFold(alias)] = target

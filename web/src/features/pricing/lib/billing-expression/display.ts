@@ -397,6 +397,8 @@ function taskTier(
       return null
     }
     const field = term.left.args[0].value
+    const price = nonnegativePriceLiteral(term.right) ?? 0
+    if (!Object.hasOwn(schema, field) && price === 0) continue
     const definition = schema[field]
     if (
       definition?.type !== 'number' ||
@@ -406,7 +408,7 @@ function taskTier(
       return null
     }
     if ((definition.unit === 'token') !== scaled) return null
-    unitPrices[field] = nonnegativePriceLiteral(term.right) ?? 0
+    unitPrices[field] = price
   }
   if (Object.keys(unitPrices).length === 0) return null
   return { label: node.args[0].value, conditions, constant, unitPrices }
