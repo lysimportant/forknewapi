@@ -2,7 +2,7 @@
 export const meta = {
   apiVersion: 1,
   key: "seedance-video",
-  name: "Seedance Unified Video",
+  name: "纵横video",
   description: {
     en: "Seedance video generation through the unified video API",
     zh: "通过统一视频 API 对接 Seedance 视频生成",

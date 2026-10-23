@@ -65,6 +65,7 @@ type canvasInputMedium struct {
 // canvasVideoInputProfile 保存已适配的公开别名和参考能力；unlimited 表示 Canvas 不在桥接层执行数量限制。
 type canvasVideoInputProfile struct {
 	alias                         string
+	adapter                       string
 	images, videos, audios, total int
 	unlimited                     bool
 }
@@ -592,7 +593,7 @@ func canvasYuanModel(name string) bool {
 // canvasInputMediaProfile 返回所有可执行且已定价路由的参考能力交集；未知插件、映射或公开身份失败关闭。
 func canvasInputMediaProfile(name string, profile canvasProfile, candidates []canvasCandidate) (canvasVideoInputProfile, bool) {
 	var result canvasVideoInputProfile
-	if profile.Contract != "newapi-video-v1" || (name != "MiniMax-H3" && name != "Minimax-H3" && !canvasYuanModel(name)) {
+	if profile.Contract != "newapi-video-v1" {
 		return result, false
 	}
 	matched := false
@@ -604,7 +605,10 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 			return canvasVideoInputProfile{}, false
 		}
 		var input canvasVideoInputProfile
-		if name == "MiniMax-H3" {
+		if candidate.Plugin.Meta.Key == "seedance-video" {
+			// 用户配置的渠道默认能力；numbered-media 是客户端编号合同，不代表供应商验证。
+			input = canvasVideoInputProfile{adapter: "seedance-video", images: 30, videos: 10, audios: 10, total: 50}
+		} else if name == "MiniMax-H3" {
 			if candidate.Plugin.Meta.Key != "hailuo" || !slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
 				return canvasVideoInputProfile{}, false
 			}
@@ -615,6 +619,9 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 			}
 			input = canvasVideoInputProfile{unlimited: true}
 		} else {
+			if !canvasYuanModel(name) {
+				return canvasVideoInputProfile{}, false
+			}
 			var known bool
 			input, known = canvasYuanVideoInputs[candidate.UpstreamModel]
 			if candidate.Plugin.Meta.Key != "yuanliu" || !known {
@@ -622,6 +629,9 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 			}
 		}
 		if matched {
+			if result.adapter != input.adapter {
+				return canvasVideoInputProfile{}, false
+			}
 			result.images = min(result.images, input.images)
 			result.videos = min(result.videos, input.videos)
 			result.audios = min(result.audios, input.audios)
@@ -694,6 +704,12 @@ func GetCanvasCatalog(c *gin.Context) {
 			item.MediaType, item.Contract = profile.MediaType, profile.Contract
 			item.InputMediaTypes = canvasInputMediaTypes(name, profile, candidates)
 			item.Capabilities = map[string]any{"mediaTypes": []string{profile.MediaType}, "mentionMediaTypes": item.InputMediaTypes}
+			if input, supported := canvasInputMediaProfile(name, profile, candidates); supported && input.adapter == "seedance-video" {
+				item.Capabilities["videoReferences"] = map[string]any{
+					"version": 1, "adapter": input.adapter, "maxImages": input.images,
+					"maxVideos": input.videos, "maxAudios": input.audios, "tokenSyntax": "numbered-media",
+				}
+			}
 			if profile.MediaType == "image" && canvasReferenceImagesRequirePublicURL(name, profile, candidates) {
 				// 声明参考图传输方式，画布据此签发公网 URL 并改用 JSON edits 提交。
 				item.Capabilities["referenceImages"] = "public-url"
@@ -771,9 +787,9 @@ func canvasEstimateBody(c *gin.Context) (canvasEstimateRequest, canvasProfile, e
 			counts[mediaType]++
 			counts[role]++
 		}
-		if request.Model != "Minimax-H3" && !yuanModel && ((counts["image"] > 9 || counts["video"] > 3 || counts["audio"] > 3) ||
-			counts["first_frame"] > 1 || counts["last_frame"] > 1) {
-			return request, canvasProfile{}, errors.New("媒体输入超过数量限制：图片 9 张、视频 3 段、音频 3 段，首尾帧各 1 张")
+		// 素材数量由授权渠道的共同能力校验，不能按任意模型别名套用 H3 的 9/3/3 限制。
+		if request.Model != "Minimax-H3" && !yuanModel && (counts["first_frame"] > 1 || counts["last_frame"] > 1) {
+			return request, canvasProfile{}, errors.New("首尾帧各最多 1 张")
 		}
 		if request.Model != "Minimax-H3" && counts["first_frame"]+counts["last_frame"] > 0 &&
 			counts["reference_image"]+counts["reference_video"]+counts["reference_audio"] > 0 {
