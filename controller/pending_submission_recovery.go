@@ -23,6 +23,15 @@ import (
 
 const pendingSubmissionRecoveryInterval = time.Minute
 
+// pendingSubmissionInFlightGrace protects live submissions from the recovery
+// loop. A submission row stays "pending" until the provider response is
+// finalized, and a provider may legitimately take tens of seconds to accept a
+// task. Replaying the persisted body while the original request is still in
+// flight creates a duplicate upstream task and a duplicate charge, so only
+// submissions that have been pending longer than this grace period are
+// treated as crash leftovers.
+const pendingSubmissionInFlightGrace = 5 * time.Minute
+
 // StartPendingTaskRecovery continuously repairs the crash window between a
 // provider accepting a task and the normal task row being finalized.
 func StartPendingTaskRecovery(ctx context.Context) {
@@ -87,7 +96,13 @@ func claimPendingSubmission(id int64) (*model.Task, bool, error) {
 			return nil
 		}
 		now := time.Now().UnixMilli()
-		if submission.Status == model.TaskSubmissionRecovering && submission.UpdatedAt >= now-5*60*1000 {
+		recoverAfter := now - pendingSubmissionInFlightGrace.Milliseconds()
+		if submission.Status == model.TaskSubmissionRecovering && submission.UpdatedAt >= recoverAfter {
+			return nil
+		}
+		if submission.Status == model.TaskSubmissionPending && submission.UpdatedAt > recoverAfter {
+			// The original request may still be in flight; only replay a
+			// pending submission once no live request can own it any more.
 			return nil
 		}
 		if submission.Status != model.TaskSubmissionPending && submission.Status != model.TaskSubmissionRecovering {
