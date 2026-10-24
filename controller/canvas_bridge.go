@@ -608,6 +608,10 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 		if candidate.Plugin.Meta.Key == "seedance-video" {
 			// 用户配置的渠道默认能力；numbered-media 是客户端编号合同，不代表供应商验证。
 			input = canvasVideoInputProfile{adapter: "seedance-video", images: 30, videos: 10, audios: 10, total: 50}
+		} else if candidate.Plugin.Meta.Key == "nskeven-video" {
+			// NSKeven 统一视频网关同样以 metadata.content + numbered-media 合同接收素材；
+			// 渠道默认能力按宽松上限发布，实际可用数量由各模型自己的开通说明约束。
+			input = canvasVideoInputProfile{adapter: "seedance-video", images: 30, videos: 10, audios: 10, total: 50}
 		} else if name == "MiniMax-H3" {
 			if candidate.Plugin.Meta.Key != "hailuo" || !slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
 				return canvasVideoInputProfile{}, false
