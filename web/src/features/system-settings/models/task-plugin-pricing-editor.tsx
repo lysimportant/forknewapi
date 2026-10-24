@@ -148,7 +148,10 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
       {props.variants.map((variant) => {
         const key = variant.plugin_key
         const usesUnifiedVideoPricing =
-          key === 'seedance-video' || key === 'yuanliu'
+          key === 'seedance-video' ||
+          key === 'yuanliu' ||
+          key === 'nskeven-video' ||
+          key === 'v6k-video'
         const UsagePricingEditor = usesUnifiedVideoPricing
           ? SeedanceUsagePricingEditor
           : TaskUsagePricingEditor
