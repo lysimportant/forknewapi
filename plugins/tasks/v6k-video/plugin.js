@@ -43,15 +43,23 @@ export const meta = {
       unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    video_resolution: {
+      enum: ["480p", "720p", "1080p", "4k"],
+      description: { en: "Output video resolution", zh: "输出视频分辨率" },
+    },
   },
   usageExamples: [
-    { label: "5 秒", facts: { count: 1, seconds: 5 } },
-    { label: "30 秒", facts: { count: 1, seconds: 30 } },
+    { label: "480p · 5 秒", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
+    { label: "720p · 5 秒", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
+    { label: "1080p · 5 秒", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
+    { label: "4k · 5 秒", facts: { count: 1, seconds: 5, video_resolution: "4k" } },
   ],
 };
 
 const MIN_SECONDS = 1;
 const MAX_SECONDS = 3600;
+/** 计费用量事实只使用四档规范清晰度；上游按模型可能写 720P/1080P 等。 */
+const RESOLUTIONS = ["480p", "720p", "1080p", "4k"];
 
 const REQUEST_FIELDS = new Set([
   "model",
@@ -279,6 +287,29 @@ function parseSize(value, field) {
   const text = trimmed(value);
   if (!/^[0-9]{2,5}x[0-9]{2,5}$/i.test(text)) fail(field + " must be a pixel size like 1280x720");
   return text;
+}
+
+/** 把上游分辨率写法归一到计费枚举；无法识别时返回空串（不写用量事实）。 */
+function resolutionFact(value) {
+  const text = trimmed(value).toLowerCase();
+  if (RESOLUTIONS.indexOf(text) >= 0) return text;
+  if (text === "2160p" || text === "2160") return "4k";
+  if (text === "1080" || text === "fhd") return "1080p";
+  if (text === "720" || text === "hd") return "720p";
+  if (text === "480" || text === "sd") return "480p";
+  return "";
+}
+
+/** 只提供像素尺寸的模型用短边归一到计费枚举。 */
+function resolutionFactFromSize(size) {
+  const match = /^([0-9]{2,5})x([0-9]{2,5})$/i.exec(trimmed(size));
+  if (!match) return "";
+  const shortEdge = Math.min(Number(match[1]), Number(match[2]));
+  if (shortEdge >= 2160) return "4k";
+  if (shortEdge >= 1080) return "1080p";
+  if (shortEdge >= 720) return "720p";
+  if (shortEdge >= 480) return "480p";
+  return "";
 }
 
 function mergeMetadataScalar(source, metadata, field) {
@@ -613,6 +644,13 @@ export function extractUsage(ctx) {
   }
   const facts = { count: 1 };
   if (parsed.seconds !== undefined) facts.seconds = parsed.seconds;
+  const resolution =
+    parsed.resolution !== undefined
+      ? resolutionFact(parsed.resolution)
+      : parsed.size !== undefined
+        ? resolutionFactFromSize(parsed.size)
+        : "";
+  if (resolution) facts.video_resolution = resolution;
   return facts;
 }
 

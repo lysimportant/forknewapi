@@ -61,6 +61,8 @@ func TestV6KVideoPluginContract(t *testing.T) {
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
 	assert.Equal(t, "视频生成单价", plugin.Meta.UsageSchema["count"].Description["zh"])
 	assert.Equal(t, "second", plugin.Meta.UsageSchema["seconds"].Unit)
+	assert.Equal(t, []string{"480p", "720p", "1080p", "4k"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
+	assert.Equal(t, "输出视频分辨率", plugin.Meta.UsageSchema["video_resolution"].Description["zh"])
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
 	for _, example := range plugin.Meta.UsageExamples {
 		assert.Len(t, example.Facts, len(plugin.Meta.UsageSchema))
@@ -321,6 +323,18 @@ func TestV6KVideoUsage(t *testing.T) {
 	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6)}, withSeconds)
 	withoutSeconds := v6kCallObject(t, plugin, "extractUsage", v6kSubmitContext("dola2.5", map[string]any{"prompt": "x"}))
 	assert.Equal(t, map[string]any{"count": float64(1)}, withoutSeconds)
+	withResolution := v6kCallObject(t, plugin, "extractUsage", v6kSubmitContext("dola2.5", map[string]any{
+		"prompt": "x", "duration": 6, "resolution": "720P",
+	}))
+	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "720p"}, withResolution)
+	withSizeOnly := v6kCallObject(t, plugin, "extractUsage", v6kSubmitContext("dola2.5", map[string]any{
+		"prompt": "x", "size": "1920x1080",
+	}))
+	assert.Equal(t, map[string]any{"count": float64(1), "video_resolution": "1080p"}, withSizeOnly)
+	unknownResolution := v6kCallObject(t, plugin, "extractUsage", v6kSubmitContext("dola2.5", map[string]any{
+		"prompt": "x", "resolution": "999p",
+	}))
+	assert.Equal(t, map[string]any{"count": float64(1)}, unknownResolution)
 	ratioContext := v6kSubmitContext("dola2.5", map[string]any{"prompt": "x"})
 	ratioContext["usagePurpose"] = "billing_ratios"
 	assert.Empty(t, v6kCallObject(t, plugin, "extractUsage", ratioContext))
