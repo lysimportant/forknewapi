@@ -71,6 +71,7 @@ const quotaSchema = z.object({
     pre_consume_multiplier: z.coerce
       .number({ error: () => i18next.t('Please enter a valid number') })
       .positive({ error: () => i18next.t('Must be greater than 0') }),
+    empty_response_no_charge: z.boolean(),
   }),
 })
 
@@ -226,6 +227,34 @@ export function QuotaSettingsSection({
                 </FormItem>
               )}
             />
+
+            <SettingsFormGridItem span='full'>
+              <FormField
+                control={form.control}
+                name='quota_setting.empty_response_no_charge'
+                render={({ field }) => (
+                  <SettingsSwitchItem>
+                    <SettingsSwitchContent>
+                      <FormLabel>
+                        {t('Empty responses are not charged')}
+                      </FormLabel>
+                      <FormDescription>
+                        {t(
+                          'When enabled, a text-generation response with no output tokens and no billable tool calls is settled at zero and its pre-consumed quota is refunded. Upstream may already have charged for the prompt, so enable this only if the site should cover that cost.'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        disabled={updateOption.isPending}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+            </SettingsFormGridItem>
 
             <SettingsFormGridItem className='space-y-2'>
               <p className='text-sm font-medium'>{t('Referral Program')}</p>

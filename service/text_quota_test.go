@@ -1595,3 +1595,311 @@ func TestPostTextConsumeQuotaLogsMissingUsageAsStructuredContent(t *testing.T) {
 		map[string]any{"key": "Upstream returned no usage, so nothing was charged (possibly an upstream timeout)"},
 	}, other["content_parts"])
 }
+
+// A text-generation result with no output tokens and no billable tool call is
+// settled at zero when the administrator enables the empty-response policy;
+// the pre-consumed quota is refunded and the consume log records the reason.
+// Output-producing requests and non-text protocols keep their normal charges.
+func TestPostTextConsumeQuotaEmptyResponsePolicy(t *testing.T) {
+	previous := operation_setting.GetQuotaSetting().EmptyResponseNoCharge
+	t.Cleanup(func() { operation_setting.GetQuotaSetting().EmptyResponseNoCharge = previous })
+
+	const (
+		userID    = 71
+		channelID = 72
+		tokenID   = 73
+		tokenKey  = "empty-response-policy-token"
+		start     = 100_000
+	)
+	for _, tc := range []struct {
+		name         string
+		enabled      bool
+		format       types.RelayFormat
+		mode         int
+		request      dto.Request
+		usage        *dto.Usage
+		priceData    hosttypes.PriceData
+		tieredExpr   string
+		builtInTools map[string]*relaycommon.BuildInToolInfo
+		isStream     bool
+		wantQuota    int
+		wantWaived   bool
+	}{
+		{
+			name:       "empty chat response is waived",
+			enabled:    true,
+			format:     types.RelayFormatOpenAI,
+			mode:       relayconstant.RelayModeChatCompletions,
+			usage:      &dto.Usage{PromptTokens: 1000},
+			wantWaived: true,
+		},
+		{
+			name:      "non-empty chat response keeps its charge",
+			enabled:   true,
+			format:    types.RelayFormatOpenAI,
+			mode:      relayconstant.RelayModeChatCompletions,
+			usage:     &dto.Usage{PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1010},
+			wantQuota: 1010,
+		},
+		{
+			name:      "policy disabled keeps the prompt charge",
+			enabled:   false,
+			format:    types.RelayFormatOpenAI,
+			mode:      relayconstant.RelayModeChatCompletions,
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:      "embedding without completion tokens keeps its charge",
+			enabled:   true,
+			format:    types.RelayFormatEmbedding,
+			mode:      relayconstant.RelayModeEmbeddings,
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:      "gemini embedding without completion tokens keeps its charge",
+			enabled:   true,
+			format:    types.RelayFormatGemini,
+			mode:      relayconstant.RelayModeGemini,
+			request:   &dto.GeminiEmbeddingRequest{},
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:      "legacy gemini embedding keeps its charge",
+			enabled:   true,
+			format:    types.RelayFormatGemini,
+			mode:      relayconstant.RelayModeEmbeddings,
+			request:   &dto.GeminiChatRequest{},
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:       "empty gemini text response is waived",
+			enabled:    true,
+			format:     types.RelayFormatGemini,
+			mode:       relayconstant.RelayModeGemini,
+			request:    &dto.GeminiChatRequest{},
+			usage:      &dto.Usage{PromptTokens: 1000},
+			wantWaived: true,
+		},
+		{
+			name:       "empty responses stream is waived",
+			enabled:    true,
+			format:     types.RelayFormatOpenAIResponses,
+			mode:       relayconstant.RelayModeResponses,
+			usage:      &dto.Usage{PromptTokens: 1000},
+			isStream:   true,
+			wantWaived: true,
+		},
+		{
+			name:    "hosted tool call keeps its surcharge",
+			enabled: true,
+			format:  types.RelayFormatOpenAIResponses,
+			mode:    relayconstant.RelayModeResponses,
+			usage:   &dto.Usage{},
+			builtInTools: map[string]*relaycommon.BuildInToolInfo{
+				dto.BuildInToolWebSearch: {ToolName: dto.BuildInToolWebSearch, CallCount: 1},
+			},
+			wantQuota: 5000,
+		},
+		{
+			name:    "alpha search keeps its per-call tool charge",
+			enabled: true,
+			format:  types.RelayFormatOpenAIAlphaSearch,
+			mode:    relayconstant.RelayModeAlphaSearch,
+			usage:   &dto.Usage{},
+			builtInTools: map[string]*relaycommon.BuildInToolInfo{
+				dto.BuildInToolWebSearchPreview: {ToolName: dto.BuildInToolWebSearchPreview, CallCount: 1},
+			},
+			wantQuota: 5000,
+		},
+		{
+			name:      "moderations keeps its prompt charge",
+			enabled:   true,
+			format:    types.RelayFormatOpenAI,
+			mode:      relayconstant.RelayModeModerations,
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:      "responses compact keeps its prompt charge",
+			enabled:   true,
+			format:    types.RelayFormatOpenAIResponsesCompaction,
+			mode:      relayconstant.RelayModeResponsesCompact,
+			usage:     &dto.Usage{PromptTokens: 1000},
+			wantQuota: 1000,
+		},
+		{
+			name:       "empty fixed-price response is waived",
+			enabled:    true,
+			format:     types.RelayFormatOpenAI,
+			mode:       relayconstant.RelayModeChatCompletions,
+			usage:      &dto.Usage{PromptTokens: 1},
+			priceData:  hosttypes.PriceData{ModelPrice: 0.02, UsePrice: true},
+			wantWaived: true,
+		},
+		{
+			name:       "empty tiered fixed-price response is waived",
+			enabled:    true,
+			format:     types.RelayFormatOpenAI,
+			mode:       relayconstant.RelayModeChatCompletions,
+			usage:      &dto.Usage{PromptTokens: 1000},
+			tieredExpr: `tier("request", fixed(0.02))`,
+			wantWaived: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, userID, start)
+			seedToken(t, tokenID, userID, tokenKey, start)
+			seedChannel(t, channelID)
+			operation_setting.GetQuotaSetting().EmptyResponseNoCharge = tc.enabled
+			gin.SetMode(gin.TestMode)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+			priceData := tc.priceData
+			priceData.GroupRatioInfo = hosttypes.GroupRatioInfo{GroupRatio: 1}
+			if priceData.ModelRatio == 0 && !priceData.UsePrice {
+				priceData.ModelRatio = 1
+				priceData.CompletionRatio = 1
+			}
+			info := &relaycommon.RelayInfo{
+				UserId:          userID,
+				TokenId:         tokenID,
+				TokenKey:        tokenKey,
+				OriginModelName: "empty-response-model",
+				UsingGroup:      "default",
+				UserGroup:       "default",
+				RelayFormat:     tc.format,
+				RelayMode:       tc.mode,
+				Request:         tc.request,
+				PriceData:       priceData,
+				IsStream:        tc.isStream,
+				StartTime:       time.Now(),
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelId: channelID},
+			}
+			if tc.tieredExpr != "" {
+				info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{
+					BillingMode:  "tiered_expr",
+					ExprString:   tc.tieredExpr,
+					ExprHash:     billingexpr.ExprHashString(tc.tieredExpr),
+					GroupRatio:   1,
+					QuotaPerUnit: common.QuotaPerUnit,
+				}
+			}
+			if len(tc.builtInTools) > 0 {
+				info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{BuiltInTools: tc.builtInTools}
+			}
+			info.UserSetting.BillingPreference = "wallet_only"
+			require.Nil(t, PreConsumeBilling(ctx, 5000, info))
+			require.Equal(t, 5000, info.Billing.GetPreConsumedQuota())
+
+			PostTextConsumeQuota(ctx, info, tc.usage, nil)
+
+			var user model.User
+			require.NoError(t, model.DB.First(&user, userID).Error)
+			assert.Equal(t, start-tc.wantQuota, user.Quota, "wallet quota after settlement")
+			var token model.Token
+			require.NoError(t, model.DB.First(&token, tokenID).Error)
+			assert.Equal(t, start-tc.wantQuota, token.RemainQuota, "token quota after settlement")
+			log := getLastLog(t)
+			require.NotNil(t, log)
+			assert.Equal(t, tc.wantQuota, log.Quota)
+			if tc.wantWaived {
+				assert.Contains(t, log.Content, "Empty response, so nothing was charged")
+				var other map[string]any
+				require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+				assert.Equal(t, []any{
+					map[string]any{"key": "Empty response, so nothing was charged"},
+				}, other["content_parts"])
+			} else {
+				assert.NotContains(t, log.Content, "Empty response, so nothing was charged")
+			}
+		})
+	}
+}
+
+// The empty-response waiver must restore a subscription pre-consume, not only
+// wallet/token quota, so a subscription-billed empty result stays free too.
+func TestPostTextConsumeQuotaEmptyResponseRefundsSubscriptionPreConsume(t *testing.T) {
+	previous := operation_setting.GetQuotaSetting().EmptyResponseNoCharge
+	t.Cleanup(func() { operation_setting.GetQuotaSetting().EmptyResponseNoCharge = previous })
+	operation_setting.GetQuotaSetting().EmptyResponseNoCharge = true
+
+	truncate(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionPlan{}, &model.SubscriptionPreConsumeRecord{}))
+
+	const (
+		userID    = 81
+		tokenID   = 82
+		channelID = 83
+		subID     = 84
+		planID    = 85
+		requestID = "empty-response-subscription-request"
+		start     = 100_000
+	)
+	seedUser(t, userID, start)
+	seedToken(t, tokenID, userID, "empty-response-subscription-token", start)
+	seedChannel(t, channelID)
+	require.NoError(t, model.DB.Create(&model.SubscriptionPlan{
+		Id:          planID,
+		Title:       "empty-response-plan",
+		TotalAmount: start,
+		Enabled:     true,
+	}).Error)
+	require.NoError(t, model.DB.Create(&model.UserSubscription{
+		Id:          subID,
+		UserId:      userID,
+		PlanId:      planID,
+		AmountTotal: start,
+		Status:      "active",
+		StartTime:   time.Now().Unix(),
+		EndTime:     time.Now().Add(24 * time.Hour).Unix(),
+	}).Error)
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		UserId:          userID,
+		TokenId:         tokenID,
+		TokenKey:        "empty-response-subscription-token",
+		RequestId:       requestID,
+		OriginModelName: "empty-response-model",
+		UsingGroup:      "default",
+		UserGroup:       "default",
+		RelayFormat:     types.RelayFormatOpenAI,
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		StartTime:       time.Now(),
+		ChannelMeta:     &relaycommon.ChannelMeta{ChannelId: channelID},
+		PriceData: hosttypes.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			GroupRatioInfo:  hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+	}
+	info.UserSetting.BillingPreference = "subscription_only"
+	require.Nil(t, PreConsumeBilling(ctx, 5000, info))
+	var preConsumed model.UserSubscription
+	require.NoError(t, model.DB.First(&preConsumed, subID).Error)
+	require.Equal(t, int64(5000), preConsumed.AmountUsed)
+
+	PostTextConsumeQuota(ctx, info, &dto.Usage{PromptTokens: 1000}, nil)
+
+	var subscription model.UserSubscription
+	require.NoError(t, model.DB.First(&subscription, subID).Error)
+	assert.Zero(t, subscription.AmountUsed, "subscription pre-consume must be refunded")
+	var user model.User
+	require.NoError(t, model.DB.First(&user, userID).Error)
+	assert.Equal(t, start, user.Quota, "wallet quota must stay untouched")
+	var token model.Token
+	require.NoError(t, model.DB.First(&token, tokenID).Error)
+	assert.Equal(t, start, token.RemainQuota, "token quota must be refunded")
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Zero(t, log.Quota)
+	assert.Contains(t, log.Content, "Empty response, so nothing was charged")
+}

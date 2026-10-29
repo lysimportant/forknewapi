@@ -78,6 +78,36 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 		!s.ToolCallSurchargeQuota.IsZero()
 }
 
+// isEmptyResponseSettlement reports whether this settlement is a text result
+// that produced no output at all. A tool-call surcharge (hosted web search,
+// image generation, ...) is an actual output and keeps the normal charge.
+func (s *textQuotaSummary) isEmptyResponseSettlement() bool {
+	return s.CompletionTokens == 0 && s.ToolCallSurchargeQuota.IsZero()
+}
+
+// isTextGenerationSettlement limits the empty-response policy to protocols
+// whose primary output is text. Embedding, rerank, multi-modal and tool-search
+// results legitimately carry no completion tokens and must keep their normal
+// charges.
+func isTextGenerationSettlement(relayInfo *relaycommon.RelayInfo) bool {
+	if relayInfo == nil {
+		return false
+	}
+	switch relayInfo.RelayFormat {
+	case types.RelayFormatClaude:
+		return true
+	case types.RelayFormatOpenAIResponses:
+		return relayInfo.RelayMode != relayconstant.RelayModeResponsesCompact
+	case types.RelayFormatGemini:
+		_, isChat := relayInfo.Request.(*dto.GeminiChatRequest)
+		return isChat && relayInfo.RelayMode == relayconstant.RelayModeGemini
+	case types.RelayFormatOpenAI:
+		return relayInfo.RelayMode == relayconstant.RelayModeChatCompletions ||
+			relayInfo.RelayMode == relayconstant.RelayModeCompletions
+	}
+	return false
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -387,6 +417,18 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
+// shouldWaiveEmptyResponseCharge applies the administrator's empty-response
+// policy to one text settlement: a text-generation request that produced no
+// output tokens and no billable tool calls is settled at zero so its
+// pre-consumed quota is refunded. Upstream may already have billed the prompt
+// for the same request, so this is opt-in per deployment.
+func shouldWaiveEmptyResponseCharge(relayInfo *relaycommon.RelayInfo, summary *textQuotaSummary) bool {
+	if relayInfo == nil || summary == nil || !operation_setting.GetQuotaSetting().EmptyResponseNoCharge {
+		return false
+	}
+	return isTextGenerationSettlement(relayInfo) && summary.isEmptyResponseSettlement()
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message) {
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
@@ -428,6 +470,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 
+	waiveEmptyResponse := shouldWaiveEmptyResponseCharge(relayInfo, &summary)
+	if waiveEmptyResponse {
+		summary.Quota = 0
+	}
+
 	for _, item := range summary.ToolSurchargeItems {
 		q := decimal.NewFromFloat(item.Price).
 			Mul(decimal.NewFromInt(int64(item.Count))).
@@ -440,15 +487,23 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			"quota": logger.FormatQuota(common.QuotaFromDecimal(q)),
 		}))
 	}
-	if summary.AudioInputPrice > 0 && summary.AudioTokens > 0 {
+	if !waiveEmptyResponse && summary.AudioInputPrice > 0 && summary.AudioTokens > 0 {
 		q := decimal.NewFromFloat(summary.AudioInputPrice).Div(decimal.NewFromInt(1000000)).Mul(decimal.NewFromInt(int64(summary.AudioTokens))).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit))
 		extraContent = append(extraContent, common.NewMessage("Audio input cost {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaFromDecimal(q))}))
 	}
 
-	if !summary.hasBillableUsage() {
+	// Zero-usage settlements keep their existing error log: an empty result
+	// without any reported usage is usually an upstream timeout, and the
+	// opt-in empty-response waiver must not hide that signal.
+	switch {
+	case !summary.hasBillableUsage():
 		extraContent = append(extraContent, common.NewMessage("Upstream returned no usage, so nothing was charged (possibly an upstream timeout)"))
 		logger.LogError(ctx, common.LogText("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	case waiveEmptyResponse:
+		extraContent = append(extraContent, common.NewMessage("Empty response, so nothing was charged"))
+		logger.LogWarn(ctx, common.LogText("empty response not charged: userId %d, channelId %d, model %s, pre-consumed quota %d",
+			relayInfo.UserId, relayInfo.ChannelId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
+	default:
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}

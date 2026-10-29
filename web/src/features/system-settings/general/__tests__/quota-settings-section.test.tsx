@@ -46,6 +46,7 @@ const defaultValues = {
     enable_free_model_pre_consume: true,
     trust_quota_usd: 0,
     pre_consume_multiplier: 1,
+    empty_response_no_charge: false,
   },
 }
 
@@ -160,5 +161,19 @@ test('没有文档链接默认值时仍能保存额度，且只提交修改的�
   expect(JSON.parse(String(transport.mock.calls[0][0].data))).toEqual({
     key: 'QuotaForNewUser',
     value: 250000,
+  })
+})
+
+test('空响应不计费开关保存为字符串布尔选项', async () => {
+  const user = userEvent.setup()
+  await renderQuotaPage()
+  await user.click(
+    screen.getByRole('switch', { name: 'Empty responses are not charged' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(transport).toHaveBeenCalledTimes(1))
+  expect(JSON.parse(String(transport.mock.calls[0][0].data))).toEqual({
+    key: 'quota_setting.empty_response_no_charge',
+    value: 'true',
   })
 })

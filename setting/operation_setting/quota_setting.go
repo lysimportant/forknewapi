@@ -12,6 +12,13 @@ type QuotaSetting struct {
 	EnableFreeModelPreConsume bool    `json:"enable_free_model_pre_consume"` // 是否对免费模型启用预消耗
 	TrustQuotaUSD             float64 `json:"trust_quota_usd"`               // 钱包免预扣门槛，0 表示禁用
 	PreConsumeMultiplier      float64 `json:"pre_consume_multiplier"`        // 预计输入费用的预扣倍率，仅影响预留
+	// EmptyResponseNoCharge waives the charge of a text-generation result with
+	// no output tokens (no completion tokens and no billable tool calls), so a
+	// request that only consumed the prompt is refunded instead of billed for
+	// its input. Disabled by default: upstream may already have charged for the
+	// prompt (for example content filtering or a client abort), leaving the
+	// operator to cover that cost.
+	EmptyResponseNoCharge bool `json:"empty_response_no_charge"`
 }
 
 // 默认配置
@@ -19,6 +26,7 @@ var quotaSetting = QuotaSetting{
 	EnableFreeModelPreConsume: true,
 	TrustQuotaUSD:             10,
 	PreConsumeMultiplier:      1,
+	EmptyResponseNoCharge:     false,
 }
 
 func init() {

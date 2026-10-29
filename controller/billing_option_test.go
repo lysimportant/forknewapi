@@ -206,8 +206,9 @@ func TestPreConsumePolicyDatabaseMatrix(t *testing.T) {
 			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
 			require.NoError(t, db.AutoMigrate(&model.Token{}))
 			for key, value := range map[string]string{
-				"quota_setting.trust_quota_usd":        "10.5",
-				"quota_setting.pre_consume_multiplier": "1.5",
+				"quota_setting.trust_quota_usd":          "10.5",
+				"quota_setting.pre_consume_multiplier":   "1.5",
+				"quota_setting.empty_response_no_charge": "true",
 			} {
 				var response struct{ Success bool }
 				modelManagementRequest(t, UpdateOption, http.MethodPut, "/api/option/", OptionUpdateRequest{Key: key, Value: value}, &response)
@@ -216,6 +217,8 @@ func TestPreConsumePolicyDatabaseMatrix(t *testing.T) {
 				require.NoError(t, db.Where(&model.Option{Key: key}).First(&saved).Error)
 				assert.Equal(t, value, saved.Value)
 			}
+			assert.True(t, operation_setting.GetQuotaSetting().EmptyResponseNoCharge,
+				"UpdateOption must publish the saved boolean immediately")
 			var savedOptions []model.Option
 			require.NoError(t, db.Find(&savedOptions).Error)
 			stored := map[string]string{}
@@ -225,9 +228,11 @@ func TestPreConsumePolicyDatabaseMatrix(t *testing.T) {
 			for range 2 {
 				operation_setting.GetQuotaSetting().TrustQuotaUSD = 10
 				operation_setting.GetQuotaSetting().PreConsumeMultiplier = 1
+				operation_setting.GetQuotaSetting().EmptyResponseNoCharge = false
 				require.NoError(t, config.GlobalConfig.LoadFromDB(stored))
 				assert.Equal(t, 10.5, operation_setting.GetQuotaSetting().TrustQuotaUSD)
 				assert.Equal(t, 1.5, operation_setting.GetQuotaSetting().PreConsumeMultiplier)
+				assert.True(t, operation_setting.GetQuotaSetting().EmptyResponseNoCharge)
 			}
 			for _, tc := range []struct{ key, value string }{
 				{"trust_quota_usd", "-1"}, {"trust_quota_usd", "NaN"}, {"trust_quota_usd", "+Inf"},

@@ -49,6 +49,7 @@ function Fixture() {
               enable_free_model_pre_consume: true,
               trust_quota_usd: 10,
               pre_consume_multiplier: 1,
+              empty_response_no_charge: false,
             },
           }}
         />
