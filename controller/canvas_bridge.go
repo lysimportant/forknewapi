@@ -616,6 +616,10 @@ func canvasInputMediaProfile(name string, profile canvasProfile, candidates []ca
 			// V6K 统一视频接口同样接收 metadata.content 形状的参考素材；站点模型广场的
 			// 公开上限最高为 30 图 / 10 视频 / 10 音频，具体仍由上游按模型校验。
 			input = canvasVideoInputProfile{adapter: "seedance-video", images: 30, videos: 10, audios: 10, total: 50}
+		} else if candidate.Plugin.Meta.Key == "megaviews-video" {
+			// MegaAi 统一视频接口接收 metadata.content 形状的参考素材；模型广场按秒/按次
+			// 计费的视频模型公开上限最高为 30 图 / 10 视频 / 10 音频，具体仍由上游按模型校验。
+			input = canvasVideoInputProfile{adapter: "seedance-video", images: 30, videos: 10, audios: 10, total: 50}
 		} else if name == "MiniMax-H3" {
 			if candidate.Plugin.Meta.Key != "hailuo" || !slices.Contains([]string{"MiniMax-H3", "h3"}, candidate.UpstreamModel) {
 				return canvasVideoInputProfile{}, false

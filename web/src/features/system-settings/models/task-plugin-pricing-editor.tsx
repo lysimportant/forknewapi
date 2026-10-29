@@ -151,7 +151,8 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
           key === 'seedance-video' ||
           key === 'yuanliu' ||
           key === 'nskeven-video' ||
-          key === 'v6k-video'
+          key === 'v6k-video' ||
+          key === 'megaviews-video'
         const UsagePricingEditor = usesUnifiedVideoPricing
           ? SeedanceUsagePricingEditor
           : TaskUsagePricingEditor

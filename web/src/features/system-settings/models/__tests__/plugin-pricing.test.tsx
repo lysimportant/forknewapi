@@ -614,6 +614,24 @@ function unifiedVideoVariant(
   }
 }
 
+/** MegaAi 渠道的定价元数据，清晰度档位与插件 usageSchema 保持一致。 */
+function megaAiVariant(configured = ''): ModelPricingPluginVariant {
+  return {
+    plugin_key: 'megaviews-video',
+    plugin_name: 'MegaAi 视频',
+    usage_schema: {
+      count: { type: 'number', unit: 'count' },
+      seconds: { type: 'number', unit: 'second' },
+      video_resolution: {
+        enum: ['480p', '720p', '768p', '1080p', '4k'],
+      },
+    },
+    configured,
+    effective: configured,
+    compatible: true,
+  }
+}
+
 it('keeps Seedance call and resolution prices separate until the draft is committed', async () => {
   const original = 'tier( "original", u("count") * 0.25 )'
   const rules = 'header("x-priority") == "high" ? 2 : 1'
@@ -723,20 +741,26 @@ it.each([
   expect(dirty).toHaveBeenLastCalledWith(false)
 })
 
-it('starts an unconfigured sole Seedance provider with exclusive per-call pricing', async () => {
-  const { ref } = renderEditor(
-    { name: 'channel-configured-model', billingMode: 'tiered_expr' },
-    [seedanceVariant()]
-  )
-  await waitFor(() =>
-    expect(
-      screen.getByRole('textbox', { name: 'Price per call' })
-    ).toBeVisible()
-  )
-  expect((await ref.current?.commitDraft())?.billingExpr).toBe(
-    'tier("base", u("count") * 0)'
-  )
-})
+it.each([
+  { key: 'seedance-video', variant: seedanceVariant() },
+  { key: 'megaviews-video', variant: megaAiVariant() },
+])(
+  'starts an unconfigured sole $key provider with exclusive per-call pricing',
+  async ({ variant }) => {
+    const { ref } = renderEditor(
+      { name: 'channel-configured-model', billingMode: 'tiered_expr' },
+      [variant]
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByRole('textbox', { name: 'Price per call' })
+      ).toBeVisible()
+    )
+    expect((await ref.current?.commitDraft())?.billingExpr).toBe(
+      'tier("base", u("count") * 0)'
+    )
+  }
+)
 
 it('preserves custom Seedance pricing and rules until replacement is confirmed', async () => {
   const custom = 'tier("custom", u("count") * 0.2 + u("seconds") * 0.04)'
@@ -822,117 +846,154 @@ it('uses the Seedance editor only for its provider key on a shared model', async
   )
 })
 
-it('derives NSKeven resolution tiers from the plugin usage schema', async () => {
-  const { ref } = renderEditor(
-    { name: 'nskeven-any-video-model', billingMode: 'tiered_expr' },
-    [unifiedVideoVariant('nskeven-video', 'NSKeven 视频')]
-  )
-  const user = userEvent.setup()
-  await waitFor(() =>
-    expect(screen.getByRole('tab', { name: 'Per-call' })).toHaveAttribute(
-      'aria-selected',
-      'true'
-    )
-  )
-  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
-  expect(
-    screen.getByRole('textbox', { name: '4K Price per second' })
-  ).toBeVisible()
-  expect(
-    screen.queryByRole('textbox', { name: '2K Price per second' })
-  ).toBeNull()
-  const price = screen.getByRole('textbox', {
-    name: '1080p Price per second',
-  })
-  await user.clear(price)
-  await user.type(price, '0.06')
-  expect((await ref.current?.commitDraft())?.billingExpr).toBe(
-    'u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0)\n' +
+it.each([
+  {
+    key: 'nskeven-video',
+    variant: unifiedVideoVariant('nskeven-video', 'NSKeven 视频'),
+    priceLabel: '1080p Price per second',
+    price: '0.06',
+    expression:
+      'u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0)\n' +
       '  : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0)\n' +
       '  : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0.06)\n' +
-      '  : tier("4k", u("seconds") * 0)'
-  )
-})
-
-it('lets a channel-mapped model use the unified video tabs for NSKeven', async () => {
-  const generic = 'tier("base", u("seconds") * 0.4)'
-  const { ref } = renderEditor(
-    {
-      name: 'shared-nskeven-model',
-      billingMode: 'tiered_expr',
-    },
-    [
-      unifiedVideoVariant('nskeven-video', 'NSKeven 视频'),
-      {
-        plugin_key: 'another-video',
-        plugin_name: 'Another Video',
-        usage_schema: {
-          seconds: { type: 'number', unit: 'second' },
-        },
-        configured: '',
-        effective: generic,
-        compatible: true,
-      },
-    ],
-    vi.fn(),
-    'nskeven-video'
-  )
-  await waitFor(() =>
+      '  : tier("4k", u("seconds") * 0)',
+  },
+  {
+    key: 'megaviews-video',
+    variant: megaAiVariant(),
+    priceLabel: '768p Price per second',
+    price: '0.05',
+    expression:
+      'u("video_resolution") == "480p" ? tier("480p", u("seconds") * 0)\n' +
+      '  : u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0)\n' +
+      '  : u("video_resolution") == "768p" ? tier("768p", u("seconds") * 0.05)\n' +
+      '  : u("video_resolution") == "1080p" ? tier("1080p", u("seconds") * 0)\n' +
+      '  : tier("4k", u("seconds") * 0)',
+  },
+])(
+  'derives $key resolution tiers from the plugin usage schema',
+  async ({ key, variant, priceLabel, price, expression }) => {
+    const { ref } = renderEditor(
+      { name: `${key}-any-video-model`, billingMode: 'tiered_expr' },
+      [variant]
+    )
+    const user = userEvent.setup()
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Per-call' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      )
+    )
+    await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
     expect(
-      screen.getByRole('textbox', { name: 'Price per call' })
+      screen.getByRole('textbox', { name: '4K Price per second' })
     ).toBeVisible()
-  )
-  expect(await ref.current?.commitDraft()).toMatchObject({
-    billingExpr: 'tier("base", u("count") * 0)',
-  })
-})
+    expect(
+      screen.queryByRole('textbox', { name: '2K Price per second' })
+    ).toBeNull()
+    const input = screen.getByRole('textbox', { name: priceLabel })
+    await user.clear(input)
+    await user.type(input, price)
+    expect((await ref.current?.commitDraft())?.billingExpr).toBe(expression)
+  }
+)
 
-it('offers the unified video tabs on a V6K provider override', async () => {
-  const generic = 'tier("base", u("seconds") * 0.4)'
-  const { ref } = renderEditor(
-    {
-      name: 'shared-v6k-model',
-      billingMode: 'tiered_expr',
-      billingExpr: generic,
-    },
-    [
-      unifiedVideoVariant('v6k-video', 'V6K 视频'),
+it.each([
+  {
+    key: 'nskeven-video',
+    variant: unifiedVideoVariant('nskeven-video', 'NSKeven 视频'),
+  },
+  { key: 'megaviews-video', variant: megaAiVariant() },
+])(
+  'lets a channel-mapped model use the unified video tabs for $key',
+  async ({ key, variant }) => {
+    const generic = 'tier("base", u("seconds") * 0.4)'
+    const { ref } = renderEditor(
       {
-        plugin_key: 'another-video',
-        plugin_name: 'Another Video',
-        usage_schema: {
-          seconds: { type: 'number', unit: 'second' },
-        },
-        configured: '',
-        effective: generic,
-        compatible: true,
+        name: `shared-${key}-model`,
+        billingMode: 'tiered_expr',
       },
-    ]
-  )
-  const user = userEvent.setup()
-  await waitFor(() =>
-    expect(screen.getByRole('tab', { name: 'V6K 视频' })).toBeVisible()
-  )
-  await user.click(screen.getByRole('tab', { name: 'V6K 视频' }))
-  await user.click(
-    screen.getByRole('switch', { name: 'Set separately for this provider' })
-  )
-  await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
-  const dialog = screen.getByRole('alertdialog', {
-    name: 'Switch billing method?',
-  })
-  await user.click(
-    within(dialog).getByRole('button', { name: 'Apply billing method' })
-  )
-  const price = screen.getByRole('textbox', { name: '720p Price per second' })
-  await user.clear(price)
-  await user.type(price, '0.05')
-  const draft = await ref.current?.commitDraft()
-  expect(draft?.pluginBillingExpr?.['v6k-video']).toContain(
-    'u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0.05)'
-  )
-  expect(draft?.pluginBillingExpr?.['v6k-video']).toContain(
-    'tier("4k", u("seconds") * 0)'
-  )
-  expect(draft?.pluginBillingExpr?.['v6k-video']).not.toContain('u("count")')
-})
+      [
+        variant,
+        {
+          plugin_key: 'another-video',
+          plugin_name: 'Another Video',
+          usage_schema: {
+            seconds: { type: 'number', unit: 'second' },
+          },
+          configured: '',
+          effective: generic,
+          compatible: true,
+        },
+      ],
+      vi.fn(),
+      key
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByRole('textbox', { name: 'Price per call' })
+      ).toBeVisible()
+    )
+    expect(await ref.current?.commitDraft()).toMatchObject({
+      billingExpr: 'tier("base", u("count") * 0)',
+    })
+  }
+)
+
+it.each([
+  {
+    key: 'v6k-video',
+    name: 'V6K 视频',
+    variant: unifiedVideoVariant('v6k-video', 'V6K 视频'),
+  },
+  { key: 'megaviews-video', name: 'MegaAi 视频', variant: megaAiVariant() },
+])(
+  'offers the unified video tabs on a $key provider override',
+  async ({ key, name, variant }) => {
+    const generic = 'tier("base", u("seconds") * 0.4)'
+    const { ref } = renderEditor(
+      {
+        name: `shared-${key}-model`,
+        billingMode: 'tiered_expr',
+        billingExpr: generic,
+      },
+      [
+        variant,
+        {
+          plugin_key: 'another-video',
+          plugin_name: 'Another Video',
+          usage_schema: {
+            seconds: { type: 'number', unit: 'second' },
+          },
+          configured: '',
+          effective: generic,
+          compatible: true,
+        },
+      ]
+    )
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByRole('tab', { name })).toBeVisible())
+    await user.click(screen.getByRole('tab', { name }))
+    await user.click(
+      screen.getByRole('switch', { name: 'Set separately for this provider' })
+    )
+    await user.click(screen.getByRole('tab', { name: 'Seconds × resolution' }))
+    const dialog = screen.getByRole('alertdialog', {
+      name: 'Switch billing method?',
+    })
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Apply billing method' })
+    )
+    const price = screen.getByRole('textbox', { name: '720p Price per second' })
+    await user.clear(price)
+    await user.type(price, '0.05')
+    const draft = await ref.current?.commitDraft()
+    expect(draft?.pluginBillingExpr?.[key]).toContain(
+      'u("video_resolution") == "720p" ? tier("720p", u("seconds") * 0.05)'
+    )
+    expect(draft?.pluginBillingExpr?.[key]).toContain(
+      'tier("4k", u("seconds") * 0)'
+    )
+    expect(draft?.pluginBillingExpr?.[key]).not.toContain('u("count")')
+  }
+)

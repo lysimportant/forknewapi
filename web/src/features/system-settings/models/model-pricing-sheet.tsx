@@ -340,11 +340,13 @@ export const ModelPricingEditorPanel = forwardRef<
     taskPluginKey === 'yuanliu' ||
     taskPluginKey === 'nskeven-video' ||
     taskPluginKey === 'v6k-video' ||
+    taskPluginKey === 'megaviews-video' ||
     (livePluginVariants.length === 1 &&
       (livePluginVariants[0].plugin_key === 'seedance-video' ||
         livePluginVariants[0].plugin_key === 'yuanliu' ||
         livePluginVariants[0].plugin_key === 'nskeven-video' ||
-        livePluginVariants[0].plugin_key === 'v6k-video'))
+        livePluginVariants[0].plugin_key === 'v6k-video' ||
+        livePluginVariants[0].plugin_key === 'megaviews-video'))
   const taskUsageSchema =
     usageSchema ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??

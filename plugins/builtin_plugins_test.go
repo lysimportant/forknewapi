@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "globalstore", "google", "grok-video", "hailuo", "image2pro-video", "jimeng", "kling", "metaso-h3-video", "minimax-h3-video", "moon", "nskeven-video", "seedance-video", "shumai-h3-video", "sora", "sunoapi", "v6k-video", "vertex-ai", "vidu", "xai", "yuanliu"}
+var expectedKeys = []string{"alibaba", "doubao", "globalstore", "google", "grok-video", "hailuo", "image2pro-video", "jimeng", "kling", "megaviews-video", "metaso-h3-video", "minimax-h3-video", "moon", "nskeven-video", "seedance-video", "shumai-h3-video", "sora", "sunoapi", "v6k-video", "vertex-ai", "vidu", "xai", "yuanliu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -127,7 +127,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			}
 			// globalstore 的图片模型已迁到 fork 的原生图片渠道（ChannelTypeGlobalStore），
 			// 任务插件只剩视频入口，因此与其它仅视频插件走同一条断言分支。
-			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" || key == "image2pro-video" || key == "nskeven-video" || key == "v6k-video" {
+			if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" || key == "image2pro-video" || key == "megaviews-video" || key == "nskeven-video" || key == "v6k-video" {
 				assert.False(t, foundResponses, "仅视频插件未声明 Responses 协议，不应扩大入口")
 				if plugin.Meta.ModelRouting == "channel" {
 					binding, claimed := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", key)
@@ -170,7 +170,7 @@ func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 		"minimax-h3-video": {"model": "alias-under-test", "input": "a cat walking on the beach", "seconds": 6},
 	}
 	for _, key := range expectedKeys {
-		if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" || key == "image2pro-video" || key == "nskeven-video" || key == "v6k-video" {
+		if key == "yuanliu" || key == "metaso-h3-video" || key == "seedance-video" || key == "globalstore" || key == "image2pro-video" || key == "megaviews-video" || key == "nskeven-video" || key == "v6k-video" {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {
