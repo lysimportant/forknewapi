@@ -25,6 +25,7 @@ import {
   parseTaskTiersFromExpr,
   splitBillingExprAndRequestRules,
 } from '../lib/billing-expr'
+import { evaluateBillingExpression } from '../lib/billing-expression/runtime'
 import {
   evaluateTaskUsageExamples,
   evaluateTaskVisualConfig,
@@ -32,6 +33,15 @@ import {
   tryParseTaskVisualConfig,
   type TaskVisualConfig,
 } from '../lib/task-expr'
+import {
+  applyTaskSurcharge,
+  combineTaskSurcharge,
+  defaultTaskSurcharge,
+  normalizeTaskSurcharge,
+  splitTaskSurcharge,
+  taskSurchargeMatchesSample,
+  type TaskSurcharge,
+} from '../lib/task-surcharge'
 import type { BillingUsageSchema } from '../types'
 
 const schema: BillingUsageSchema = {
@@ -399,5 +409,106 @@ describe('task visual pricing preview', () => {
       ),
       []
     )
+  })
+})
+
+describe('task usage surcharge', () => {
+  const baseExpression = 'tier("base", u("seconds") * 0.4)'
+  const surcharge: TaskSurcharge = {
+    field: 'seconds',
+    operator: '>',
+    threshold: 15,
+    multiplier: 2,
+  }
+
+  test('combines and splits a usage-threshold multiplier', () => {
+    const combined = combineTaskSurcharge(baseExpression, surcharge, schema)
+    assert.equal(
+      combined,
+      '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)'
+    )
+    assert.deepEqual(splitTaskSurcharge(combined, schema), {
+      baseExpr: baseExpression,
+      surcharge,
+    })
+    assert.equal(
+      combineTaskSurcharge(baseExpression, null, schema),
+      baseExpression
+    )
+    assert.equal(combineTaskSurcharge('', surcharge, schema), '')
+  })
+
+  test('keeps unsupported shapes as the raw expression', () => {
+    assert.deepEqual(splitTaskSurcharge(baseExpression, schema), {
+      baseExpr: baseExpression,
+      surcharge: null,
+    })
+    const twoFactors =
+      '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1) * (u("clips") > 1 ? 3 : 1)'
+    assert.deepEqual(splitTaskSurcharge(twoFactors, schema), {
+      baseExpr: twoFactors,
+      surcharge: null,
+    })
+  })
+
+  test('normalizes and defaults a surcharge from the usage schema', () => {
+    assert.deepEqual(defaultTaskSurcharge(schema), {
+      field: 'seconds',
+      operator: '>',
+      threshold: 0,
+      multiplier: 2,
+    })
+    assert.deepEqual(
+      defaultTaskSurcharge({ clips: { type: 'number', unit: 'count' } }),
+      {
+        field: 'clips',
+        operator: '>',
+        threshold: 0,
+        multiplier: 2,
+      }
+    )
+    assert.equal(
+      normalizeTaskSurcharge(
+        { field: 'duration', operator: '>', threshold: 15, multiplier: 2 },
+        schema
+      ),
+      null
+    )
+    assert.equal(
+      normalizeTaskSurcharge({ ...surcharge, multiplier: 0 }, schema),
+      null
+    )
+    assert.deepEqual(normalizeTaskSurcharge(surcharge, schema), surcharge)
+  })
+
+  test('applies the multiplier when the sample crosses the threshold', () => {
+    assert.equal(taskSurchargeMatchesSample(surcharge, { seconds: 15 }), false)
+    assert.equal(taskSurchargeMatchesSample(surcharge, { seconds: 20 }), true)
+    assert.equal(
+      taskSurchargeMatchesSample(
+        { ...surcharge, operator: '>=' },
+        { seconds: 15 }
+      ),
+      true
+    )
+    assert.equal(applyTaskSurcharge(8, surcharge, { seconds: 10 }), 8)
+    assert.equal(applyTaskSurcharge(8, surcharge, { seconds: 20 }), 16)
+    assert.equal(applyTaskSurcharge(8, null, { seconds: 20 }), 8)
+  })
+
+  test('generated expression prices long durations with the surcharge', () => {
+    const expression = combineTaskSurcharge(baseExpression, surcharge, schema)
+    const short = evaluateBillingExpression(expression, {
+      usage: { seconds: 10 },
+    })
+    const long = evaluateBillingExpression(expression, {
+      usage: { seconds: 20 },
+    })
+    assert.equal(short.status, 'success')
+    assert.equal(long.status, 'success')
+    if (short.status !== 'success' || long.status !== 'success') return
+    assert.equal(short.cost, 4)
+    assert.equal(long.cost, 16)
+    assert.equal(long.matchedTier, 'base')
   })
 })

@@ -35,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   formatPricingAmount,
@@ -69,6 +70,16 @@ import {
   taskEnumLabel,
   taskPricingConditions,
 } from '@/features/pricing/lib/task-price-display'
+import {
+  applyTaskSurcharge,
+  combineTaskSurcharge,
+  defaultTaskSurcharge,
+  normalizeTaskSurcharge,
+  splitTaskSurcharge,
+  taskSurchargeMatchesSample,
+  type TaskSurcharge,
+  type TaskSurchargeOperator,
+} from '@/features/pricing/lib/task-surcharge'
 import {
   formatTaskSpecificationLabel,
   getVideoResolutionField,
@@ -109,6 +120,7 @@ type TaskBillingPreviewProps = {
   currency?: PricingCurrency
   config: TaskVisualConfig | null
   requestRuleExpr: string
+  surcharge: TaskSurcharge | null
   sample: Record<string, number | string>
   usageSchema: BillingUsageSchema
   usageExamples?: BillingUsageExample[]
@@ -130,6 +142,15 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
   const result = props.config
     ? evaluateTaskVisualConfig(props.config, props.sample, props.usageSchema)
     : null
+  const surchargeApplied = taskSurchargeMatchesSample(
+    props.surcharge,
+    props.sample
+  )
+  const total = applyTaskSurcharge(
+    result?.total ?? 0,
+    props.surcharge,
+    props.sample
+  )
 
   const formulaParts = (result?.parts ?? []).map((part) => {
     if (part.kind === 'constant') {
@@ -159,7 +180,18 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
     formulaParts.length > 0
       ? formulaParts.join(' + ')
       : formatPricingAmount(0, props.currency)
-  const formula = `${formulaLeft} = ${formatPricingAmount(result?.total ?? 0, props.currency)}`
+  const surchargeFieldLabel = props.surcharge
+    ? taskPriceLabel(
+        props.usageSchema[props.surcharge.field]?.description,
+        props.surcharge.field,
+        i18n.language
+      )
+    : ''
+  const formula = `${formulaLeft}${
+    surchargeApplied
+      ? ` × ${formatPricingNumber(props.surcharge?.multiplier ?? 1)}`
+      : ''
+  } = ${formatPricingAmount(total, props.currency)}`
 
   return (
     <div className='bg-muted/30 flex flex-col gap-3 rounded-md border p-3'>
@@ -305,6 +337,19 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
             ) || t('All requests')}
           </Badge>
           <code className='font-mono text-xs break-words'>{formula}</code>
+          {props.surcharge ? (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}',
+                {
+                  multiplier: formatPricingNumber(props.surcharge.multiplier),
+                  field: surchargeFieldLabel,
+                  operator: props.surcharge.operator,
+                  threshold: formatPricingNumber(props.surcharge.threshold),
+                }
+              )}
+            </p>
+          ) : null}
         </div>
       ) : (
         <p className='text-muted-foreground text-xs'>
@@ -319,16 +364,23 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
   props: TaskUsagePricingEditorProps
 ) {
   const { t, i18n } = useTranslation()
+  const initialSurcharge = splitTaskSurcharge(
+    props.billingExpr,
+    props.usageSchema
+  )
   const [editorMode, setEditorMode] = useState<EditorMode>(() =>
     props.expressionOnly ||
     (props.billingExpr &&
-      !tryParseTaskMatrixConfig(props.billingExpr, props.usageSchema))
+      !tryParseTaskMatrixConfig(initialSurcharge.baseExpr, props.usageSchema))
       ? 'raw'
       : 'visual'
   )
+  const [surcharge, setSurcharge] = useState<TaskSurcharge | null>(
+    initialSurcharge.surcharge
+  )
   const [matrixRows, setMatrixRows] = useState<TaskMatrixRow[]>(() => {
     const parsed = tryParseTaskMatrixConfig(
-      props.billingExpr,
+      initialSurcharge.baseExpr,
       props.usageSchema
     )
     return (parsed ?? createDefaultTaskMatrixConfig(props.usageSchema)).rows
@@ -357,8 +409,19 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
   const combinations = getTaskEnumCombinations(props.usageSchema)
   const visualTiers = taskMatrixToTiers({ rows: matrixRows }, props.usageSchema)
 
+  const rawSplit = splitBillingExprAndRequestRules(rawExpr)
+  const rawSurchargeSplit = splitTaskSurcharge(
+    rawSplit.billingExpr,
+    props.usageSchema
+  )
+  const rawMatrix = tryParseTaskMatrixConfig(
+    rawSurchargeSplit.baseExpr,
+    props.usageSchema
+  )
+
   let previewConfig: TaskVisualConfig | null = null
   let previewRequestRuleExpr = props.requestRuleExpr
+  let previewSurcharge: TaskSurcharge | null = null
   let matchedRowIndex: number | null = null
   if (editorMode === 'visual') {
     const generatedExpression = generateTaskExprFromConfig(
@@ -366,6 +429,7 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
       props.usageSchema
     )
     if (generatedExpression) previewConfig = { tiers: visualTiers }
+    previewSurcharge = surcharge
     const nextMatchedRowIndex = combinations.findIndex((combination) =>
       Object.entries(combination).every(
         ([field, value]) => previewSample[field] === value
@@ -375,21 +439,28 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
       matchedRowIndex = nextMatchedRowIndex
     }
   } else {
-    const split = splitBillingExprAndRequestRules(rawExpr)
     previewConfig = tryParseTaskVisualConfig(
-      split.billingExpr,
+      rawSurchargeSplit.baseExpr,
       props.usageSchema
     )
-    previewRequestRuleExpr = split.requestRuleExpr
+    previewRequestRuleExpr = rawSplit.requestRuleExpr
+    previewSurcharge = rawSurchargeSplit.surcharge
   }
 
-  const publishRows = (nextRows: TaskMatrixRow[]) => {
+  const publishRows = (
+    nextRows: TaskMatrixRow[],
+    nextSurcharge: TaskSurcharge | null = surcharge
+  ) => {
     setMatrixRows(nextRows)
     props.onBillingExprChange(
-      generateTaskExprFromConfig(
-        {
-          tiers: taskMatrixToTiers({ rows: nextRows }, props.usageSchema),
-        },
+      combineTaskSurcharge(
+        generateTaskExprFromConfig(
+          {
+            tiers: taskMatrixToTiers({ rows: nextRows }, props.usageSchema),
+          },
+          props.usageSchema
+        ),
+        nextSurcharge,
         props.usageSchema
       )
     )
@@ -412,18 +483,41 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
     publishRows(nextRows)
   }
 
+  const publishSurcharge = (nextSurcharge: TaskSurcharge | null) => {
+    setSurcharge(nextSurcharge)
+    props.onBillingExprChange(
+      combineTaskSurcharge(
+        generateTaskExprFromConfig({ tiers: visualTiers }, props.usageSchema),
+        nextSurcharge,
+        props.usageSchema
+      )
+    )
+  }
+
+  const handleSurchargeToggle = (enabled: boolean) => {
+    if (!enabled) {
+      publishSurcharge(null)
+      return
+    }
+    const nextSurcharge = defaultTaskSurcharge(props.usageSchema)
+    if (nextSurcharge) publishSurcharge(nextSurcharge)
+  }
+
+  const updateSurcharge = (patch: Partial<TaskSurcharge>) => {
+    if (!surcharge) return
+    const nextSurcharge = normalizeTaskSurcharge(
+      { ...surcharge, ...patch },
+      props.usageSchema
+    )
+    if (nextSurcharge) publishSurcharge(nextSurcharge)
+  }
+
   const handleRawChange = (value: string) => {
     setRawExpr(value)
     const split = splitBillingExprAndRequestRules(value)
     props.onBillingExprChange(split.billingExpr)
     props.onRequestRuleExprChange(split.requestRuleExpr)
   }
-
-  const rawSplit = splitBillingExprAndRequestRules(rawExpr)
-  const rawMatrix = tryParseTaskMatrixConfig(
-    rawSplit.billingExpr,
-    props.usageSchema
-  )
 
   const handleModeChange = (nextMode: EditorMode) => {
     if (nextMode === editorMode) return
@@ -436,13 +530,19 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
   }
 
   const handleConfirmVisualSwitch = () => {
+    const nextSurcharge = rawMatrix ? rawSurchargeSplit.surcharge : null
     const nextRows = (
       rawMatrix ?? createDefaultTaskMatrixConfig(props.usageSchema)
     ).rows
+    setSurcharge(nextSurcharge)
     setMatrixRows(nextRows)
     props.onBillingExprChange(
-      generateTaskExprFromConfig(
-        { tiers: taskMatrixToTiers({ rows: nextRows }, props.usageSchema) },
+      combineTaskSurcharge(
+        generateTaskExprFromConfig(
+          { tiers: taskMatrixToTiers({ rows: nextRows }, props.usageSchema) },
+          props.usageSchema
+        ),
+        nextSurcharge,
         props.usageSchema
       )
     )
@@ -662,12 +762,151 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
               </>
             )}
 
+            {numberFields.length > 0 ? (
+              <div className='flex flex-col gap-3 border-t pt-3'>
+                <div className='flex items-start justify-between gap-3'>
+                  <div className='flex flex-col gap-1'>
+                    <Label className='text-xs font-medium'>
+                      {t('Usage surcharge')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Multiply the task cost when a usage quantity crosses a threshold.'
+                      )}
+                    </p>
+                  </div>
+                  <Switch
+                    aria-label={t('Usage surcharge')}
+                    checked={surcharge !== null}
+                    onCheckedChange={handleSurchargeToggle}
+                  />
+                </div>
+                {surcharge ? (
+                  <div className='grid gap-3 sm:grid-cols-2'>
+                    <Field className='gap-1.5'>
+                      <FieldLabel>{t('Usage field')}</FieldLabel>
+                      <Combobox
+                        aria-label={t('Usage field')}
+                        options={numberFields.map(([field, definition]) => ({
+                          value: field,
+                          label: taskPriceLabel(
+                            definition.description,
+                            field,
+                            i18n.language
+                          ),
+                        }))}
+                        value={surcharge.field}
+                        onValueChange={(value) =>
+                          value !== null && updateSurcharge({ field: value })
+                        }
+                        className='w-full'
+                      />
+                    </Field>
+                    <Field className='gap-1.5'>
+                      <FieldLabel>{t('Comparison')}</FieldLabel>
+                      <Select
+                        items={[
+                          { value: '>', label: t('Greater than') },
+                          {
+                            value: '>=',
+                            label: t('Greater than or equal to'),
+                          },
+                        ]}
+                        value={surcharge.operator}
+                        onValueChange={(value) =>
+                          value !== null &&
+                          updateSurcharge({
+                            operator: value as TaskSurchargeOperator,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          aria-label={t('Comparison')}
+                          className='w-full'
+                          size='sm'
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='>'>
+                              {t('Greater than')}
+                            </SelectItem>
+                            <SelectItem value='>='>
+                              {t('Greater than or equal to')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field className='gap-1.5'>
+                      <FieldLabel>{t('Threshold')}</FieldLabel>
+                      <div className='flex items-center gap-2'>
+                        <Input
+                          type='number'
+                          aria-label={t('Threshold')}
+                          min={0}
+                          step={1}
+                          value={surcharge.threshold}
+                          onChange={(event) => {
+                            const value = Number(event.target.value)
+                            updateSurcharge({
+                              threshold:
+                                Number.isFinite(value) && value >= 0
+                                  ? value
+                                  : 0,
+                            })
+                          }}
+                          className='font-mono'
+                        />
+                        <span className='text-muted-foreground shrink-0 text-xs'>
+                          {taskUsageUnitLabel(
+                            props.usageSchema[surcharge.field],
+                            i18n.language,
+                            t(
+                              getTaskUsageQuantityUnitLabelKey(
+                                props.usageSchema[surcharge.field]?.unit
+                              )
+                            )
+                          )}
+                        </span>
+                      </div>
+                    </Field>
+                    <Field className='gap-1.5'>
+                      <FieldLabel>{t('Multiplier')}</FieldLabel>
+                      <div className='flex items-center gap-2'>
+                        <Input
+                          type='number'
+                          aria-label={t('Multiplier')}
+                          min={0.01}
+                          step={0.1}
+                          value={surcharge.multiplier}
+                          onChange={(event) => {
+                            const value = Number(event.target.value)
+                            updateSurcharge({
+                              multiplier:
+                                Number.isFinite(value) && value > 0 ? value : 1,
+                            })
+                          }}
+                          className='font-mono'
+                        />
+                        <span className='text-muted-foreground shrink-0 text-xs'>
+                          ×
+                        </span>
+                      </div>
+                    </Field>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <TaskBillingPreview
               isVideo={props.isVideo}
               modelName={props.modelName}
               currency={props.currency}
               config={previewConfig}
               requestRuleExpr={previewRequestRuleExpr}
+              surcharge={previewSurcharge}
               sample={previewSample}
               usageSchema={props.usageSchema}
               usageExamples={props.usageExamples}
@@ -734,6 +973,7 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
               currency={props.currency}
               config={previewConfig}
               requestRuleExpr={previewRequestRuleExpr}
+              surcharge={previewSurcharge}
               sample={previewSample}
               usageSchema={props.usageSchema}
               usageExamples={props.usageExamples}
@@ -748,8 +988,12 @@ export const TaskUsagePricingEditor = memo(function TaskUsagePricingEditor(
           editorMode === 'raw'
             ? rawExpr
             : combineBillingExpr(
-                generateTaskExprFromConfig(
-                  { tiers: visualTiers },
+                combineTaskSurcharge(
+                  generateTaskExprFromConfig(
+                    { tiers: visualTiers },
+                    props.usageSchema
+                  ),
+                  surcharge,
                   props.usageSchema
                 ),
                 props.requestRuleExpr

@@ -351,3 +351,50 @@ it.each(['image', 'video'] as const)(
     }
   }
 )
+
+it('configures a usage surcharge that multiplies long durations', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  render(
+    <TaskPricingDraft
+      expression='tier("base", u("seconds") * 0.4)'
+      onChange={onChange}
+    />
+  )
+  expect(screen.getByRole('table')).toBeVisible()
+  const toggle = screen.getByRole('switch', { name: 'Usage surcharge' })
+  expect(toggle).not.toBeChecked()
+  await user.click(toggle)
+  expect(onChange).toHaveBeenLastCalledWith(
+    '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 0 ? 2 : 1)'
+  )
+  const threshold = screen.getByRole('spinbutton', { name: 'Threshold' })
+  await user.clear(threshold)
+  await user.type(threshold, '15')
+  expect(onChange).toHaveBeenLastCalledWith(
+    '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)'
+  )
+  const multiplier = screen.getByRole('spinbutton', { name: 'Multiplier' })
+  await user.tripleClick(multiplier)
+  await user.keyboard('3')
+  expect(onChange).toHaveBeenLastCalledWith(
+    '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 3 : 1)'
+  )
+})
+
+it('restores a stored usage surcharge and removes it when disabled', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  render(
+    <TaskPricingDraft
+      expression='(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)'
+      onChange={onChange}
+    />
+  )
+  expect(screen.getByRole('table')).toBeVisible()
+  expect(screen.getByRole('switch', { name: 'Usage surcharge' })).toBeChecked()
+  expect(screen.getByRole('spinbutton', { name: 'Threshold' })).toHaveValue(15)
+  expect(screen.getByRole('spinbutton', { name: 'Multiplier' })).toHaveValue(2)
+  await user.click(screen.getByRole('switch', { name: 'Usage surcharge' }))
+  expect(onChange).toHaveBeenLastCalledWith('tier("base", u("seconds") * 0.4)')
+})
