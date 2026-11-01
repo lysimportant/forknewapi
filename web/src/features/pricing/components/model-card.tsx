@@ -48,6 +48,7 @@ import type {
 } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
+import { TaskSurchargeNote } from './task-surcharge-note'
 import {
   YuanliuAvailabilityBadge,
   SeedanceAvailabilityBadge,
@@ -203,6 +204,13 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                 ({dynamicSummary.tier.label})
               </span>
             )}
+          {dynamicSummary.taskSurcharge && (
+            <TaskSurchargeNote
+              surcharge={dynamicSummary.taskSurcharge}
+              usageSchema={props.model.billing_usage_schema}
+              className='col-span-full'
+            />
+          )}
         </>
       )
     } else {

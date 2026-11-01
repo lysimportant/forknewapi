@@ -821,6 +821,35 @@ describe('model cards', () => {
     expect(screen.getByText(expression)).toBeVisible()
   })
 
+  it('shows a surcharged task price with its surcharge rule instead of a special expression', () => {
+    render(
+      <ModelCard
+        model={pricingModel({
+          billing_mode: 'tiered_expr',
+          billing_expr:
+            '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)',
+          billing_usage_schema: {
+            seconds: {
+              type: 'number',
+              unit: 'second',
+              description: { en: 'Video generation unit price' },
+            },
+          },
+        })}
+        onClick={vi.fn()}
+      />
+    )
+    expect(
+      screen.queryByText('Special billing expression')
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/^\$0\.4$/)).toBeVisible()
+    expect(
+      screen.getByText(
+        /Usage surcharge: ×2 when Video generation unit price .*15/
+      )
+    ).toBeVisible()
+  })
+
   it('keeps browsing and missing metric values available after the metrics request fails', async () => {
     const request = vi
       .spyOn(api, 'get')
@@ -855,7 +884,9 @@ describe('model cards', () => {
   })
 
   it('appends the final model when the load more fallback is clicked', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data: { models: [] } } })
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: { models: [] } },
+    })
     const models = Array.from({ length: 21 }, (_, index) =>
       pricingModel({ id: index + 1, model_name: `model-${index + 1}` })
     )

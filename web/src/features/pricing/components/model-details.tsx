@@ -103,6 +103,7 @@ import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
+import { TaskSurchargeNote } from './task-surcharge-note'
 import {
   YuanliuAvailabilityBadge,
   SeedanceAvailabilityBadge,
@@ -818,6 +819,13 @@ function PriceSection(props: {
               ? t('Not configured')
               : t('Dynamic Pricing')}
           </p>
+        )}
+        {dynamicSummary.taskSurcharge && (
+          <TaskSurchargeNote
+            surcharge={dynamicSummary.taskSurcharge}
+            usageSchema={props.model.billing_usage_schema}
+            className='mt-2'
+          />
         )}
         {dynamicSummary.secondaryEntries.length > 0 && (
           <div className='bg-muted/20 mt-3 rounded-lg border px-3 py-2.5'>

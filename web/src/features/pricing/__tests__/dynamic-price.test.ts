@@ -297,6 +297,31 @@ describe('task dynamic pricing', () => {
     assert.equal(summary.primaryEntries[0]?.formattedRange, undefined)
   })
 
+  test('keeps the task price table when a usage surcharge is attached', () => {
+    const model = pricingModel({
+      billing_mode: 'tiered_expr',
+      billing_expr:
+        '(u("mode") == "pro" ? tier("pro", u("seconds") * 0.8) : tier("std", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)',
+      billing_usage_schema: {
+        seconds: { type: 'number', unit: 'second' },
+        mode: { enum: ['std', 'pro'] },
+      },
+    })
+
+    const summary = getDynamicPricingSummary(model, summaryOptions)
+
+    assert.ok(summary)
+    assert.equal(summary.isSpecialExpression, false)
+    assert.equal(summary.tiers.length, 2)
+    assert.equal(summary.primaryEntries[0]?.value, 0.4)
+    assert.deepEqual(summary.taskSurcharge, {
+      field: 'seconds',
+      operator: '>',
+      threshold: 15,
+      multiplier: 2,
+    })
+  })
+
   test('identifies unconfigured task usage models without inventing token pricing', () => {
     const secondsModel = pricingModel({
       billing_usage_schema: {
@@ -545,6 +570,33 @@ describe('task dynamic pricing', () => {
     assert.ok(example)
     assert.equal(example.label, '720p · 5s')
     assert.match(example.formatted, /1[.,]0584/)
+  })
+
+  test('applies the usage surcharge when pricing a card example', () => {
+    const schema = {
+      seconds: { type: 'number' as const, unit: 'second' as const },
+    }
+    const exampleFor = (seconds: number) =>
+      getCardExamplePrice(
+        pricingModel({
+          billing_mode: 'tiered_expr',
+          billing_expr:
+            'tier("base", u("seconds") * 0.4) * (u("seconds") > 15 ? 2 : 1)',
+          billing_usage_schema: schema,
+          billing_usage_examples: [
+            { label: `${seconds}s`, facts: { seconds } },
+          ],
+        }),
+        summaryOptions
+      )
+
+    const under = exampleFor(15)
+    const over = exampleFor(20)
+
+    assert.ok(under)
+    assert.ok(over)
+    assert.equal(under.total, 6)
+    assert.equal(over.total, 16)
   })
 
   test('returns null when the expression is not canonical or examples are missing', () => {

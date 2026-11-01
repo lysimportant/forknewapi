@@ -44,6 +44,11 @@ import {
   tryParseTaskVisualConfig,
 } from './task-expr'
 import { getTaskPricingDisplayTiers } from './task-matrix-display'
+import {
+  applyTaskSurcharge,
+  splitTaskSurcharge,
+  type TaskSurcharge,
+} from './task-surcharge'
 
 export type DynamicPriceOptions = {
   tokenUnit: TokenUnit
@@ -95,6 +100,7 @@ export type DynamicPricingSummary = {
   primaryEntries: DynamicPriceEntry[]
   secondaryEntries: DynamicPriceEntry[]
   isTaskUsage: boolean
+  taskSurcharge?: TaskSurcharge | null
   isTimePricing?: boolean
   isMixedBilling?: boolean
   providerCount?: number
@@ -485,6 +491,9 @@ export function getDynamicPricingSummary(
           entry.field !== 'modelPrice'
       ),
       isTaskUsage: true,
+      taskSurcharge:
+        summaries.find((summary) => summary.taskSurcharge)?.taskSurcharge ??
+        null,
       providerCount: variants.length >= 2 ? variants.length : undefined,
       hasUnconfiguredProviders: variants.some((variant) =>
         variant.billing_mode === 'ratio'
@@ -558,6 +567,10 @@ export function getDynamicPricingSummary(
     })
   }
   const rawExpression = model.billing_expr || ''
+  const taskSurcharge = isTaskUsage
+    ? splitTaskSurcharge(baseExpression, model.billing_usage_schema ?? {})
+        .surcharge
+    : null
 
   return {
     tiers,
@@ -588,6 +601,7 @@ export function getDynamicPricingSummary(
             !PRIMARY_DYNAMIC_FIELDS.has(entry.field)
         ),
     isTaskUsage,
+    taskSurcharge,
     isTimePricing: timeTiers !== null,
     ...(isMixedBilling ? { isMixedBilling } : {}),
   }
@@ -613,15 +627,21 @@ export function getCardExamplePrice(
   const { billingExpr } = splitBillingExprAndRequestRules(
     model.billing_expr || ''
   )
-  const config = tryParseTaskVisualConfig(billingExpr, schema)
+  const surchargeSplit = splitTaskSurcharge(billingExpr, schema)
+  const config = tryParseTaskVisualConfig(surchargeSplit.baseExpr, schema)
   if (!config) return null
 
   const result = evaluateTaskVisualConfig(config, firstExample.facts, schema)
   if (!result) return null
+  const total = applyTaskSurcharge(
+    result.total,
+    surchargeSplit.surcharge,
+    firstExample.facts
+  )
 
   return {
     label: firstExample.label,
-    total: result.total,
-    formatted: formatTaskUsageUnitPrice(result.total, options),
+    total,
+    formatted: formatTaskUsageUnitPrice(total, options),
   }
 }

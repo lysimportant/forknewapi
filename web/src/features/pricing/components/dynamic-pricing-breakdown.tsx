@@ -61,7 +61,9 @@ import {
   taskTierConditions,
   pricingDisplayFallbackKey,
 } from '../lib/task-price-display'
+import { splitTaskSurcharge } from '../lib/task-surcharge'
 import type { BillingUsageSchema, BillingUsageUnit } from '../types'
+import { TaskSurchargeNote } from './task-surcharge-note'
 
 type DynamicPricingBreakdownProps = {
   billingExpr: string | null | undefined
@@ -314,11 +316,14 @@ export function DynamicPricingBreakdown({
     return { symbol: '$', rate: 1 }
   }, [currency])
 
-  const { tiers, ruleGroups } = useMemo(() => {
+  const { tiers, ruleGroups, surcharge } = useMemo(() => {
     const split = splitBillingExprAndRequestRules(expr)
     const parsedTiers = usageSchema
       ? getTaskPricingDisplayTiers(split.billingExpr, usageSchema)
       : parseTiersFromExpr(split.billingExpr)
+    const parsedSurcharge = usageSchema
+      ? splitTaskSurcharge(split.billingExpr, usageSchema).surcharge
+      : null
     let parsedRules =
       requestRules != null
         ? requestRuleGroupsFromTrace(requestRules)
@@ -338,6 +343,7 @@ export function DynamicPricingBreakdown({
     return {
       tiers: parsedTiers,
       ruleGroups: parsedRules || [],
+      surcharge: parsedSurcharge,
     }
   }, [expr, usageSchema, requestRules])
 
@@ -702,6 +708,14 @@ export function DynamicPricingBreakdown({
             ]}
           />
         </div>
+      )}
+
+      {surcharge && (
+        <TaskSurchargeNote
+          surcharge={surcharge}
+          usageSchema={usageSchema}
+          className={cn('mt-2', compact && 'mb-2')}
+        />
       )}
 
       {hasRules && (

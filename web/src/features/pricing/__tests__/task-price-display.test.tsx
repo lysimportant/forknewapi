@@ -150,6 +150,47 @@ it('shows nested task conditions and prices in detail and group tables without a
   expect(screen.queryByText('Matched')).not.toBeInTheDocument()
 })
 
+it('keeps a surcharged task price table and reports the surcharge rule', () => {
+  vi.spyOn(api, 'get').mockResolvedValue({ data: { data: { groups: [] } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  clients.push(client)
+  const surchargedModel: PricingModel = {
+    ...model,
+    model_name: 'surcharged_music',
+    billing_expr:
+      '(tier("music", u("clips") * 0.22)) * (u("clips") > 15 ? 2 : 1)',
+  }
+  render(
+    <QueryClientProvider client={client}>
+      <ModelDetailsContent
+        model={surchargedModel}
+        groupRatio={{ default: 2 }}
+        usableGroup={{ default: { desc: '', ratio: 2 } }}
+        endpointMap={{}}
+        autoGroups={[]}
+        priceRate={1}
+        usdExchangeRate={1}
+        tokenUnit='M'
+      />
+      <DynamicPricingBreakdown
+        billingExpr={surchargedModel.billing_expr}
+        usageSchema={surchargedModel.billing_usage_schema}
+      />
+    </QueryClientProvider>
+  )
+  expect(
+    screen.queryByText('Special billing expression')
+  ).not.toBeInTheDocument()
+  expect(screen.getAllByText('$0.22').length).toBeGreaterThan(0)
+  expect(
+    screen.getAllByText(
+      /Usage surcharge: ×2 when Song generation unit price .*15/
+    ).length
+  ).toBeGreaterThan(0)
+})
+
 it('explains missing task metadata while retaining the original expression', () => {
   const expression = 'tier("base", u("seconds") * 0.09)'
   render(<DynamicPricingBreakdown billingExpr={expression} />)

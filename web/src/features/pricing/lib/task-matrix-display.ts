@@ -29,6 +29,7 @@ import {
   taskMatrixRowLabel,
   tryParseTaskMatrixConfig,
 } from './task-expr'
+import { splitTaskSurcharge } from './task-surcharge'
 
 /**
  * Marketplace display helper: expand a recognized task matrix (flat/uniform
@@ -43,7 +44,9 @@ export function getTaskMatrixDisplayTiers(
   if (!schema) return null
   if (getTaskEnumFields(schema).length === 0) return null
 
-  const matrix = tryParseTaskMatrixConfig(expression, schema)
+  // A usage surcharge wraps the matrix in a multiplication, not in a tier.
+  const { baseExpr } = splitTaskSurcharge(expression, schema)
+  const matrix = tryParseTaskMatrixConfig(baseExpr, schema)
   if (!matrix) return null
 
   return matrix.rows.map((row) => ({
@@ -88,9 +91,10 @@ function readTaskPricingTiers(
   expression: string | null | undefined,
   schema: BillingUsageSchema | null | undefined
 ): ParsedTaskTier[] {
-  const tiers = parseTaskTiersFromExpr(expression || '', schema, true)
-  if (tiers.length === 0 && expression && schema) {
-    const { billingExpr } = splitBillingExprAndRequestRules(expression)
+  const { baseExpr } = splitTaskSurcharge(expression || '', schema ?? {})
+  const tiers = parseTaskTiersFromExpr(baseExpr, schema, true)
+  if (tiers.length === 0 && baseExpr && schema) {
+    const { billingExpr } = splitBillingExprAndRequestRules(baseExpr)
     return readConditionalTaskPricing(billingExpr, schema) ?? []
   }
   const fallback = tiers.at(-1)

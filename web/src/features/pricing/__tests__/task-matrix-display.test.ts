@@ -315,4 +315,25 @@ describe('task matrix marketplace display rows', () => {
     assert.equal(baseEntries.at(-1)?.value, 0.1)
     assert.match(doubledEntries.at(-1)?.formatted ?? '', /0[.,]2/)
   })
+
+  test('displays a surcharged expression through its recognized base tiers', () => {
+    const tiers = getTaskPricingDisplayTiers(
+      '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)',
+      numberOnlySchema
+    )
+    assert.equal(tiers.length, 1)
+    assert.equal(tiers[0].label, 'base')
+    assert.equal(tiers[0].unitPrices.seconds, 0.4)
+
+    const rows = getTaskMatrixDisplayTiers(
+      '(tier("base", u("seconds") * 0.4)) * (u("seconds") > 15 ? 2 : 1)',
+      doubleEnumSchema
+    )
+    assert.ok(rows)
+    assert.equal(rows.length, 4)
+    assert.equal(
+      rows.every((row) => row.unitPrices.seconds === 0.4),
+      true
+    )
+  })
 })
