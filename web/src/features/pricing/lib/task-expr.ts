@@ -29,6 +29,19 @@ import { evaluateBillingExpression } from './billing-expression/runtime'
 
 export const TASK_TOKEN_PRICE_SCALE = 1_000_000
 
+/**
+ * 按秒×清晰度面板只覆盖 count/seconds 两个 number 计价项；
+ * schema 含其它 number 计价项（如图片/视频/音频素材单价）时必须回退通用任务编辑器。
+ */
+export function supportsUnifiedVideoPricing(
+  usageSchema: BillingUsageSchema | null | undefined
+): boolean {
+  return Object.entries(usageSchema ?? {}).every(
+    ([field, definition]) =>
+      definition.type !== 'number' || field === 'count' || field === 'seconds'
+  )
+}
+
 export type TaskVisualCondition = {
   field: string
   value: string

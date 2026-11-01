@@ -84,6 +84,7 @@ import { pluginExpressionsEqual } from '@/features/pricing/lib/plugin-pricing'
 import {
   createDefaultTaskVisualConfig,
   generateTaskExprFromConfig,
+  supportsUnifiedVideoPricing,
 } from '@/features/pricing/lib/task-expr'
 import { isVideoPricingModel } from '@/features/pricing/lib/video-resolution'
 import type { BillingUsageSchema } from '@/features/pricing/types'
@@ -333,20 +334,6 @@ export const ModelPricingEditorPanel = forwardRef<
       ),
     [pricingModels]
   )
-  const livePluginVariants =
-    pluginVariants?.filter((variant) => !variant.stale) ?? []
-  const unifiedVideoDefault =
-    taskPluginKey === 'seedance-video' ||
-    taskPluginKey === 'yuanliu' ||
-    taskPluginKey === 'nskeven-video' ||
-    taskPluginKey === 'v6k-video' ||
-    taskPluginKey === 'megaviews-video' ||
-    (livePluginVariants.length === 1 &&
-      (livePluginVariants[0].plugin_key === 'seedance-video' ||
-        livePluginVariants[0].plugin_key === 'yuanliu' ||
-        livePluginVariants[0].plugin_key === 'nskeven-video' ||
-        livePluginVariants[0].plugin_key === 'v6k-video' ||
-        livePluginVariants[0].plugin_key === 'megaviews-video'))
   const taskUsageSchema =
     usageSchema ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_schema ??
@@ -354,6 +341,21 @@ export const ModelPricingEditorPanel = forwardRef<
   const taskUsageExamples =
     usageExamplesByModel.get(watchedValues.name.trim()) ??
     pluginVariants?.find((variant) => !variant.stale)?.usage_examples
+  const livePluginVariants =
+    pluginVariants?.filter((variant) => !variant.stale) ?? []
+  const unifiedVideoDefault =
+    supportsUnifiedVideoPricing(taskUsageSchema) &&
+    (taskPluginKey === 'seedance-video' ||
+      taskPluginKey === 'yuanliu' ||
+      taskPluginKey === 'nskeven-video' ||
+      taskPluginKey === 'v6k-video' ||
+      taskPluginKey === 'megaviews-video' ||
+      (livePluginVariants.length === 1 &&
+        (livePluginVariants[0].plugin_key === 'seedance-video' ||
+          livePluginVariants[0].plugin_key === 'yuanliu' ||
+          livePluginVariants[0].plugin_key === 'nskeven-video' ||
+          livePluginVariants[0].plugin_key === 'v6k-video' ||
+          livePluginVariants[0].plugin_key === 'megaviews-video')))
   const defaultTaskBillingExpr = useMemo(() => {
     if (unifiedVideoDefault) return DEFAULT_SEEDANCE_BILLING_EXPR
     if (!taskUsageSchema) return ''

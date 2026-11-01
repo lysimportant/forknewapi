@@ -29,6 +29,7 @@ import type {
 import { USD_PRICING_CURRENCY } from '@/features/model-pricing/currency'
 import { ModelPricingPanel } from '@/features/model-pricing/model-pricing-panel'
 import { pricingOptions } from '@/features/model-pricing/pricing'
+import { supportsUnifiedVideoPricing } from '@/features/pricing/lib/task-expr'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
@@ -632,6 +633,52 @@ function megaAiVariant(configured = ''): ModelPricingPluginVariant {
   }
 }
 
+/** MegaAi 支持输入素材计费后的完整用量 schema。 */
+function megaAiMediaVariant(configured = ''): ModelPricingPluginVariant {
+  return {
+    plugin_key: 'megaviews-video',
+    plugin_name: 'MegaAi 视频',
+    usage_schema: {
+      count: {
+        type: 'number',
+        unit: 'count',
+        description: { en: 'Video generation unit price' },
+      },
+      seconds: {
+        type: 'number',
+        unit: 'second',
+        description: { en: 'Video generation unit price' },
+      },
+      input_images: {
+        type: 'number',
+        unit: 'count',
+        description: { en: 'Input image unit price' },
+      },
+      input_videos: {
+        type: 'number',
+        unit: 'count',
+        description: { en: 'Input video unit price' },
+      },
+      input_audios: {
+        type: 'number',
+        unit: 'count',
+        description: { en: 'Input audio unit price' },
+      },
+      input_video_seconds: {
+        type: 'number',
+        unit: 'second',
+        description: { en: 'Input video unit price' },
+      },
+      video_resolution: {
+        enum: ['480p', '720p', '768p', '1080p', '4k'],
+      },
+    },
+    configured,
+    effective: configured,
+    compatible: true,
+  }
+}
+
 it('keeps Seedance call and resolution prices separate until the draft is committed', async () => {
   const original = 'tier( "original", u("count") * 0.25 )'
   const rules = 'header("x-priority") == "high" ? 2 : 1'
@@ -997,3 +1044,35 @@ it.each([
     expect(draft?.pluginBillingExpr?.[key]).not.toContain('u("count")')
   }
 )
+
+it('keeps the unified video editor only for schemas limited to call and seconds prices', () => {
+  expect(
+    supportsUnifiedVideoPricing({
+      count: { type: 'number', unit: 'count' },
+      seconds: { type: 'number', unit: 'second' },
+      video_resolution: { enum: ['480p', '720p'] },
+    })
+  ).toBe(true)
+  expect(
+    supportsUnifiedVideoPricing({
+      count: { type: 'number', unit: 'count' },
+      seconds: { type: 'number', unit: 'second' },
+      input_images: { type: 'number', unit: 'count' },
+    })
+  ).toBe(false)
+})
+
+it('shows reference media prices for a unified video schema that declares them', async () => {
+  renderEditor({ name: 'kling-4.0', billingMode: 'tiered_expr' }, [
+    megaAiMediaVariant(),
+  ])
+  expect(
+    await screen.findByRole('columnheader', {
+      name: /Input image unit price/,
+    })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('columnheader', { name: /Input audio unit price/ })
+  ).toBeVisible()
+  expect(screen.queryByRole('tab', { name: 'Seconds × resolution' })).toBeNull()
+})

@@ -38,6 +38,7 @@ import { taskExpressionCompatible } from '@/features/pricing/lib/plugin-pricing'
 import {
   createDefaultTaskVisualConfig,
   generateTaskExprFromConfig,
+  supportsUnifiedVideoPricing,
 } from '@/features/pricing/lib/task-expr'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 
@@ -148,11 +149,12 @@ export function TaskPluginPricingEditor(props: TaskPluginPricingEditorProps) {
       {props.variants.map((variant) => {
         const key = variant.plugin_key
         const usesUnifiedVideoPricing =
-          key === 'seedance-video' ||
-          key === 'yuanliu' ||
-          key === 'nskeven-video' ||
-          key === 'v6k-video' ||
-          key === 'megaviews-video'
+          supportsUnifiedVideoPricing(variant.usage_schema) &&
+          (key === 'seedance-video' ||
+            key === 'yuanliu' ||
+            key === 'nskeven-video' ||
+            key === 'v6k-video' ||
+            key === 'megaviews-video')
         const UsagePricingEditor = usesUnifiedVideoPricing
           ? SeedanceUsagePricingEditor
           : TaskUsagePricingEditor
