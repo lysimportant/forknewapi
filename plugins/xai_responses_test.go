@@ -70,8 +70,8 @@ func TestXAIResponsesProtocol(t *testing.T) {
 			"resolution":   "720p",
 			"aspect_ratio": "16:9",
 		},
-		wantUsageKeys:       []string{"input_images", "input_video_seconds", "moderated", "resolution", "seconds"},
-		wantSubmitUsageKeys: []string{"input_images", "moderated", "resolution", "seconds"},
+		wantUsageKeys:       []string{"input_audios", "input_images", "input_video_seconds", "input_videos", "moderated", "resolution", "seconds"},
+		wantSubmitUsageKeys: []string{"input_audios", "input_images", "input_videos", "moderated", "resolution", "seconds"},
 		wantVendorName:      "xai",
 	})
 }
@@ -103,7 +103,7 @@ func TestXAIModeratedVideoKeepsItsCharge(t *testing.T) {
 	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 	facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"seconds": float64(8), "resolution": "720p", "input_images": float64(1), "moderated": false}, facts)
+	assert.Equal(t, map[string]any{"seconds": float64(8), "resolution": "720p", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0), "moderated": false}, facts)
 	_, trace, err := billingexpr.RunExprWithRequest(expression, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
 	require.NoError(t, err)
 	assert.Equal(t, "720p", trace.MatchedTier)
@@ -227,7 +227,7 @@ func TestXAIVideoRequests(t *testing.T) {
 				"model": "grok-imagine-video-1.5", "prompt": "<IMAGE_0> meets <IMAGE_1>", "reference_images": referenceImages,
 				"duration": float64(8), "resolution": "720p", "user": "end-user",
 			},
-			wantFacts: map[string]any{"seconds": float64(8), "resolution": "720p", "input_images": float64(2), "moderated": false},
+			wantFacts: map[string]any{"seconds": float64(8), "resolution": "720p", "input_images": float64(2), "input_videos": float64(0), "input_audios": float64(0), "moderated": false},
 		},
 		{
 			name:    "edit reserves the longest input and drops output settings",
@@ -238,7 +238,7 @@ func TestXAIVideoRequests(t *testing.T) {
 			wantModel: "grok-imagine-video",
 			wantPath:  "/v1/videos/edits",
 			wantBody:  map[string]any{"model": "grok-imagine-video", "prompt": "make it snow", "video": inputVideo},
-			wantFacts: map[string]any{"seconds": float64(9), "resolution": "720p", "input_images": float64(0), "input_video_seconds": float64(9), "moderated": false},
+			wantFacts: map[string]any{"seconds": float64(9), "resolution": "720p", "input_images": float64(0), "input_videos": float64(1), "input_audios": float64(0), "input_video_seconds": float64(9), "moderated": false},
 		},
 		{
 			name:    "extension bills the added seconds",
@@ -249,7 +249,7 @@ func TestXAIVideoRequests(t *testing.T) {
 			wantModel: "grok-imagine-video",
 			wantPath:  "/v1/videos/extensions",
 			wantBody:  map[string]any{"model": "grok-imagine-video", "prompt": "keep walking", "video": inputVideo, "duration": float64(4)},
-			wantFacts: map[string]any{"seconds": float64(4), "resolution": "720p", "input_images": float64(0), "input_video_seconds": float64(15), "moderated": false},
+			wantFacts: map[string]any{"seconds": float64(4), "resolution": "720p", "input_images": float64(0), "input_videos": float64(1), "input_audios": float64(0), "input_video_seconds": float64(15), "moderated": false},
 		},
 		{
 			name:    "OpenAI multipart upload becomes the first frame",
@@ -265,7 +265,22 @@ func TestXAIVideoRequests(t *testing.T) {
 				"model": "grok-imagine-video", "prompt": "a cat", "duration": float64(6), "resolution": "720p", "aspect_ratio": "9:16",
 				"image": map[string]any{"url": map[string]any{"__fileRef": "request_file:input_reference", "encoding": "dataUrl"}},
 			},
-			wantFacts: map[string]any{"seconds": float64(6), "resolution": "720p", "input_images": float64(1), "input_video_seconds": float64(0), "moderated": false},
+			wantFacts: map[string]any{"seconds": float64(6), "resolution": "720p", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0), "moderated": false},
+		},
+		{
+			name:    "reference audios are counted for the count price",
+			decoder: []string{"native", "createGeneration"},
+			ctx: map[string]any{"body": jsonBody(map[string]any{
+				"model": "grok-imagine-video-1.5", "prompt": "a fox speaks", "resolution": "480p",
+				"reference_audios": []any{map[string]any{"voice_id": "voice-1"}, map[string]any{"url": "https://cdn.example/a.mp3"}},
+			})},
+			wantModel: "grok-imagine-video-1.5",
+			wantPath:  "/v1/videos/generations",
+			wantBody: map[string]any{
+				"model": "grok-imagine-video-1.5", "prompt": "a fox speaks", "duration": float64(8), "resolution": "480p",
+				"reference_audios": []any{map[string]any{"voice_id": "voice-1"}, map[string]any{"url": "https://cdn.example/a.mp3"}},
+			},
+			wantFacts: map[string]any{"seconds": float64(8), "resolution": "480p", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(2), "moderated": false},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -437,7 +452,7 @@ func TestXAIEditSettlesOnOutputResolution(t *testing.T) {
 	require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 	reserved, err := adaptor.ExtractUsageFactsValidated(c, info)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"seconds": float64(6), "resolution": "720p", "input_images": float64(0), "input_video_seconds": float64(15), "moderated": false}, reserved)
+	assert.Equal(t, map[string]any{"seconds": float64(6), "resolution": "720p", "input_images": float64(0), "input_videos": float64(1), "input_audios": float64(0), "input_video_seconds": float64(15), "moderated": false}, reserved)
 	snapshot := &billingexpr.BillingSnapshot{
 		BillingMode: billing_setting.BillingModeTieredExpr, ModelName: videoModel, ExprString: expression, ExprHash: billingexpr.ExprHashString(expression),
 		GroupRatio: 1, QuotaPerUnit: 500000, ExprVersion: billingexpr.ExprVersion(expression), TaskUsageBilling: true, UsageFacts: reserved,

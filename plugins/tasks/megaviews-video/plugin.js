@@ -14,9 +14,11 @@
  * 参考素材必须是上游可访问的公网 HTTP(S) 直链，本地文件上传无法提交给该接口。
  *
  * 模型不在插件里写死：渠道使用 modelRouting "channel"，管理员在类型 61 渠道里读取
- * 上游 /v1/models 目录后自行勾选视频模型。售价由管理员在本站配置，插件只报告
- * 请求时长、清晰度等计费用量事实；上游按“生成时长 + 参考素材时长”计费的模型，
- * 查询响应会报告与实际计费一致的 billing_seconds，完成时按该值结算实际秒数。
+ * 上游 /v1/models 目录后自行勾选视频模型。售价由管理员在本站配置，插件报告计费用量
+ * 事实：生成时长（seconds）、清晰度、参考素材数量（input_images/input_videos/input_audios）
+ * 与参考视频秒数（input_video_seconds）。上游按“生成时长 + 参考素材时长”计费的模型，
+ * 查询响应会分别报告 generated_seconds 与 reference_video_seconds；完成时生成时长按
+ * seconds 结算、参考视频时长按 input_video_seconds 结算，只报告 billing_seconds 时按总时长结算。
  */
 
 export const meta = {
@@ -27,7 +29,7 @@ export const meta = {
     en: "MegaAi unified video generation gateway",
     zh: "MegaAi 统一视频生成网关",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://megaviews.top/docs",
   baseUrl: "https://megaviews.top",
@@ -50,6 +52,29 @@ export const meta = {
       unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_videos: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "段" },
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
+    input_video_seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
     video_resolution: {
       enum: ["480p", "720p", "768p", "1080p", "4k"],
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
@@ -57,11 +82,11 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
-    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
-    { label: "768p · 5s", facts: { count: 1, seconds: 5, video_resolution: "768p" } },
-    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
-    { label: "4k · 5s", facts: { count: 1, seconds: 5, video_resolution: "4k" } },
+    { label: "480p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: "480p" } },
+    { label: "720p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: "720p" } },
+    { label: "768p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: "768p" } },
+    { label: "1080p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: "1080p" } },
+    { label: "4k · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: "4k" } },
   ],
 };
 
@@ -205,21 +230,30 @@ function mediaItems(value, field) {
   return [value];
 }
 
-/** 平台参考素材是 URL 字符串数组；画布传入的 {url, duration_seconds} 只取 URL。 */
+/**
+ * 平台的参考素材数组只接受 URL；画布可能附带 duration_seconds，校验后随条目返回，
+ * 用于提交阶段估算输入视频秒数。首帧/尾帧不计入付费参考素材。
+ */
 function mediaItem(value, field) {
-  if (typeof value === "string") return mediaURL(value, field);
-  if (!isObject(value)) fail(field + " must contain media URLs");
-  const keys = Object.keys(value);
-  for (let index = 0; index < keys.length; index += 1) {
-    if (keys[index] !== "url" && keys[index] !== "duration_seconds") fail("unsupported " + field + " item field: " + keys[index]);
+  let url;
+  let duration;
+  if (typeof value === "string") {
+    url = mediaURL(value, field);
+  } else {
+    if (!isObject(value)) fail(field + " must contain media URLs");
+    const keys = Object.keys(value);
+    for (let index = 0; index < keys.length; index += 1) {
+      if (keys[index] !== "url" && keys[index] !== "duration_seconds") fail("unsupported " + field + " item field: " + keys[index]);
+    }
+    url = mediaURL(value.url, field);
+    if (value.duration_seconds !== undefined) {
+      const seconds = Number(value.duration_seconds);
+      if (!Number.isInteger(seconds) || seconds < MIN_SECONDS || seconds > MAX_SECONDS)
+        fail(field + " duration_seconds must be an integer between 1 and 3600");
+      duration = seconds;
+    }
   }
-  const url = mediaURL(value.url, field);
-  if (value.duration_seconds !== undefined) {
-    const duration = Number(value.duration_seconds);
-    if (!Number.isInteger(duration) || duration < MIN_SECONDS || duration > MAX_SECONDS)
-      fail(field + " duration_seconds must be an integer between 1 and 3600");
-  }
-  return url;
+  return { url: url, duration: duration };
 }
 
 function collectMedia(source, field, aliases) {
@@ -394,7 +428,8 @@ function collectContent(metadata, prompt, target) {
 }
 
 /**
- * 把宿主入口请求归一成平台统一参数；返回的 requestBody 是驱动钩子与计费事实的唯一来源。
+ * 把宿主入口请求归一成平台统一参数；返回的 body 是驱动钩子与计费事实的唯一来源，
+ * usage 汇总可计费的参考素材数量与输入视频秒数（首帧不计入参考素材）。
  * 不补默认时长、清晰度或素材数量：具体模型支持范围由上游按模型校验。
  */
 function normalizeRequest(request) {
@@ -430,9 +465,23 @@ function normalizeRequest(request) {
     if (Object.keys(rest).length > 0) metadataRest = rest;
   }
 
-  const images = collectMedia(source, "images", IMAGE_LIST_FIELDS);
-  const videos = collectMedia(source, "videos", VIDEO_LIST_FIELDS);
-  const audios = collectMedia(source, "audios", AUDIO_LIST_FIELDS);
+  const imageItems = collectMedia(source, "images", IMAGE_LIST_FIELDS);
+  const videoItems = collectMedia(source, "videos", VIDEO_LIST_FIELDS);
+  const audioItems = collectMedia(source, "audios", AUDIO_LIST_FIELDS);
+  const images = imageItems.map(function (item) {
+    return item.url;
+  });
+  const videos = videoItems.map(function (item) {
+    return item.url;
+  });
+  const audios = audioItems.map(function (item) {
+    return item.url;
+  });
+  let inputVideoSeconds = 0;
+  for (let index = 0; index < videoItems.length; index += 1) {
+    if (videoItems[index].duration !== undefined) inputVideoSeconds += videoItems[index].duration;
+  }
+  inputVideoSeconds = Math.min(inputVideoSeconds, MAX_SECONDS);
 
   for (let index = 0; index < LAST_FRAME_FIELDS.length; index += 1) {
     if (source[LAST_FRAME_FIELDS[index]] !== undefined) fail("last frame is not supported by the MegaAi unified video API");
@@ -488,7 +537,13 @@ function normalizeRequest(request) {
   const referenceAudios = audios.concat(target.audios);
   if (referenceAudios.length > 0) normalized.referenceAudios = referenceAudios;
   if (Object.keys(passthroughMetadata).length > 0) normalized.metadata = passthroughMetadata;
-  return normalized;
+  const usage = {
+    input_images: images.length + target.images.length,
+    input_videos: videos.length + target.videos.length,
+    input_audios: audios.length + target.audios.length,
+    input_video_seconds: inputVideoSeconds,
+  };
+  return { body: normalized, usage: usage };
 }
 
 /** 读取后端已经解码的请求体；文件上传无法转成平台需要的公网素材地址。 */
@@ -603,7 +658,7 @@ export function parseTaskResult(ctx, body) {
 
 /** 组装平台统一请求体；模型使用渠道映射后的精确上游 ID。 */
 function upstreamBody(request, model) {
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request).body;
   const body = { model: model, prompt: normalized.prompt };
   const scalarFields = ["duration", "ratio", "resolution", "seed"];
   for (let index = 0; index < scalarFields.length; index += 1) {
@@ -678,7 +733,8 @@ export function buildQueryRequest(ctx) {
 
 /**
  * 提交时按次计量始终保留；只有请求明确给出时长或可识别的清晰度时才报告按秒/按清晰度
- * 计费事实，不猜测上游默认值。倍率阶段不重复叠加用量计费。
+ * 计费事实，不猜测上游默认值。参考素材数量与请求可提供的输入视频秒数始终上报（未知为 0），
+ * 完成时按上游真实用量覆盖。倍率阶段不重复叠加用量计费。
  */
 export function extractUsage(ctx) {
   if (!ctx || ctx.usagePurpose === "billing_ratios") return {};
@@ -688,33 +744,41 @@ export function extractUsage(ctx) {
   } catch (e) {
     return {};
   }
+  const body = parsed.body;
   const facts = { count: 1 };
-  if (parsed.duration !== undefined) facts.seconds = parsed.duration;
-  const resolution = parsed.resolution !== undefined ? resolutionFact(parsed.resolution) : "";
+  if (body.duration !== undefined) facts.seconds = body.duration;
+  const resolution = body.resolution !== undefined ? resolutionFact(body.resolution) : "";
   if (resolution) facts.video_resolution = resolution;
-  return facts;
+  return Object.assign(facts, parsed.usage);
 }
 
-/** 平台报告的实际计费秒数包含参考视频时长，用于把预扣时长结算到真实用量。 */
-function billedSeconds(data) {
-  const source = envelopeData(data);
-  if (!isObject(source)) return undefined;
-  const fields = ["billing_seconds", "generated_seconds"];
-  for (let index = 0; index < fields.length; index += 1) {
-    const value = source[fields[index]];
-    const seconds = typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : value;
-    if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds <= 0 || seconds > MAX_SECONDS) continue;
-    return seconds;
-  }
-  return undefined;
+/** 平台用量数字可能是数字或数字字符串；只接受 0..MAX_SECONDS 内的整数。 */
+function usageSeconds(value, allowZero) {
+  const seconds = typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : value;
+  if (typeof seconds !== "number" || !Number.isInteger(seconds)) return undefined;
+  if (seconds < (allowZero ? 0 : 1) || seconds > MAX_SECONDS) return undefined;
+  return seconds;
 }
 
-/** 成功任务按平台报告的计费秒数结算；没有可信秒数时沿用提交阶段冻结的时长与清晰度。 */
+/**
+ * 成功任务把平台报告拆成两个独立事实：生成时长进 seconds，参考视频时长进
+ * input_video_seconds。平台只给 billing_seconds（含参考时长）时按总时长结算，
+ * 避免在无法拆分时把参考视频时长计成输出时长。
+ */
 export function extractUsageOnComplete(_task, result, data) {
   if (!result || result.status !== "SUCCESS") return null;
-  const seconds = billedSeconds(data);
-  if (seconds === undefined) return null;
-  return { count: 1, seconds: seconds };
+  const source = envelopeData(data);
+  if (!isObject(source)) return null;
+  const generated = usageSeconds(source.generated_seconds, false);
+  const billing = usageSeconds(source.billing_seconds, false);
+  if (generated === undefined) {
+    if (billing === undefined) return null;
+    // 总时长已含参考视频，清零 input_video_seconds 防止提交阶段预填的参考秒数重复计费。
+    return { count: 1, seconds: billing, input_video_seconds: 0 };
+  }
+  let reference = usageSeconds(source.reference_video_seconds, true);
+  if (reference === undefined && billing !== undefined && billing > generated) reference = billing - generated;
+  return { count: 1, seconds: generated, input_video_seconds: reference === undefined ? 0 : reference };
 }
 
 /** 成功任务通过宿主内容入口代理平台鉴权下载，不向客户端暴露上游素材地址。 */
@@ -748,7 +812,7 @@ export const protocols = {
       const request = decodedBody(ctx && ctx.body);
       const model = trimmed(ctx && ctx.upstreamModel) || trimmed(ctx && ctx.model);
       if (!model) fail("upstream model is required");
-      const parsed = normalizeRequest(request);
+      const parsed = normalizeRequest(request).body;
       const images = parsed.referenceImages || [];
       const videos = parsed.referenceVideos || [];
       const audios = parsed.referenceAudios || [];

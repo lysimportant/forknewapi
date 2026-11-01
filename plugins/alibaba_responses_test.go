@@ -42,7 +42,7 @@ func TestAlibabaResponsesProtocol(t *testing.T) {
 	})
 
 	t.Run("selects image and video usage profiles for every declared model", func(t *testing.T) {
-		require.Len(t, plugin.Meta.UsageProfiles, 9)
+		require.Len(t, plugin.Meta.UsageProfiles, 10)
 		covered := make(map[string]bool)
 		for _, profile := range plugin.Meta.UsageProfiles {
 			for _, name := range profile.Models {
@@ -70,6 +70,11 @@ func TestAlibabaResponsesProtocol(t *testing.T) {
 				assert.Equal(t, plugin.Meta.UsageSchema["seconds"], schema["seconds"], name)
 				assert.Equal(t, []string{"720P", "1080P"}, schema["resolution"].Enum, name)
 				assert.Equal(t, "boolean", schema["audio"].Type, name)
+			case strings.HasPrefix(name, "wan3.0-video"):
+				assert.ElementsMatch(t, []string{"seconds", "resolution", "input_video_seconds"}, keysOf(schema), name)
+				assert.Equal(t, plugin.Meta.UsageSchema["seconds"], schema["seconds"], name)
+				assert.Equal(t, plugin.Meta.UsageSchema["input_video_seconds"], schema["input_video_seconds"], name)
+				assert.Equal(t, []string{"480P", "720P", "1080P"}, schema["resolution"].Enum, name)
 			default:
 				assert.ElementsMatch(t, []string{"seconds", "resolution"}, keysOf(schema), name)
 				assert.Equal(t, plugin.Meta.UsageSchema["seconds"], schema["seconds"], name)
@@ -402,6 +407,11 @@ func TestAlibabaWanModelCapabilities(t *testing.T) {
 			if tc.model == "wan2.6-i2v-flash" {
 				wantFacts["audio"] = true // priced separately for silent output; defaults to audio
 			}
+			if strings.HasPrefix(tc.model, "wan3.0-video") {
+				// The request carries no reference video duration; completion
+				// splits the upstream input/output durations into these facts.
+				wantFacts["input_video_seconds"] = float64(0)
+			}
 			assert.Equal(t, wantFacts, facts)
 			assert.Equal(t, tc.input, body["input"])
 			parameters := body["parameters"].(map[string]any)
@@ -661,8 +671,8 @@ func TestAlibabaWanCompletionFactsAndArtifacts(t *testing.T) {
 		facts map[string]any
 	}{
 		{"digital human fractional duration", "wan2.2-s2v", map[string]any{"duration": 18.13, "SR": 480}, map[string]any{"seconds": 18.13, "resolution": "480P"}},
-		{"Wan3 input plus output", "wan3.0-video", map[string]any{"input_video_duration": 4.25, "output_video_duration": 6.5, "duration": 6.5, "SR": 720}, map[string]any{"seconds": 10.75, "resolution": "720P"}},
-		{"Wan3 without reference video", "wan3.0-video-prime", map[string]any{"input_video_duration": 0, "output_video_duration": 8, "SR": 1080}, map[string]any{"seconds": float64(8), "resolution": "1080P"}},
+		{"Wan3 input plus output", "wan3.0-video", map[string]any{"input_video_duration": 4.25, "output_video_duration": 6.5, "duration": 6.5, "SR": 720}, map[string]any{"seconds": 6.5, "input_video_seconds": 4.25, "resolution": "720P"}},
+		{"Wan3 without reference video", "wan3.0-video-prime", map[string]any{"input_video_duration": 0, "output_video_duration": 8, "SR": 1080}, map[string]any{"seconds": float64(8), "input_video_seconds": float64(0), "resolution": "1080P"}},
 		{"Wan3 missing input duration preserves reserved seconds", "wan3.0-video", map[string]any{"output_video_duration": 6, "SR": 720}, map[string]any{"resolution": "720P"}},
 		{"2.7 continuation uses total duration", "wan2.7-i2v", map[string]any{"duration": 15, "output_video_duration": 12, "SR": 1080}, map[string]any{"seconds": float64(15), "resolution": "1080P"}},
 		{"flash silent output settles as silent", "wan2.6-i2v-flash", map[string]any{"duration": 5, "SR": 720, "audio": false}, map[string]any{"seconds": float64(5), "resolution": "720P", "audio": false}},

@@ -36,8 +36,14 @@ func TestSeedanceVideoPluginContracts(t *testing.T) {
 	assert.Equal(t, "/v1/models", plugin.Meta.ModelDiscovery.Path)
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["count"].Unit)
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
-	require.Len(t, plugin.Meta.UsageExamples, 4)
-	for i, label := range []string{"480p", "720p", "1080p", "2K"} {
+	for key, want := range map[string]string{"input_images": "image", "input_videos": "video", "input_audios": "audio"} {
+		field, ok := plugin.Meta.UsageSchema[key]
+		require.True(t, ok)
+		assert.Equal(t, "count", field.Unit)
+		assert.Equal(t, want, field.UnitLabel["en"])
+	}
+	require.Len(t, plugin.Meta.UsageExamples, 5)
+	for i, label := range []string{"480p", "720p", "1080p", "2K", "reference · 720p"} {
 		assert.Equal(t, label, plugin.Meta.UsageExamples[i].Label)
 	}
 
@@ -81,7 +87,36 @@ func TestSeedanceVideoPluginContracts(t *testing.T) {
 	require.NoError(t, err)
 	encoded, err = common.Marshal(usage)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"count":1}`, string(encoded))
+	assert.JSONEq(t, `{"count":1,"input_images":1,"input_videos":0,"input_audios":0}`, string(encoded))
+
+	t.Run("参考素材按数量计量且首尾帧不计入", func(t *testing.T) {
+		usage, callErr := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+			"model": upstream, "upstreamModel": upstream, "usagePurpose": "facts",
+			"requestBody": map[string]any{
+				"prompt": "ocean", "duration": 5, "resolution": "720p",
+				"start_frame": "https://cdn.example/start.png", "end_frame": "https://cdn.example/end.png",
+				"images":           []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
+				"reference_videos": []any{"https://cdn.example/ref.mp4"},
+				"reference_audios": []any{"https://cdn.example/ref.wav"},
+			},
+		})
+		require.NoError(t, callErr)
+		encoded, marshalErr := common.Marshal(usage)
+		require.NoError(t, marshalErr)
+		assert.JSONEq(t, `{"count":1,"seconds":5,"video_resolution":"720p","input_images":2,"input_videos":1,"input_audios":1}`, string(encoded))
+	})
+
+	t.Run("参考素材数量受宿主上限约束", func(t *testing.T) {
+		images := make([]any, 129)
+		for i := range images {
+			images[i] = "https://cdn.example/ref.png"
+		}
+		_, callErr := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{
+			"model": upstream, "upstreamModel": upstream, "apiKey": "synthetic-key", "publicTaskId": "task-limit",
+			"baseUrl": "https://channel.example", "requestBody": map[string]any{"prompt": "ocean", "images": images},
+		})
+		require.ErrorContains(t, callErr, "at most 128")
+	})
 
 	t.Run("画布字段转换为文档字段", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -339,7 +374,7 @@ func TestSeedanceVideoBillingSchemes(t *testing.T) {
 			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
 			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 			require.NoError(t, err)
-			expectedFacts := map[string]any{"count": float64(1)}
+			expectedFacts := map[string]any{"count": float64(1), "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0)}
 			if tc.resolution != "" {
 				expectedFacts["seconds"] = 2.5
 				expectedFacts["video_resolution"] = tc.resolution
@@ -455,7 +490,7 @@ func TestSeedanceVideoHostFlow(t *testing.T) {
 			assert.True(t, adaptor.SkipSubmitRetry())
 			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 			require.NoError(t, err)
-			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(30), "video_resolution": "720p"}, facts)
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(30), "video_resolution": "720p", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0)}, facts)
 			ratios, err := adaptor.EstimateBillingValidated(c, info)
 			require.NoError(t, err)
 			assert.Empty(t, ratios)

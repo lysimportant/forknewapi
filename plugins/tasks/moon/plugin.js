@@ -254,13 +254,18 @@ const TOKEN_USAGE_SCHEMA = {
   },
 };
 
-/** Wan 的原秒数事实保留输出加参考视频时长；输入素材数可另行定价。 */
+/** Wan 的 seconds 事实只含输出时长；参考视频时长单独按秒计费，输入素材数可另行定价。 */
 const WAN_USAGE_SCHEMA = {
   ...INPUT_USAGE_SCHEMA,
   seconds: {
     type: "number",
     unit: "second",
     description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  input_video_seconds: {
+    type: "number",
+    unit: "second",
+    description: { en: "Input video unit price", zh: "输入视频单价" },
   },
   resolution: {
     enum: WAN_RESOLUTIONS,
@@ -327,7 +332,7 @@ export const meta = {
     en: "Moon video generation for Wan, Seedance, ArtsDance, PT, budget, MiniMax H3, and Grok models",
     zh: "Moon Wan、Seedance、ArtsDance、官转、底价、MiniMax H3 与 Grok 视频生成",
   },
-  version: "1.6.1",
+  version: "1.7.0",
   author: { name: "QuantumNous" },
   models: MODELS,
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
@@ -1621,7 +1626,14 @@ export function extractUsage(ctx) {
       ? { video_count: 1, resolution: facts.resolution, ...inputUsageFacts(facts) }
       : { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   }
-  if (isWan(model)) return { seconds: facts.duration + facts.referenceVideoSeconds, resolution: facts.resolution, ...inputUsageFacts(facts) };
+  if (isWan(model)) {
+    return {
+      seconds: facts.duration,
+      input_video_seconds: facts.referenceVideoSeconds || 0,
+      resolution: facts.resolution,
+      ...inputUsageFacts(facts),
+    };
+  }
   if (isH3(model)) return { seconds: facts.duration, resolution: facts.resolution, ...inputUsageFacts(facts) };
   return {
     tokens: estimateTokens(facts.duration, facts.resolution, facts.videoCount, model),

@@ -7,7 +7,7 @@ export const meta = {
     en: "Shengshu Vidu video generation (text-to-video, image-to-video, first-and-last-frame, and reference-to-video)",
     zh: "生数 Vidu 视频生成（文生视频、图生视频、首尾帧、参考生视频）",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "QuantumNous" },
   channelTypes: [52],
   models: ["viduq2", "viduq1", "vidu2.0", "vidu1.5"],
@@ -37,15 +37,24 @@ export const meta = {
       },
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
     },
+    // Multi-image references are billable; first frame, last frame, and a
+    // single image-to-video input are not.
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
   },
   // credits is 0 in examples because this plugin does not estimate vendor credits;
   // schema completeness requires the key. Actual credits arrive from upstream.
   usageExamples: [
-    { label: "q2 5s 720p", facts: { credits: 0, duration: 5, resolution: "720p" } },
-    { label: "q1 5s 1080p", facts: { credits: 0, duration: 5, resolution: "1080p" } },
-    { label: "2.0 4s 360p", facts: { credits: 0, duration: 4, resolution: "360p" } },
-    { label: "2.0 4s 720p", facts: { credits: 0, duration: 4, resolution: "720p" } },
-    { label: "2.0 8s 720p", facts: { credits: 0, duration: 8, resolution: "720p" } },
+    { label: "q2 5s 720p", facts: { credits: 0, duration: 5, resolution: "720p", input_images: 0 } },
+    { label: "q1 5s 1080p", facts: { credits: 0, duration: 5, resolution: "1080p", input_images: 0 } },
+    { label: "2.0 4s 360p", facts: { credits: 0, duration: 4, resolution: "360p", input_images: 0 } },
+    { label: "2.0 4s 720p", facts: { credits: 0, duration: 4, resolution: "720p", input_images: 0 } },
+    { label: "2.0 8s 720p", facts: { credits: 0, duration: 8, resolution: "720p", input_images: 0 } },
+    { label: "q2 reference 5s 720p · 3 images", facts: { credits: 0, duration: 5, resolution: "720p", input_images: 3 } },
   ],
   // Vidu request and response bodies, for clients and for a downstream New API
   // gateway.
@@ -333,7 +342,10 @@ export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return null;
   const req = ctx.requestBody || {};
   const model = ctx.upstreamModel || req.model;
-  return { duration: outboundDuration(req, model), resolution: outboundResolution(req, model) };
+  // Only reference-to-video lists billable reference images; the first frame,
+  // first-and-last-frame pair, and a single image-to-video input are not.
+  const references = actionFor(req) === "reference_to_video" && Array.isArray(req.images) ? req.images.length : 0;
+  return { duration: outboundDuration(req, model), resolution: outboundResolution(req, model), input_images: references };
 }
 
 export function buildQueryRequest(ctx) {

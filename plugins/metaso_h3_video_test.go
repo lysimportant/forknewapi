@@ -37,7 +37,9 @@ func TestMetasoH3VideoContracts(t *testing.T) {
 	plugin, err := registry.RegisterFactory(source, jsplugin.Options{})
 	require.NoError(t, err)
 	assert.Equal(t, metasoBaseURL, plugin.Meta.BaseURL)
-	assert.Equal(t, "1.1.0", plugin.Meta.Version)
+	assert.Equal(t, "1.2.0", plugin.Meta.Version)
+	assert.Equal(t, "number", plugin.Meta.UsageSchema["input_video_seconds"].Type)
+	assert.Equal(t, "second", plugin.Meta.UsageSchema["input_video_seconds"].Unit)
 	assert.Equal(t, []string{"Minimax-H3"}, plugin.Meta.Models)
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
 	assert.Equal(t, []string{"480p", "768p", "1080p", "2k"}, plugin.Meta.UsageSchema["size"].Enum)
@@ -75,7 +77,7 @@ func TestMetasoH3NativeExample(t *testing.T) {
 	assert.Equal(t, "image_to_video", commandAction(t, plugin, body))
 	request := metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
 	assert.JSONEq(t, example, metasoJSON(t, request["body"]))
-	assert.JSONEq(t, `{"seconds":5,"size":"2k","input_images":1,"input_videos":0,"input_audios":0}`, metasoJSON(t, metasoHookObject(t, plugin, "extractUsage", metasoSubmitContext(body))))
+	assert.JSONEq(t, `{"seconds":5,"size":"2k","input_images":1,"input_videos":0,"input_video_seconds":0,"input_audios":0}`, metasoJSON(t, metasoHookObject(t, plugin, "extractUsage", metasoSubmitContext(body))))
 	body["fast_mode"] = true
 	request = metasoHookObject(t, plugin, "buildSubmitRequest", metasoSubmitContext(body))
 	assert.Equal(t, true, request["body"].(map[string]any)["fast_mode"])
@@ -281,7 +283,17 @@ func TestMetasoH3ArtifactsAndCompletionUsage(t *testing.T) {
 	_, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{"artifactKey": "video", "data": map[string]any{}})
 	require.ErrorContains(t, err, "artifact_not_found")
 	usage := metasoHookObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS"}, body)
-	assert.Equal(t, map[string]any{"seconds": 5.2, "size": "2k", "input_images": float64(0)}, usage, "时长不可写入按个数计价的视频/音频字段")
+	assert.Equal(t, map[string]any{"seconds": 5.2, "size": "2k", "input_images": float64(0), "input_video_seconds": 7.5}, usage, "输入视频按上游秒数结算，音频时长不计入计费事实")
+	for _, test := range []struct {
+		name         string
+		inputSeconds any
+	}{{"negative", -1.0}, {"zero", 0.0}, {"oversized", 3601.0}, {"not a number", "7.5"}} {
+		t.Run(test.name, func(t *testing.T) {
+			invalidBody := map[string]any{"task": map[string]any{"resolution": "480p", "usage": map[string]any{"output_seconds": 5, "input_seconds": test.inputSeconds, "input_audio_seconds": 6}}}
+			facts := metasoHookObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS"}, invalidBody)
+			assert.Equal(t, map[string]any{"seconds": float64(5), "size": "480p"}, facts, "无效输入视频秒数不产生计费事实")
+		})
+	}
 	invalid := map[string]any{"task": map[string]any{"resolution": "unknown", "usage": map[string]any{"output_seconds": -1, "input_image_count": 10}}}
 	for _, test := range []struct {
 		status string

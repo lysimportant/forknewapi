@@ -52,7 +52,15 @@ func TestImage2ProVideoPluginContract(t *testing.T) {
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["seconds"].Description["en"])
+	assert.Equal(t, "Input image unit price", plugin.Meta.UsageSchema["input_images"].Description["en"])
+	assert.Equal(t, "count", plugin.Meta.UsageSchema["input_audios"].Unit)
 	assert.Empty(t, plugin.Meta.UsageProfiles[0].Schema["seconds"].Description["en"] == "")
+	assert.Contains(t, plugin.Meta.UsageProfiles[0].Schema, "input_images")
+	assert.Contains(t, plugin.Meta.UsageProfiles[1].Schema, "input_audios")
+	require.NotEmpty(t, plugin.Meta.UsageExamples)
+	for _, example := range plugin.Meta.UsageExamples {
+		assert.Len(t, example.Facts, len(plugin.Meta.UsageSchema))
+	}
 
 	registry := jsplugin.NewRegistry()
 	source, err := plugins.Source("image2pro-video")
@@ -150,9 +158,15 @@ func TestImage2ProVideoProtocolAndTaskResults(t *testing.T) {
 func TestImage2ProVideoUsage(t *testing.T) {
 	plugin := loadImage2ProVideoPlugin(t)
 	max := image2ProCallObject(t, plugin, "extractUsage", image2ProSubmitContext("无限制-MAX-Video", map[string]any{"prompt": "x", "duration": 8}))
-	assert.Equal(t, map[string]any{"seconds": float64(8)}, max)
+	assert.Equal(t, map[string]any{"seconds": float64(8), "input_images": float64(0), "input_audios": float64(0)}, max)
 	seedance := image2ProCallObject(t, plugin, "extractUsage", image2ProSubmitContext("Seedance2.0", map[string]any{"prompt": "x"}))
-	assert.Equal(t, map[string]any{"count": float64(1)}, seedance)
+	assert.Equal(t, map[string]any{"count": float64(1), "input_images": float64(0), "input_audios": float64(0)}, seedance)
+	references := image2ProCallObject(t, plugin, "extractUsage", image2ProSubmitContext("无限制-MAX-Video", map[string]any{
+		"prompt": "x", "duration": 8,
+		"reference_images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
+		"reference_audios": []any{"https://cdn.example/a.mp3"},
+	}))
+	assert.Equal(t, map[string]any{"seconds": float64(8), "input_images": float64(2), "input_audios": float64(1)}, references)
 	ratioContext := image2ProSubmitContext("Seedance2.0", map[string]any{"prompt": "x"})
 	ratioContext["usagePurpose"] = "billing_ratios"
 	assert.Empty(t, image2ProCallObject(t, plugin, "extractUsage", ratioContext))

@@ -21,6 +21,19 @@ const H3_USAGE_SCHEMA = {
     unit: "count",
     description: { en: "Input image unit price", zh: "输入图片单价" },
   },
+  // Input video and audio reference counts (billed per submitted item).
+  input_videos: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "video", zh: "段" },
+    description: { en: "Input video unit price", zh: "输入视频单价" },
+  },
+  input_audios: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "audio", zh: "段" },
+    description: { en: "Input audio unit price", zh: "输入音频单价" },
+  },
   // Input video duration in seconds (reserved at the request maximum, actual on completion).
   input_video_seconds: {
     type: "number",
@@ -89,7 +102,7 @@ export const meta = {
     en: "MiniMax Hailuo video generation (text-to-video, image-to-video, and MiniMax-H3 multimodal reference)",
     zh: "MiniMax 海螺视频生成（文生视频、图生视频、MiniMax-H3 多模态参考生视频）",
   },
-  version: "1.3.0",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   channelTypes: [35],
   models: [H3_MODEL, "h3"].concat(V1_MODELS),
@@ -105,25 +118,25 @@ export const meta = {
     },
   }),
   usageExamples: [
-    { label: "2.3/02 768P 6s", facts: { seconds: 6, resolution: "768P", input_images: 0, input_video_seconds: 0 } },
-    { label: "2.3/02 768P 10s", facts: { seconds: 10, resolution: "768P", input_images: 0, input_video_seconds: 0 } },
-    { label: "2.3/02 1080P 6s", facts: { seconds: 6, resolution: "1080P", input_images: 0, input_video_seconds: 0 } },
-    { label: "02 512P 6s", facts: { seconds: 6, resolution: "512P", input_images: 0, input_video_seconds: 0 } },
-    { label: "02 512P 10s", facts: { seconds: 10, resolution: "512P", input_images: 0, input_video_seconds: 0 } },
-    { label: "01-series 720P 6s", facts: { seconds: 6, resolution: "720P", input_images: 0, input_video_seconds: 0 } },
-    { label: "H3 768P 5s", facts: { seconds: 5, resolution: "768P", input_images: 0, input_video_seconds: 0 } },
-    { label: "H3 2K 5s · 9 images", facts: { seconds: 5, resolution: "2K", input_images: 9, input_video_seconds: 0 } },
-    { label: "H3 2K 5s · input video", facts: { seconds: 5, resolution: "2K", input_images: 0, input_video_seconds: 15 } },
+    { label: "2.3/02 768P 6s", facts: { seconds: 6, resolution: "768P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "2.3/02 768P 10s", facts: { seconds: 10, resolution: "768P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "2.3/02 1080P 6s", facts: { seconds: 6, resolution: "1080P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "02 512P 6s", facts: { seconds: 6, resolution: "512P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "02 512P 10s", facts: { seconds: 10, resolution: "512P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "01-series 720P 6s", facts: { seconds: 6, resolution: "720P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "H3 768P 5s", facts: { seconds: 5, resolution: "768P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "H3 2K 5s · 9 images", facts: { seconds: 5, resolution: "2K", input_images: 9, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+    { label: "H3 2K 5s · input video", facts: { seconds: 5, resolution: "2K", input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: 15 } },
   ],
   usageProfiles: [
     {
       models: ["MiniMax-H3", "h3"],
       schema: H3_USAGE_SCHEMA,
       examples: [
-        { label: "H3 768P 5s", facts: { seconds: 5, resolution: "768P", input_images: 0, input_video_seconds: 0 } },
-        { label: "H3 2K 5s", facts: { seconds: 5, resolution: "2K", input_images: 0, input_video_seconds: 0 } },
-        { label: "H3 2K 5s · 9 images", facts: { seconds: 5, resolution: "2K", input_images: 9, input_video_seconds: 0 } },
-        { label: "H3 2K 5s · input video", facts: { seconds: 5, resolution: "2K", input_images: 0, input_video_seconds: 15 } },
+        { label: "H3 768P 5s", facts: { seconds: 5, resolution: "768P", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+        { label: "H3 2K 5s", facts: { seconds: 5, resolution: "2K", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+        { label: "H3 2K 5s · 9 images", facts: { seconds: 5, resolution: "2K", input_images: 9, input_videos: 0, input_audios: 0, input_video_seconds: 0 } },
+        { label: "H3 2K 5s · input video", facts: { seconds: 5, resolution: "2K", input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: 15 } },
       ],
     },
     {
@@ -624,6 +637,12 @@ export function extractUsage(ctx) {
       input_images: content.filter(function (item) {
         return item && item.type === "image_url";
       }).length,
+      input_videos: content.filter(function (item) {
+        return item && item.type === "video_url";
+      }).length,
+      input_audios: content.filter(function (item) {
+        return item && item.type === "audio_url";
+      }).length,
       // Input URLs do not expose duration. Reserve the documented total limit;
       // polling replaces it with usage.input_seconds after success.
       input_video_seconds: content.some(function (item) {
@@ -633,7 +652,14 @@ export function extractUsage(ctx) {
         : 0,
     };
   }
-  return { seconds: outboundDuration(req), resolution: outboundResolution(req, model), input_images: 0, input_video_seconds: 0 };
+  return {
+    seconds: outboundDuration(req),
+    resolution: outboundResolution(req, model),
+    input_images: 0,
+    input_videos: 0,
+    input_audios: 0,
+    input_video_seconds: 0,
+  };
 }
 
 export function buildQueryRequest(ctx) {

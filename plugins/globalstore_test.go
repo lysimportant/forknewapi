@@ -31,7 +31,7 @@ var globalstoreVideoModels = []string{
 
 // globalstoreUsageKeys 是插件默认（视频）用量字段，管理员据此选「按次」或「清晰度 + 秒数」。
 var globalstoreUsageKeys = []string{
-	"count", "seconds", "video_resolution",
+	"count", "input_audios", "input_images", "input_videos", "seconds", "video_resolution",
 }
 
 func loadGlobalstorePlugin(t *testing.T) *jsplugin.LoadedPlugin {
@@ -100,7 +100,7 @@ func TestGlobalstoreContracts(t *testing.T) {
 
 	assert.Equal(t, "globalstore", plugin.Meta.Key)
 	assert.Equal(t, globalstoreBaseURL, plugin.Meta.BaseURL)
-	assert.Equal(t, "1.0.0", plugin.Meta.Version)
+	assert.Equal(t, "1.1.0", plugin.Meta.Version)
 	assert.Equal(t, []string{"saas.globalstore.ai:443"}, plugin.Meta.AllowedHosts)
 	assert.Equal(t, []string{"task-submit-no-retry@1"}, plugin.Meta.RequiredCapabilities)
 	assert.Equal(t, "per_task", plugin.Meta.FetchMode)
@@ -534,9 +534,9 @@ func TestGlobalstoreArtifactsAndUsage(t *testing.T) {
 		facts := globalstoreObject(t, plugin, "extractUsage", globalstoreSubmitContext("sd_2.5_special", map[string]any{
 			"prompt": "flower", "seconds": 10, "resolution": "1080p",
 			"first_image": "https://cdn.example/a.png", "reference_images": []any{"https://cdn.example/b.png"},
-			"reference_videos": []any{"https://cdn.example/v.mp4"}, "generate_audio": false,
+			"reference_videos": []any{"https://cdn.example/v.mp4"}, "reference_audios": []any{"https://cdn.example/a.mp3"}, "generate_audio": false,
 		}))
-		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(10), "video_resolution": "1080p"}, facts, "视频模型同时给出按次与按秒两种口径")
+		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(10), "video_resolution": "1080p", "input_images": float64(1), "input_videos": float64(1), "input_audios": float64(1)}, facts, "视频模型同时给出按次与按秒两种口径；首帧不计入参考图片")
 
 		defaulted := globalstoreObject(t, plugin, "extractUsage", globalstoreSubmitContext("sd_2.0_discount", map[string]any{"prompt": "flower", "seconds": 5}))
 		assert.Equal(t, "4k", defaulted["video_resolution"], "未指定清晰度时上报模型默认清晰度")

@@ -33,8 +33,8 @@ func TestViduResponsesProtocol(t *testing.T) {
 			"duration": float64(8),
 			"size":     "720p",
 		},
-		wantUsageKeys:       []string{"credits", "duration", "resolution"},
-		wantSubmitUsageKeys: []string{"duration", "resolution"},
+		wantUsageKeys:       []string{"credits", "duration", "input_images", "resolution"},
+		wantSubmitUsageKeys: []string{"duration", "input_images", "resolution"},
 		wantVendorName:      "vidu",
 	})
 }
@@ -54,11 +54,72 @@ func TestViduMetadataCannotChangeWhatIsBilled(t *testing.T) {
 	usage, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx)
 	require.NoError(t, err)
 	body := decodePluginValue(t, descriptor)["body"].(map[string]any)
-	assert.Equal(t, map[string]any{"duration": float64(4), "resolution": "360p"}, decodePluginValue(t, usage))
+	assert.Equal(t, map[string]any{"duration": float64(4), "resolution": "360p", "input_images": float64(0)}, decodePluginValue(t, usage))
 	assert.Equal(t, "vidu1.5", body["model"])
 	assert.Equal(t, float64(4), body["duration"])
 	assert.Equal(t, "360p", body["resolution"])
 	assert.Equal(t, float64(7), body["seed"])
+}
+
+// Reference-to-video bills every reference image; the first frame, the
+// first-and-last-frame pair, and a single image input are not references.
+func TestViduReferenceImageUsage(t *testing.T) {
+	source, err := builtinplugins.Source("vidu")
+	require.NoError(t, err)
+	plugin, err := jsplugin.NewRegistry().RegisterFactory(source, jsplugin.Options{Key: "vidu"})
+	require.NoError(t, err)
+
+	extract := func(t *testing.T, requestBody map[string]any) map[string]any {
+		t.Helper()
+		usage, callErr := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"model": "viduq2", "upstreamModel": "viduq2", "requestBody": requestBody})
+		require.NoError(t, callErr)
+		return decodePluginValue(t, usage)
+	}
+
+	for _, test := range []struct {
+		name        string
+		route       string
+		requestBody map[string]any
+		want        float64
+	}{
+		{
+			name:  "reference route counts three references",
+			route: "/vidu/ent/v2/reference2video",
+			requestBody: map[string]any{"model": "viduq2", "prompt": "p",
+				"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png", "https://cdn.example/c.png"}},
+			want: 3,
+		},
+		{
+			name:        "first and last frames are not references",
+			route:       "/vidu/ent/v2/start-end2video",
+			requestBody: map[string]any{"model": "viduq2", "prompt": "p", "images": []any{"https://cdn.example/first.png", "https://cdn.example/last.png"}},
+			want:        0,
+		},
+		{
+			name:        "a single image input is not a reference",
+			route:       "/vidu/ent/v2/img2video",
+			requestBody: map[string]any{"model": "viduq2", "prompt": "p", "images": []any{"https://cdn.example/first.png"}},
+			want:        0,
+		},
+		{
+			name: "more than two images infer reference-to-video",
+			requestBody: map[string]any{"model": "viduq2", "prompt": "p",
+				"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png", "https://cdn.example/c.png"}},
+			want: 3,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestBody := test.requestBody
+			if test.route != "" {
+				intent, callErr := plugin.Engine.CallPath(t.Context(), "native", []string{"createTask"}, map[string]any{
+					"path": test.route, "body": map[string]any{"kind": "json", "value": test.requestBody},
+				})
+				require.NoError(t, callErr)
+				requestBody = decodePluginValue(t, intent)["requestBody"].(map[string]any)
+			}
+			assert.Equal(t, test.want, extract(t, requestBody)["input_images"])
+		})
+	}
 }
 
 // A New API channel reaches Vidu through another gateway's /vidu routes. The

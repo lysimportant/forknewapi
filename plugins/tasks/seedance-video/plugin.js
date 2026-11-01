@@ -7,7 +7,7 @@ export const meta = {
     en: "Seedance video generation through the unified video API",
     zh: "通过统一视频 API 对接 Seedance 视频生成",
   },
-  version: "1.2.1",
+  version: "1.3.0",
   author: { name: "lysimportant/forknewapi" },
   baseUrl: "https://cnd-coo-new.pages.dev",
   models: [],
@@ -33,17 +33,39 @@ export const meta = {
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
       enumLabels: { "2k": { en: "2K", zh: "2K" } },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_videos: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "段" },
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
   },
   usageExamples: [
-    { label: "480p", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
-    { label: "720p", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
-    { label: "1080p", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
-    { label: "2K", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
+    { label: "480p", facts: { count: 1, seconds: 5, video_resolution: "480p", input_images: 0, input_videos: 0, input_audios: 0 } },
+    { label: "720p", facts: { count: 1, seconds: 5, video_resolution: "720p", input_images: 0, input_videos: 0, input_audios: 0 } },
+    { label: "1080p", facts: { count: 1, seconds: 5, video_resolution: "1080p", input_images: 0, input_videos: 0, input_audios: 0 } },
+    { label: "2K", facts: { count: 1, seconds: 5, video_resolution: "2k", input_images: 0, input_videos: 0, input_audios: 0 } },
+    { label: "reference · 720p", facts: { count: 1, seconds: 5, video_resolution: "720p", input_images: 2, input_videos: 1, input_audios: 1 } },
   ],
 };
 
 /** 与宿主 MaxTaskDurationSeconds 保持一致的安全上限，不代表模型支持的时长。 */
 const MAX_SECONDS = 3600;
+
+/** 与宿主按数量计费的上限保持一致（128）；超出后参考素材数量无法作为可校验的计费用量。 */
+const MAX_INPUT_MEDIA = 128;
 
 /** 仅接收已确认的统一参数及 OpenAI 视频入口别名，禁止原生厂商参数绕过校验。 */
 const REQUEST_FIELDS = new Set([
@@ -228,6 +250,10 @@ function upstreamBody(request, model) {
       throw new Error("input_reference must be a public HTTPS image URL; upload local files with /v1/media first");
     body.images = (body.images || []).concat(request.input_reference);
   }
+  for (const field of ["images", "reference_videos", "reference_audios"]) {
+    if ((body[field] || []).length > MAX_INPUT_MEDIA)
+      throw new Error(field + " must contain at most " + MAX_INPUT_MEDIA + " reference files");
+  }
   for (const field of ["start_frame", "end_frame"]) {
     if (request[field] === undefined) continue;
     if (!isMediaURL(request[field], true)) throw new Error(field + " must be a public HTTPS image URL");
@@ -292,11 +318,17 @@ export function parseSubmitResponse(ctx, response) {
  * 返回按次计量；只有时长和四档清晰度均明确时才提供按秒计量，不猜测上游默认值。
  * 按秒方案的每个价格分支始终读取 seconds（含零单价），缺少完整计量时宿主在预扣前返回 400。
  * video_resolution 独立于请求字段，避免宿主在按次请求归一化前拒绝上游清晰度；倍率阶段不叠加用量计费。
+ * 参考图片、视频和音频按数量计费；首帧、尾帧不计入参考素材数量，倍率阶段不叠加。
  */
 export function extractUsage(ctx) {
   const body = upstreamBody(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  const facts = { count: 1 };
+  const facts = {
+    count: 1,
+    input_images: (body.images || []).length,
+    input_videos: (body.reference_videos || []).length,
+    input_audios: (body.reference_audios || []).length,
+  };
   const rawResolution = typeof body.resolution === "string" ? body.resolution.trim().toLowerCase() : "";
   const resolution = ["480", "720", "1080"].includes(rawResolution) ? rawResolution + "p" : rawResolution;
   if (body.duration !== undefined && meta.usageSchema.video_resolution.enum.includes(resolution)) {

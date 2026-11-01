@@ -124,6 +124,9 @@ const IMAGE_TIER_MAX_PIXELS = 2610000;
 const MAX_IMAGE_OUTPUTS = 17;
 // Documented reference-image ceiling across Seedream models; bounds usage.input_images.
 const MAX_REFERENCE_IMAGES = 14;
+// Host ceiling for count-billed usage facts (relaykit dto.MaxImageN); keeps the
+// reference-media counts bounded integers at submit.
+const MAX_REFERENCE_MEDIA = 128;
 // Documented per-image size ceiling for reference images.
 const MAX_INPUT_IMAGE_BYTES = 31457280;
 // Base64 references must be `data:image/<lowercase format>;base64,<payload>`.
@@ -146,6 +149,16 @@ const IMAGE_REQUEST_KEYS = [
 ];
 
 const IMAGE_UNIT_LABEL = { en: "image", zh: "张", "zh-TW": "張", fr: "image", ja: "枚", ru: "изображение", vi: "ảnh" };
+// Reference video segments are billed per count, so the label names one segment.
+const VIDEO_UNIT_LABEL = { en: "video", zh: "段", "zh-TW": "段", fr: "vidéo", ja: "本", ru: "видео", vi: "video" };
+// Only the Seedance 2.x models that declare reference video input accept video
+// content; a first/last frame image is a conditioning input and is not billed.
+const INPUT_VIDEOS_FIELD = {
+  type: "number",
+  unit: "count",
+  unitLabel: VIDEO_UNIT_LABEL,
+  description: { en: "Input video unit price", zh: "输入视频单价" },
+};
 // Each output image is billed at its own pixel tier (official pricing bills
 // layers individually). Estimated at submit from the requested size and count;
 // settled from data[].size per successful image.
@@ -245,6 +258,9 @@ function seedanceUsageSchema(profile) {
       enumLabels: { none: { en: "No reference video", zh: "无参考视频" }, video: { en: "With reference video", zh: "有参考视频" } },
       description: { en: "Reference video input", zh: "参考视频输入" },
     };
+    // Reference videos are the only multi-file reference media these models
+    // accept; every other input image is conditioning material.
+    schema.input_videos = INPUT_VIDEOS_FIELD;
   }
   // Seedance 1.5 pro prices videos with and without audio differently.
   if (profile.audio) {
@@ -266,11 +282,14 @@ function seedanceUsageExamples(profile) {
     resolution: resolution,
     seconds: 5,
   }));
-  if (profile.videoInput) specs.push({ label: "720p · 5s (+4s 输入视频)", resolution: "720p", seconds: 9, video_input: "video" });
+  if (profile.videoInput) specs.push({ label: "720p · 5s (+4s 输入视频)", resolution: "720p", seconds: 9, video_input: "video", input_videos: 1 });
   if (profile.audio) specs.push({ label: "720p · 5s · 无声", resolution: "720p", seconds: 5, generate_audio: false });
   return specs.map((spec) => {
     const facts = { tokens: Math.round(estimateTokens(spec.seconds, spec.resolution)), resolution: spec.resolution };
-    if (profile.videoInput) facts.video_input = spec.video_input || "none";
+    if (profile.videoInput) {
+      facts.video_input = spec.video_input || "none";
+      facts.input_videos = spec.input_videos || 0;
+    }
     if (profile.audio) facts.generate_audio = spec.generate_audio !== false;
     return { label: spec.label, facts: facts };
   });
@@ -303,7 +322,7 @@ export const meta = {
     en: "Volcengine Doubao Seedance video generation and Seedream image generation",
     zh: "火山引擎豆包 Seedance 视频生成与 Seedream 图片生成",
   },
-  version: "1.3.0",
+  version: "1.4.0",
   author: { name: "QuantumNous" },
   modelDiscovery: { protocol: "openai", path: "/api/v3/models" },
   channelTypes: [54, 45], // VolcEngine-type channels serve Ark video models with the same wire format
@@ -393,8 +412,19 @@ function normalizeResolution(value) {
   return "480p";
 }
 
+// Ark content items carry reference videos as video_url; first/last frame images
+// are image_url conditioning inputs and are never counted as reference media.
+function referenceVideoCount(content) {
+  if (!Array.isArray(content)) return 0;
+  let count = 0;
+  for (const item of content) {
+    if (item && (item.type === "video_url" || Object.prototype.hasOwnProperty.call(item, "video_url"))) count++;
+  }
+  return count;
+}
+
 function hasVideo(content) {
-  return Array.isArray(content) && content.some((item) => item && (item.type === "video_url" || Object.prototype.hasOwnProperty.call(item, "video_url")));
+  return referenceVideoCount(content) > 0;
 }
 
 /** 解析视频时长；JSON 与 multipart 均只接受十进制整数。 */
@@ -918,11 +948,14 @@ export function extractUsage(ctx) {
   if (seconds <= 0) seconds = 5;
   seconds = Math.min(seconds, 3600);
   const resolution = videoResolution(ctx);
-  const facts = { tokens: estimateTokens(seconds, resolution), resolution: resolution };
+  // Reference videos are billed per segment; clamp to the host count ceiling so
+  // the submitted fact is always a bounded integer.
+  const inputVideos = Math.min(referenceVideoCount(metadata.content), MAX_REFERENCE_MEDIA);
+  const facts = { tokens: estimateTokens(seconds, resolution), resolution: resolution, input_videos: inputVideos };
   // Every model reports video_input, including those whose profile omits it:
   // expressions saved when all Seedance models declared the field then keep
   // matching their no-video tier.
-  facts.video_input = hasVideo(metadata.content) ? "video" : "none";
+  facts.video_input = inputVideos > 0 ? "video" : "none";
   if (profile.audio) facts.generate_audio = metadata.generate_audio !== false;
   return facts;
 }

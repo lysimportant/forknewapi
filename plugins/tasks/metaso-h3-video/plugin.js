@@ -8,7 +8,7 @@ export const meta = {
     en: "Metaso native MiniMax H3 video generation with multimodal references",
     zh: "秘塔 MiniMax H3 原生视频生成，支持多媒体参考输入",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://b.metaso.cn/minimax-h3",
   baseUrl: "https://b.metaso.cn/api/minimax",
@@ -37,6 +37,11 @@ export const meta = {
       unit: "count",
       description: { en: "Input video unit price", zh: "输入视频单价" },
     },
+    input_video_seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
     input_audios: {
       type: "number",
       unit: "count",
@@ -44,8 +49,8 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "text · 480p · 5s", facts: { seconds: 5, size: "480p", input_images: 0, input_videos: 0, input_audios: 0 } },
-    { label: "multimodal · 768p · 5s", facts: { seconds: 5, size: "768p", input_images: 1, input_videos: 1, input_audios: 1 } },
+    { label: "text · 480p · 5s", facts: { seconds: 5, size: "480p", input_images: 0, input_videos: 0, input_video_seconds: 0, input_audios: 0 } },
+    { label: "multimodal · 768p · 5s", facts: { seconds: 5, size: "768p", input_images: 1, input_videos: 1, input_video_seconds: 0, input_audios: 1 } },
   ],
 };
 
@@ -57,6 +62,8 @@ const MAX_SECONDS = 30;
 const MAX_INPUT_IMAGES = 9;
 const MAX_INPUT_VIDEOS = 3;
 const MAX_INPUT_AUDIOS = 3;
+// 参考视频时长沿用宿主 relaycommon.MaxTaskDurationSeconds 的上限，防止异常上报值成为新的计费倍率。
+const MAX_INPUT_VIDEO_SECONDS = 3600;
 const MAX_INPUT_TOTAL = MAX_INPUT_IMAGES + MAX_INPUT_VIDEOS + MAX_INPUT_AUDIOS;
 const SIZES = new Set(meta.usageSchema.size.enum);
 const SIZE_TO_UPSTREAM = {
@@ -346,16 +353,18 @@ export function parseSubmitResponse(_ctx, response) {
 export function extractUsage(ctx) {
   const built = upstreamBody(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
+  // 参考视频时长在提交时未知，先按 0 冻结；成功后再由 task.usage.input_seconds 覆盖。
   return {
     seconds: built.facts.seconds,
     size: built.facts.size,
     input_images: built.facts.input_images,
     input_videos: built.facts.input_videos,
+    input_video_seconds: 0,
     input_audios: built.facts.input_audios,
   };
 }
 
-/** 从 v2 task.usage 结算已声明事实；视频/音频秒数不能当作素材数量。 */
+/** 从 v2 task.usage 结算已声明事实；输入视频按秒计费，音频时长不计费。 */
 export function extractUsageOnComplete(_task, result, body) {
   if (!result || result.status !== "SUCCESS") return null;
   const task = queryTask(body);
@@ -368,6 +377,8 @@ export function extractUsageOnComplete(_task, result, body) {
   if (typeof seconds === "number" && Number.isFinite(seconds) && seconds >= MIN_SECONDS && seconds <= MAX_SECONDS) facts.seconds = seconds;
   const images = usage.input_image_count;
   if (typeof images === "number" && Number.isSafeInteger(images) && images >= 0 && images <= MAX_INPUT_IMAGES) facts.input_images = images;
+  const videoSeconds = usage.input_seconds;
+  if (typeof videoSeconds === "number" && Number.isFinite(videoSeconds) && videoSeconds > 0 && videoSeconds <= MAX_INPUT_VIDEO_SECONDS) facts.input_video_seconds = videoSeconds;
   return Object.keys(facts).length ? facts : null;
 }
 

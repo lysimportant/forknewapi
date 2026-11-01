@@ -36,7 +36,7 @@ func yuanliuHookObject(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string,
 // TestYuanliuModelContracts 核对旧型号参数、内部别名兼容和渠道模型路由边界。
 func TestYuanliuModelContracts(t *testing.T) {
 	plugin := loadYuanliuPlugin(t)
-	assert.Equal(t, "1.3.1", plugin.Meta.Version)
+	assert.Equal(t, "1.4.0", plugin.Meta.Version)
 	assert.Equal(t, "https://test.yuanliuai.tsyzai.com/openapi/v1", plugin.Meta.BaseURL)
 	require.NotNil(t, plugin.Meta.ModelDiscovery)
 	assert.Equal(t, "openai", plugin.Meta.ModelDiscovery.Protocol)
@@ -53,6 +53,12 @@ func TestYuanliuModelContracts(t *testing.T) {
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["count"].Unit)
 	assert.Equal(t, "second", plugin.Meta.UsageSchema["seconds"].Unit)
 	assert.Equal(t, []string{"480p", "720p", "1080p", "2k"}, plugin.Meta.UsageSchema["resolution"].Enum)
+	for key, want := range map[string]string{"input_images": "image", "input_videos": "video", "input_audios": "audio"} {
+		field, ok := plugin.Meta.UsageSchema[key]
+		require.True(t, ok)
+		assert.Equal(t, "count", field.Unit)
+		assert.Equal(t, want, field.UnitLabel["en"])
+	}
 
 	models := []struct {
 		id, alias         string
@@ -127,7 +133,7 @@ func TestYuanliuModelContracts(t *testing.T) {
 			assert.Equal(t, model.defaultResolution, payload["resolution"])
 			assert.NotContains(t, payload, "seconds")
 			usage := yuanliuHookObject(t, plugin, "extractUsage", ctx)
-			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.defaultResolution}, usage)
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.defaultResolution, "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0)}, usage)
 			ctx["usagePurpose"] = "billing_ratios"
 			assert.Empty(t, yuanliuHookObject(t, plugin, "extractUsage", ctx))
 			ctx["usagePurpose"] = "facts"
@@ -226,7 +232,7 @@ func TestYuanliuDynamicModelLifecycle(t *testing.T) {
 			assert.Equal(t, upstream, payload["model"])
 			assert.Equal(t, float64(45), payload["duration"])
 			assert.Equal(t, resolution, payload["resolution"])
-			wantFacts := map[string]any{"count": float64(1), "seconds": float64(45), "resolution": resolution}
+			wantFacts := map[string]any{"count": float64(1), "seconds": float64(45), "resolution": resolution, "input_images": float64(1), "input_videos": float64(1), "input_audios": float64(1)}
 			assert.Equal(t, wantFacts, yuanliuHookObject(t, plugin, "extractUsage", ctx))
 			parsed := yuanliuHookObject(t, plugin, "parseSubmitResponse", ctx, map[string]any{
 				"statusCode": 201, "body": map[string]any{"id": "upstream/new-task", "status": "queued"},
@@ -235,7 +241,7 @@ func TestYuanliuDynamicModelLifecycle(t *testing.T) {
 			result := yuanliuHookObject(t, plugin, "parseTaskResult", ctx, map[string]any{"status": "completed"})
 			assert.Equal(t, "SUCCESS", result["status"])
 			task := map[string]any{"model": alias, "upstreamModel": upstream, "state": parsed["state"]}
-			assert.Equal(t, wantFacts, yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, result, map[string]any{
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(45), "resolution": resolution}, yuanliuHookObject(t, plugin, "extractUsageOnComplete", task, result, map[string]any{
 				"billing": map[string]any{"charged": 987654321},
 			}))
 			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(60), "resolution": resolution},
@@ -253,7 +259,7 @@ func TestYuanliuDynamicModelLifecycle(t *testing.T) {
 		require.ErrorContains(t, err, "duration")
 	}
 	for _, duration := range []int{1, 3600} {
-		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(duration), "resolution": "720p"},
+		assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(duration), "resolution": "720p", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0)},
 			yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
 				"upstreamModel": upstream, "requestBody": map[string]any{"prompt": "ocean", "duration": duration, "resolution": "720p"},
 			}))
@@ -331,9 +337,17 @@ func TestYuanliuOctoberModelContracts(t *testing.T) {
 			assert.Equal(t, "stable-task", payload["client_request_id"])
 			assert.Equal(t, model.resolutions[0], payload["resolution"])
 			assert.Equal(t, "16:9", payload["aspect_ratio"])
-			wantUsage := map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.resolutions[0]}
+			inputImages := 0
+			if model.id == "yl_pp_md_sd25_30010" {
+				inputImages = 1
+			}
+			wantUsage := map[string]any{
+				"count": float64(1), "seconds": float64(model.min), "resolution": model.resolutions[0],
+				"input_images": float64(inputImages), "input_videos": float64(0), "input_audios": float64(0),
+			}
 			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsage", ctx(body())))
-			assert.Equal(t, wantUsage, yuanliuHookObject(t, plugin, "extractUsageOnComplete",
+			// 完成钩子只报告上游确认的时长和清晰度，提交时冻结的参考素材数量由宿主合并保留。
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(model.min), "resolution": model.resolutions[0]}, yuanliuHookObject(t, plugin, "extractUsageOnComplete",
 				map[string]any{"upstreamModel": model.id, "state": map[string]any{"duration": model.min, "resolution": model.resolutions[0]}},
 				map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"charged": 99999}},
 			))
@@ -508,6 +522,12 @@ func TestYuanliuReferenceContracts(t *testing.T) {
 	assert.Equal(t, prompt, payload["prompt"])
 	assert.Equal(t, "auto", payload["aspect_ratio"])
 	assert.NotContains(t, payload, "metadata")
+	assert.Equal(t, map[string]any{
+		"count": float64(1), "seconds": float64(5), "resolution": "720p",
+		"input_images": float64(4), "input_videos": float64(1), "input_audios": float64(1),
+	}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+		"model": "Yuan-Seedance-2.0-LJ-Full", "upstreamModel": model, "requestBody": command["requestBody"], "usagePurpose": "facts",
+	}))
 
 	for _, reference := range []any{"https://cdn.example/input.png", map[string]any{"url": "https://cdn.example/input.png"}, map[string]any{"image_url": map[string]any{"url": "https://cdn.example/input.png"}}} {
 		value := yuanliuHookObject(t, plugin, "buildSubmitRequest", map[string]any{
@@ -650,7 +670,7 @@ func TestYuanliuCanvasGenericReferences(t *testing.T) {
 			assert.Equal(t, []any{"https://cdn.example/audio.mp3", "https://cdn.example/audio.mp3"}, payload["audios"])
 			assert.NotContains(t, payload, "reference_images")
 			assert.NotContains(t, payload, "metadata")
-			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "resolution": "720p"}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
+			assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "resolution": "720p", "input_images": float64(3), "input_videos": float64(0), "input_audios": float64(2)}, yuanliuHookObject(t, plugin, "extractUsage", map[string]any{
 				"upstreamModel": upstream, "requestBody": command.RequestBody,
 			}))
 		})

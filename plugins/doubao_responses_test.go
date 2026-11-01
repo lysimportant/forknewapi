@@ -53,7 +53,7 @@ func TestDoubaoResponsesProtocol(t *testing.T) {
 				"resolution": "1080p",
 			},
 		},
-		wantUsageKeys:  []string{"resolution", "tokens", "video_input"},
+		wantUsageKeys:  []string{"input_videos", "resolution", "tokens", "video_input"},
 		wantVendorName: "doubao",
 	})
 }
@@ -125,7 +125,7 @@ func TestDoubaoAutomaticDurationHostContract(t *testing.T) {
 
 	facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"tokens": float64(648000), "resolution": "720p", "video_input": "video"}, facts)
+	assert.Equal(t, map[string]any{"tokens": float64(648000), "resolution": "720p", "video_input": "video", "input_videos": float64(1)}, facts)
 	ratios, err := adaptor.EstimateBillingValidated(c, info)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]float64{"video_input_ratio": 0.6}, ratios)
@@ -533,7 +533,7 @@ func TestDoubaoImageSubmission(t *testing.T) {
 		_, found = registry.Generation().LookupEndpoint(http.MethodPost, "/v1/images/generations", "doubao-seedance-2-0-260128")
 		assert.False(t, found)
 		schema, _ := plugin.Meta.UsageForModel("doubao-seedance-2-0-260128")
-		assert.ElementsMatch(t, []string{"tokens", "resolution", "video_input"}, keysOf(schema))
+		assert.ElementsMatch(t, []string{"input_videos", "tokens", "resolution", "video_input"}, keysOf(schema))
 		schema, examples := plugin.Meta.UsageForModel("doubao-seedance-1-5-pro-251215")
 		assert.ElementsMatch(t, []string{"tokens", "resolution", "generate_audio"}, keysOf(schema))
 		assert.Equal(t, "boolean", schema["generate_audio"].Type)
@@ -558,9 +558,9 @@ func TestDoubaoSeedanceUsageFacts(t *testing.T) {
 	}{
 		{[]string{pro10, "doubao-seedance-1-0-lite-t2v", "doubao-seedance-1-0-lite-i2v"}, []string{"480p", "720p", "1080p"}, []string{"resolution", "tokens"}},
 		{[]string{pro15}, []string{"480p", "720p", "1080p"}, []string{"generate_audio", "resolution", "tokens"}},
-		{[]string{v20}, []string{"480p", "720p", "1080p", "4k"}, []string{"resolution", "tokens", "video_input"}},
-		{[]string{fast20, mini20}, []string{"480p", "720p"}, []string{"resolution", "tokens", "video_input"}},
-		{[]string{v25}, []string{"480p", "720p", "1080p"}, []string{"resolution", "tokens", "video_input"}},
+		{[]string{v20}, []string{"480p", "720p", "1080p", "4k"}, []string{"input_videos", "resolution", "tokens", "video_input"}},
+		{[]string{fast20, mini20}, []string{"480p", "720p"}, []string{"input_videos", "resolution", "tokens", "video_input"}},
+		{[]string{v25}, []string{"480p", "720p", "1080p"}, []string{"input_videos", "resolution", "tokens", "video_input"}},
 	}
 	profiled := make([]string, 0, len(plugin.Meta.Models))
 	for _, family := range families {
@@ -586,6 +586,28 @@ func TestDoubaoSeedanceUsageFacts(t *testing.T) {
 	}
 	assert.ElementsMatch(t, videoModels, profiled, "every Seedance model selects a capability profile")
 
+	t.Run("declares the reference video count in profile examples", func(t *testing.T) {
+		for _, name := range []string{v20, fast20, mini20, v25} {
+			_, examples := plugin.Meta.UsageForModel(name)
+			referenced := 0
+			for _, example := range examples {
+				if strings.Contains(example.Label, "输入视频") {
+					assert.EqualValues(t, 1, example.Facts["input_videos"], name+" "+example.Label)
+					referenced++
+					continue
+				}
+				assert.EqualValues(t, 0, example.Facts["input_videos"], name+" "+example.Label)
+			}
+			assert.Equal(t, 1, referenced, name)
+		}
+		for _, name := range []string{pro10, pro15} {
+			_, examples := plugin.Meta.UsageForModel(name)
+			for _, example := range examples {
+				assert.NotContains(t, example.Facts, "input_videos", name+" "+example.Label)
+			}
+		}
+	})
+
 	// A table price saved when every Seedance model declared video_input: its
 	// last row is the unconditioned fallback.
 	const sharedMatrix = `u("resolution") == "480p" && u("video_input") == "none" ? tier("480p·none", u("tokens") * 2 / 1000000) : ` +
@@ -604,17 +626,33 @@ func TestDoubaoSeedanceUsageFacts(t *testing.T) {
 		wantErr string
 	}{
 		{"1.5 pro defaults to audio", pro15, map[string]any{"metadata": map[string]any{"resolution": "720p"}},
-			map[string]any{"tokens": float64(108000), "resolution": "720p", "generate_audio": true, "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(108000), "resolution": "720p", "generate_audio": true, "video_input": "none", "input_videos": float64(0)}, ""},
 		{"1.5 pro silent output", pro15, map[string]any{"metadata": map[string]any{"resolution": "720p", "generate_audio": false}},
-			map[string]any{"tokens": float64(108000), "resolution": "720p", "generate_audio": false, "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(108000), "resolution": "720p", "generate_audio": false, "video_input": "none", "input_videos": float64(0)}, ""},
 		{"2.0 has no audio fact", v20, map[string]any{"metadata": map[string]any{"resolution": "720p", "generate_audio": false}},
-			map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none", "input_videos": float64(0)}, ""},
 		{"2.0 offers 4k", v20, map[string]any{"metadata": map[string]any{"resolution": "4k"}},
-			map[string]any{"tokens": float64(972000), "resolution": "4k", "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(972000), "resolution": "4k", "video_input": "none", "input_videos": float64(0)}, ""},
 		{"1.0 pro reports no reference video although its profile omits it", pro10, map[string]any{"metadata": map[string]any{"resolution": "1080p"}},
-			map[string]any{"tokens": float64(243000), "resolution": "1080p", "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(243000), "resolution": "1080p", "video_input": "none", "input_videos": float64(0)}, ""},
 		{"mini reserves its highest tier when the resolution is left to Ark", mini20, map[string]any{},
-			map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none"}, ""},
+			map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none", "input_videos": float64(0)}, ""},
+		{"2.5 counts reference videos", v25, map[string]any{"metadata": map[string]any{
+			"resolution": "720p",
+			"content": []any{
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://cdn.example/frame.png"}},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": "https://cdn.example/ref1.mp4"}},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": "https://cdn.example/ref2.mp4"}},
+			},
+		}},
+			map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "video", "input_videos": float64(2)}, ""},
+		{"1.0 pro counts no reference media", pro10, map[string]any{"metadata": map[string]any{
+			"resolution": "1080p",
+			"content": []any{
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://cdn.example/frame.png"}},
+			},
+		}},
+			map[string]any{"tokens": float64(243000), "resolution": "1080p", "video_input": "none", "input_videos": float64(0)}, ""},
 		{"mini rejects 1080p", mini20, map[string]any{"metadata": map[string]any{"resolution": "1080p"}}, nil, mini20 + " resolution must be one of 480p, 720p"},
 		{"mini rejects a 1080p size", mini20, map[string]any{"size": "1920x1080"}, nil, mini20 + " resolution must be one of 480p, 720p"},
 		{"fast rejects 4k", fast20, map[string]any{"metadata": map[string]any{"resolution": "4k"}}, nil, fast20 + " resolution must be one of 480p, 720p"},
@@ -654,7 +692,11 @@ func TestDoubaoSeedanceUsageFacts(t *testing.T) {
 			assert.Equal(t, tc.want, alibabaObject(t, facts))
 			_, trace, err := billingexpr.RunExprWithRequest(sharedMatrix, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
 			require.NoError(t, err)
-			assert.Equal(t, tc.want["resolution"].(string)+"·none", trace.MatchedTier, "saved table prices keep the no-video tier")
+			suffix := "·none"
+			if tc.want["video_input"] == "video" {
+				suffix = "·video"
+			}
+			assert.Equal(t, tc.want["resolution"].(string)+suffix, trace.MatchedTier, "saved table prices keep the declared video tier")
 		})
 	}
 

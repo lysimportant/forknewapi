@@ -6,7 +6,7 @@ export const meta = {
     en: "Image2Pro video generation through the OpenAI video API",
     zh: "通过 OpenAI 视频接口接入 Image2Pro 视频生成",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://image2pro.top/api-docs",
   baseUrl: "https://api.image2pro.top/v1",
@@ -28,7 +28,23 @@ export const meta = {
       unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
   },
+  usageExamples: [
+    { label: "text · 8s", facts: { count: 1, seconds: 8, input_images: 0, input_audios: 0 } },
+    { label: "reference · 8s", facts: { count: 1, seconds: 8, input_images: 2, input_audios: 1 } },
+  ],
   usageProfiles: [
     {
       models: ["无限制-MAX-Video"],
@@ -37,6 +53,18 @@ export const meta = {
           type: "number",
           unit: "second",
           description: { en: "Video generation unit price", zh: "视频生成单价" },
+        },
+        input_images: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "image", zh: "张" },
+          description: { en: "Input image unit price", zh: "输入图片单价" },
+        },
+        input_audios: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "audio", zh: "段" },
+          description: { en: "Input audio unit price", zh: "输入音频单价" },
         },
       },
     },
@@ -48,6 +76,18 @@ export const meta = {
           unit: "count",
           unitLabel: { en: "video", zh: "个" },
           description: { en: "Video generation unit price", zh: "视频生成单价" },
+        },
+        input_images: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "image", zh: "张" },
+          description: { en: "Input image unit price", zh: "输入图片单价" },
+        },
+        input_audios: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "audio", zh: "段" },
+          description: { en: "Input audio unit price", zh: "输入音频单价" },
         },
       },
     },
@@ -346,7 +386,7 @@ function normalizeRequest(request, model, publicTaskId) {
     if (requestedId !== undefined && requestedId !== publicTaskId) throw new Error("client_request_id is reserved for the public task id");
     body.client_request_id = publicTaskId;
   }
-  return { body, facts: { model, seconds: duration, count: 1 } };
+  return { body, facts: { model, seconds: duration, count: 1, input_images: images.length, input_audios: audios.length } };
 }
 
 function sanitizeReason(value, apiKey) {
@@ -419,7 +459,9 @@ export function buildQueryRequest(ctx) {
 export function extractUsage(ctx) {
   const built = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  return built.facts.model === MAX_MODEL ? (built.facts.seconds === undefined ? {} : { seconds: built.facts.seconds }) : { count: 1 };
+  // 只统计参考素材；首帧、尾帧是生成条件，不计费。
+  const counts = { input_images: built.facts.input_images, input_audios: built.facts.input_audios };
+  return built.facts.model === MAX_MODEL ? (built.facts.seconds === undefined ? counts : Object.assign({ seconds: built.facts.seconds }, counts)) : Object.assign({ count: 1 }, counts);
 }
 
 function completedDuration(body) {

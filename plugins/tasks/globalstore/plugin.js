@@ -93,7 +93,7 @@ export const meta = {
     en: "GlobalStore v2 model-center video tasks through the OpenAI video API",
     zh: "通过 OpenAI 视频接口接入 GlobalStore v2 模型中心视频任务",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://docs.globalstore.ai/zh",
   baseUrl: "https://saas.globalstore.ai/kyyReactApiServer",
@@ -115,6 +115,24 @@ export const meta = {
       unit: "second",
       description: { en: "Requested video duration", zh: "请求视频时长" },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_videos: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "段" },
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
     video_resolution: {
       enum: ["480p", "720p", "1080p", "2k", "4k"],
       enumLabels: { "2k": { en: "2K", zh: "2K" }, "4k": { en: "4K", zh: "4K" } },
@@ -122,11 +140,12 @@ export const meta = {
     },
   },
   usageExamples: [
-    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
-    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
-    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
-    { label: "2K · 5s", facts: { count: 1, seconds: 5, video_resolution: "2k" } },
-    { label: "4K · 5s", facts: { count: 1, seconds: 5, video_resolution: "4k" } },
+    { label: "480p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "480p" } },
+    { label: "720p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "720p" } },
+    { label: "1080p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "1080p" } },
+    { label: "2K · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "2k" } },
+    { label: "4K · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "4k" } },
+    { label: "720p · 5s · 参考素材", facts: { count: 1, seconds: 5, input_images: 1, input_videos: 1, input_audios: 1, video_resolution: "720p" } },
   ],
 };
 
@@ -625,13 +644,19 @@ export function parseSubmitResponse(_ctx, response) {
  * 返回提交阶段冻结的计费事实；倍率估算阶段不重复计费。
  * 图片模型只上报按次的 count；视频模型始终给 count，并在能确定清晰度时补 seconds +
  * video_resolution，管理员写「按次」或「清晰度 + 秒数」两种表达式都能命中。
+ * 参考图片/视频/音频按件计数；首帧、尾帧是生成条件，不计费。
  */
 export function extractUsage(ctx) {
   if (ctx.usagePurpose === "billing_ratios") return {};
   const model = ctx.upstreamModel || ctx.model;
   const facts = normalizeRequest(ctx.requestBody, model);
   if (facts.kind === "image") return { count: 1 };
-  const usage = { count: 1 };
+  const usage = {
+    count: 1,
+    input_images: facts.references.length,
+    input_videos: facts.videos.length,
+    input_audios: facts.audios.length,
+  };
   const resolution = videoUsageResolution(facts);
   if (resolution) {
     usage.seconds = facts.duration;

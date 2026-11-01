@@ -38,6 +38,20 @@ const INPUT_IMAGES_FIELD = {
   unitLabel: { en: "image", zh: "张", "zh-TW": "張" },
   description: { en: "Input image unit price", zh: "输入图片单价" },
 };
+// An edit or extension submits one input video; a generation request has none.
+const INPUT_VIDEOS_FIELD = {
+  type: "number",
+  unit: "count",
+  unitLabel: { en: "video", zh: "段" },
+  description: { en: "Input video unit price", zh: "输入视频单价" },
+};
+// A generation request can attach up to three reference audios.
+const INPUT_AUDIOS_FIELD = {
+  type: "number",
+  unit: "count",
+  unitLabel: { en: "audio", zh: "段" },
+  description: { en: "Input audio unit price", zh: "输入音频单价" },
+};
 const INPUT_VIDEO_SECONDS_FIELD = {
   type: "number",
   unit: "second",
@@ -57,6 +71,8 @@ const GROK_IMAGINE_VIDEO_USAGE_SCHEMA = {
   seconds: SECONDS_FIELD,
   resolution: { enum: VIDEO_MODELS["grok-imagine-video"].resolutions, description: RESOLUTION_DESCRIPTION },
   input_images: INPUT_IMAGES_FIELD,
+  input_videos: INPUT_VIDEOS_FIELD,
+  input_audios: INPUT_AUDIOS_FIELD,
   input_video_seconds: INPUT_VIDEO_SECONDS_FIELD,
   moderated: MODERATED_FIELD,
 };
@@ -65,6 +81,7 @@ const GROK_IMAGINE_VIDEO_1_5_USAGE_SCHEMA = {
   seconds: SECONDS_FIELD,
   resolution: { enum: VIDEO_MODELS["grok-imagine-video-1.5"].resolutions, description: RESOLUTION_DESCRIPTION },
   input_images: INPUT_IMAGES_FIELD,
+  input_audios: INPUT_AUDIOS_FIELD,
   moderated: MODERATED_FIELD,
 };
 
@@ -77,7 +94,7 @@ export const meta = {
     en: "xAI Grok Imagine video generation (text-to-video, image-to-video, reference-to-video, video editing, and video extension)",
     zh: "xAI Grok Imagine 视频生成（文生视频、图生视频、参考生视频、视频编辑、视频延长）",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "QuantumNous" },
   channelTypes: [48], // xAI-type channels serve the video API with the same key
   baseUrl: "https://api.x.ai",
@@ -92,31 +109,34 @@ export const meta = {
     resolution: { enum: ["480p", "720p", "1080p"], description: RESOLUTION_DESCRIPTION },
   }),
   usageExamples: [
-    { label: "1.5 480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, input_video_seconds: 0, moderated: false } },
-    { label: "1.5 1080p 8s · image", facts: { seconds: 8, resolution: "1080p", input_images: 1, input_video_seconds: 0, moderated: false } },
-    { label: "edit 8s · 720p", facts: { seconds: 8, resolution: "720p", input_images: 0, input_video_seconds: 8, moderated: false } },
-    { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, input_video_seconds: 0, moderated: true } },
+    { label: "1.5 480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: false } },
+    { label: "1.5 1080p 8s · image", facts: { seconds: 8, resolution: "1080p", input_images: 1, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: false } },
+    { label: "edit 8s · 720p", facts: { seconds: 8, resolution: "720p", input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: 8, moderated: false } },
+    { label: "720p 8s · 2 reference audios", facts: { seconds: 8, resolution: "720p", input_images: 0, input_videos: 0, input_audios: 2, input_video_seconds: 0, moderated: false } },
+    { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: true } },
   ],
   usageProfiles: [
     {
       models: ["grok-imagine-video"],
       schema: GROK_IMAGINE_VIDEO_USAGE_SCHEMA,
       examples: [
-        { label: "480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, input_video_seconds: 0, moderated: false } },
-        { label: "720p 8s · image", facts: { seconds: 8, resolution: "720p", input_images: 1, input_video_seconds: 0, moderated: false } },
-        { label: "edit 8s · 720p", facts: { seconds: 8, resolution: "720p", input_images: 0, input_video_seconds: 8, moderated: false } },
-        { label: "extend 8s + 6s · 480p", facts: { seconds: 6, resolution: "480p", input_images: 0, input_video_seconds: 8, moderated: false } },
-        { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, input_video_seconds: 0, moderated: true } },
+        { label: "480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: false } },
+        { label: "720p 8s · image", facts: { seconds: 8, resolution: "720p", input_images: 1, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: false } },
+        { label: "edit 8s · 720p", facts: { seconds: 8, resolution: "720p", input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: 8, moderated: false } },
+        { label: "extend 8s + 6s · 480p", facts: { seconds: 6, resolution: "480p", input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: 8, moderated: false } },
+        { label: "720p 8s · 2 reference audios", facts: { seconds: 8, resolution: "720p", input_images: 0, input_videos: 0, input_audios: 2, input_video_seconds: 0, moderated: false } },
+        { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, moderated: true } },
       ],
     },
     {
       models: ["grok-imagine-video-1.5", "grok-imagine-video-1.5-lite"],
       schema: GROK_IMAGINE_VIDEO_1_5_USAGE_SCHEMA,
       examples: [
-        { label: "480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, moderated: false } },
-        { label: "720p 8s · image", facts: { seconds: 8, resolution: "720p", input_images: 1, moderated: false } },
-        { label: "1080p 15s", facts: { seconds: 15, resolution: "1080p", input_images: 0, moderated: false } },
-        { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, moderated: true } },
+        { label: "480p 8s", facts: { seconds: 8, resolution: "480p", input_images: 0, input_audios: 0, moderated: false } },
+        { label: "720p 8s · image", facts: { seconds: 8, resolution: "720p", input_images: 1, input_audios: 0, moderated: false } },
+        { label: "1080p 15s", facts: { seconds: 15, resolution: "1080p", input_images: 0, input_audios: 0, moderated: false } },
+        { label: "480p 8s · 2 reference audios", facts: { seconds: 8, resolution: "480p", input_images: 0, input_audios: 2, moderated: false } },
+        { label: "480p 8s · blocked", facts: { seconds: 8, resolution: "480p", input_images: 0, input_audios: 0, moderated: true } },
       ],
     },
   ],
@@ -476,12 +496,12 @@ export function extractUsage(ctx) {
   if (request.action === "video_edit") {
     // Input URLs expose neither duration nor resolution; reserve the
     // documented maximum and the resolution cap, and settle on the result.
-    facts = { seconds: MAX_EDIT_SECONDS, resolution: EDIT_RESOLUTION_CAP, input_images: 0, input_video_seconds: MAX_EDIT_SECONDS };
+    facts = { seconds: MAX_EDIT_SECONDS, resolution: EDIT_RESOLUTION_CAP, input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: MAX_EDIT_SECONDS };
   } else if (request.action === "video_extension") {
-    facts = { seconds: body.duration, resolution: EDIT_RESOLUTION_CAP, input_images: 0, input_video_seconds: MAX_EXTENSION_INPUT_SECONDS };
+    facts = { seconds: body.duration, resolution: EDIT_RESOLUTION_CAP, input_images: 0, input_videos: 1, input_audios: 0, input_video_seconds: MAX_EXTENSION_INPUT_SECONDS };
   } else {
     const images = (body.image ? 1 : 0) + (body.reference_images || []).length + (body.last_frame ? 1 : 0) + (body.keyframes || []).length;
-    facts = { seconds: body.duration, resolution: body.resolution, input_images: images, input_video_seconds: 0 };
+    facts = { seconds: body.duration, resolution: body.resolution, input_images: images, input_videos: 0, input_audios: (body.reference_audios || []).length, input_video_seconds: 0 };
   }
   // Legacy per-call prices scale with the output length only.
   if (ctx.usagePurpose === "billing_ratios") return { seconds: facts.seconds };

@@ -8,7 +8,7 @@ export const meta = {
     en: "SUB MiniMax H3 unified video generation with text, frame, reference, audio, and lip-sync modes",
     zh: "SUB MiniMax H3 统一视频生成，支持文生、首尾帧、多图参考、多图音频和口型同步",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "QuantumNous" },
   website: "https://shumai.siphot.com",
   baseUrl: "https://shumai.siphot.com",
@@ -31,11 +31,24 @@ export const meta = {
       enum: ["text", "frames", "reference", "reference-15s", "image-audio", "image-audio-15s", "image-audio-quality", "image-audio-fast", "lipsync"],
       description: { en: "Video generation mode", zh: "视频生成模式" },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
   },
   usageExamples: [
-    { label: "text · 480p · 5s", facts: { seconds: 5, resolution: "480p", mode: "text" } },
-    { label: "frames · 768p · 10s", facts: { seconds: 10, resolution: "768p", mode: "frames" } },
-    { label: "reference · 1080p · 10s", facts: { seconds: 10, resolution: "1080p", mode: "reference" } },
+    { label: "text · 480p · 5s", facts: { seconds: 5, resolution: "480p", mode: "text", input_images: 0, input_audios: 0 } },
+    { label: "frames · 768p · 10s", facts: { seconds: 10, resolution: "768p", mode: "frames", input_images: 0, input_audios: 0 } },
+    { label: "reference · 1080p · 10s · 3 images", facts: { seconds: 10, resolution: "1080p", mode: "reference", input_images: 3, input_audios: 0 } },
+    { label: "image-audio · 1080p · 10s · 3 images + 2 audios", facts: { seconds: 10, resolution: "1080p", mode: "image-audio", input_images: 3, input_audios: 2 } },
   ],
 };
 
@@ -320,11 +333,18 @@ export function parseSubmitResponse(_ctx, response) {
   return { taskId, taskData: body };
 }
 
-/** 返回提交阶段确定的计费事实；比例预估阶段不重复增加倍率。 */
+/** 返回提交阶段确定的计费事实；比例预估阶段不重复增加倍率。首尾帧和纯文本模式不含可计费参考素材。 */
 export function extractUsage(ctx) {
   const built = upstreamBody(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  return { seconds: built.facts.duration, resolution: built.facts.tier, mode: built.facts.mode };
+  const references = built.facts.mode !== "text" && built.facts.mode !== "frames";
+  return {
+    seconds: built.facts.duration,
+    resolution: built.facts.tier,
+    mode: built.facts.mode,
+    input_images: references ? built.facts.images.length : 0,
+    input_audios: references ? built.facts.audios.length : 0,
+  };
 }
 
 /** 仅采纳上游明确返回且有界的实际时长，缺失时保留预扣事实。 */

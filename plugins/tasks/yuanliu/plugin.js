@@ -281,7 +281,7 @@ const MODEL_SPECS = {
   },
 };
 
-/** 每次生成一个视频，同时报告时长和清晰度；管理员选择本站计价表达式。 */
+/** 每次生成一个视频，同时报告时长和清晰度；管理员选择本站计价表达式。参考素材按数量计费。 */
 const USAGE_SCHEMA = {
   count: {
     type: "number",
@@ -299,10 +299,31 @@ const USAGE_SCHEMA = {
     description: { en: "Output video resolution", zh: "输出视频分辨率" },
     enumLabels: { "2k": { en: "2K", zh: "2K" } },
   },
+  input_images: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "image", zh: "张" },
+    description: { en: "Input image unit price", zh: "输入图片单价" },
+  },
+  input_videos: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "video", zh: "段" },
+    description: { en: "Input video unit price", zh: "输入视频单价" },
+  },
+  input_audios: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "audio", zh: "段" },
+    description: { en: "Input audio unit price", zh: "输入音频单价" },
+  },
 };
 
 /** 获取目录时优先建议旧展示别名；生成仍由渠道保存的模型和映射授权。 */
 const MODEL_ALIASES = Object.fromEntries(Object.entries(MODEL_SPECS).map(([model, spec]) => [spec.alias, model]));
+
+/** 宿主按数量计费的用量上限（与 relaykit dto.MaxImageN 一致）；超出后用量事实无法通过宿主校验。 */
+const MAX_REFERENCE_MEDIA = 128;
 
 /** 通用协议边界，不代表上游模型能力；具体型号限制由上游校验。 */
 const GENERIC_SPEC = {
@@ -310,9 +331,9 @@ const GENERIC_SPEC = {
   max: 3600,
   resolutions: ["720p", "480p", "1080p", "2k"],
   ratios: ["auto", "adaptive", ...FIXED_RATIOS],
-  images: Number.MAX_SAFE_INTEGER,
-  videos: Number.MAX_SAFE_INTEGER,
-  audios: Number.MAX_SAFE_INTEGER,
+  images: MAX_REFERENCE_MEDIA,
+  videos: MAX_REFERENCE_MEDIA,
+  audios: MAX_REFERENCE_MEDIA,
   prompt: Number.MAX_SAFE_INTEGER,
 };
 
@@ -322,7 +343,7 @@ export const meta = {
   key: "yuanliu",
   name: "Yuanliu Video",
   icon: "text:源流",
-  version: "1.3.1",
+  version: "1.4.0",
   author: { name: "Yuanliu" },
   description: {
     en: "Yuanliu Seedance and Wan video generation with public URL references",
@@ -580,11 +601,18 @@ export function parseSubmitResponse(ctx, response) {
   return parsed;
 }
 
-/** 返回三种计价维度供本站表达式选择；不读取上游金额，保留旧 seconds/resolution 字段。 */
+/** 返回三种计价维度供本站表达式选择；不读取上游金额，保留旧 seconds/resolution 字段。参考素材（图片、视频、音频）按数量报告。 */
 export function extractUsage(ctx) {
   const request = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
-  return { count: 1, seconds: request.duration, resolution: request.resolution };
+  return {
+    count: 1,
+    seconds: request.duration,
+    resolution: request.resolution,
+    input_images: request.images.length,
+    input_videos: request.videos.length,
+    input_audios: request.audios.length,
+  };
 }
 
 /** 查询同渠道上游任务，编码 ID 防止路径注入；不存在额外批量或取消接口。 */

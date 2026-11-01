@@ -60,6 +60,9 @@ func TestNSKevenVideoPluginContract(t *testing.T) {
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
 	assert.Equal(t, "视频生成单价", plugin.Meta.UsageSchema["count"].Description["zh"])
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["seconds"].Description["en"])
+	assert.Equal(t, "Input image unit price", plugin.Meta.UsageSchema["input_images"].Description["en"])
+	assert.Equal(t, "段", plugin.Meta.UsageSchema["input_videos"].UnitLabel["zh"])
+	assert.Equal(t, "count", plugin.Meta.UsageSchema["input_audios"].Unit)
 	assert.Equal(t, []string{"480p", "720p", "1080p", "4k"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
 	for _, example := range plugin.Meta.UsageExamples {
@@ -278,9 +281,16 @@ func TestNSKevenVideoProtocolAndTaskResults(t *testing.T) {
 func TestNSKevenVideoUsage(t *testing.T) {
 	plugin := loadNSKevenVideoPlugin(t)
 	doubao := nskevenCallObject(t, plugin, "extractUsage", nskevenSubmitContext("doubao-seedance-2-0-260128", map[string]any{"prompt": "x"}))
-	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "video_resolution": "720p"}, doubao)
+	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(4), "video_resolution": "720p", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0)}, doubao)
 	flat := nskevenCallObject(t, plugin, "extractUsage", nskevenSubmitContext("even--seedance-2.0-720p", map[string]any{"prompt": "x", "duration": 6, "resolution": "720p"}))
-	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "720p"}, flat)
+	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "720p", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0)}, flat)
+	references := nskevenCallObject(t, plugin, "extractUsage", nskevenSubmitContext("sd-2-E5", map[string]any{
+		"prompt": "x", "duration": 6,
+		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
+		"videos": []any{"https://cdn.example/v.mp4"},
+		"audios": []any{"https://cdn.example/a.mp3"},
+	}))
+	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "720p", "input_images": float64(2), "input_videos": float64(1), "input_audios": float64(1)}, references)
 	ratioContext := nskevenSubmitContext("doubao-seedance-2-0-260128", map[string]any{"prompt": "x"})
 	ratioContext["usagePurpose"] = "billing_ratios"
 	assert.Empty(t, nskevenCallObject(t, plugin, "extractUsage", ratioContext))

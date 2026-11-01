@@ -162,11 +162,12 @@ const QWEN_IMAGE3_USAGE_SCHEMA = {
 
 // Wan video usage facts. The resolution options follow the model's
 // capability table so pricing lists only the tiers the model offers.
-function wanVideoUsageSchema(resolutions, audio) {
+function wanVideoUsageSchema(resolutions, audio, inputVideo) {
   const resolutionLabels = {};
   for (const resolution of resolutions) resolutionLabels[resolution] = { en: resolution, zh: resolution };
   const schema = {
-    // Billable seconds: output duration, or input + output for Wan3.
+    // Billable seconds: output duration. Wan3 reference video duration is
+    // reported separately as input_video_seconds so it can be priced on its own.
     seconds: {
       type: "number",
       unit: "second",
@@ -179,6 +180,14 @@ function wanVideoUsageSchema(resolutions, audio) {
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
     },
   };
+  // Wan3 bills reference videos by their duration.
+  if (inputVideo) {
+    schema.input_video_seconds = {
+      type: "number",
+      unit: "second",
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    };
+  }
   // wan2.6-i2v-flash prices audio and silent output differently. parameters.audio
   // defaults to true; the completion usage.audio flag replaces the estimate.
   if (audio) {
@@ -191,21 +200,25 @@ function wanVideoUsageSchema(resolutions, audio) {
 }
 
 const WAN_AUDIO_VIDEO_MODELS = ["wan2.6-i2v-flash"];
+// Wan3 bills the reference video duration separately from the output duration.
+const WAN_INPUT_VIDEO_MODELS = ["wan3.0-video", "wan3.0-video-prime"];
 // Dated snapshots share the undated model's capabilities through modelKey.
 const WAN_VIDEO_SNAPSHOTS = ["wan2.7-t2v-2026-04-25", "wan2.7-t2v-2026-06-12", "wan2.7-i2v-2026-04-25"];
 const WAN_VIDEO_RESOLUTIONS = ["480P", "720P", "1080P"];
 
-// One usage profile per distinct resolution set and audio option.
+// One usage profile per distinct resolution set, audio option, and
+// reference-video billing shape.
 function wanVideoUsageProfiles() {
   const profiles = [];
   for (const model of Object.keys(WAN_MODELS).concat(WAN_VIDEO_SNAPSHOTS)) {
     const key = modelKey(model);
     const resolutions = WAN_MODELS[key].resolutions;
     const audio = WAN_AUDIO_VIDEO_MODELS.includes(key);
-    const shape = resolutions.join("/") + (audio ? "+audio" : "");
+    const inputVideo = WAN_INPUT_VIDEO_MODELS.includes(key);
+    const shape = resolutions.join("/") + (audio ? "+audio" : "") + (inputVideo ? "+input" : "");
     let profile = profiles.find((entry) => entry.shape === shape);
     if (!profile) {
-      profile = { shape: shape, models: [], schema: wanVideoUsageSchema(resolutions, audio) };
+      profile = { shape: shape, models: [], schema: wanVideoUsageSchema(resolutions, audio, inputVideo) };
       profiles.push(profile);
     }
     profile.models.push(model);
@@ -222,7 +235,7 @@ export const meta = {
     en: "Alibaba Cloud Bailian image and video generation (Wan, Qwen-Image, Z-Image)",
     zh: "阿里云百炼图片与视频生成（万相、千问图像、Z-Image）",
   },
-  version: "1.4.2",
+  version: "1.5.0",
   author: { name: "QuantumNous" },
   channelTypes: [17],
   modelDiscovery: { protocol: "bailian", path: "/api/v1/models" },
@@ -279,7 +292,7 @@ export const meta = {
   upstreams: ["vendor", "new_api"],
   submitResponseTypes: ["json", "sse"],
   requiredCapabilities: ["duration-auto@1"],
-  usageSchema: { ...WAN_IMAGE_USAGE_SCHEMA, ...wanVideoUsageSchema(WAN_VIDEO_RESOLUTIONS, false) },
+  usageSchema: { ...WAN_IMAGE_USAGE_SCHEMA, ...wanVideoUsageSchema(WAN_VIDEO_RESOLUTIONS, false, true) },
   usageProfiles: [
     {
       models: Object.keys(IMAGE_MODELS)
@@ -1100,6 +1113,9 @@ export function extractUsage(ctx) {
   }
   const resolution = body.parameters.size ? videoSize(body.parameters.size).resolution : body.parameters.resolution;
   const facts = { seconds: seconds, resolution: resolution };
+  // The request carries no reference video duration; completion splits the
+  // upstream input/output durations into seconds and input_video_seconds.
+  if (WAN_INPUT_VIDEO_MODELS.includes(modelKey(body.model))) facts.input_video_seconds = 0;
   if (WAN_AUDIO_VIDEO_MODELS.includes(modelKey(body.model))) facts.audio = body.parameters.audio !== false;
   return facts;
 }
@@ -1127,9 +1143,14 @@ export function extractUsageOnComplete(task, taskResult, body) {
     // Keep the reservation when either side is missing. Invalid supplied facts
     // reach the host validator unchanged, which logs and rejects them.
     if (inputSeconds != null && outputSeconds != null) {
-      if (typeof inputSeconds !== "number" || !Number.isFinite(inputSeconds) || inputSeconds < 0) facts.seconds = inputSeconds;
-      else if (typeof outputSeconds !== "number" || !Number.isFinite(outputSeconds) || outputSeconds < 0) facts.seconds = outputSeconds;
-      else facts.seconds = inputSeconds + outputSeconds;
+      if (typeof inputSeconds !== "number" || !Number.isFinite(inputSeconds) || inputSeconds < 0) {
+        facts.input_video_seconds = inputSeconds;
+      } else if (typeof outputSeconds !== "number" || !Number.isFinite(outputSeconds) || outputSeconds < 0) {
+        facts.seconds = outputSeconds;
+      } else {
+        facts.seconds = outputSeconds;
+        facts.input_video_seconds = inputSeconds;
+      }
     }
   } else {
     const seconds = usage.duration ?? usage.output_video_duration ?? output.duration ?? output.duration_seconds;

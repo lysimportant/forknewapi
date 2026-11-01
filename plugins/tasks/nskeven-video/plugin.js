@@ -19,7 +19,7 @@ export const meta = {
     en: "NSKeven unified video generation gateway",
     zh: "NSKeven 统一视频生成网关",
   },
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://docs.nskeven.uk/",
   baseUrl: "https://newapi.nskeven.uk",
@@ -42,16 +42,35 @@ export const meta = {
       unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    input_images: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: { en: "Input image unit price", zh: "输入图片单价" },
+    },
+    input_videos: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "段" },
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
+    input_audios: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "audio", zh: "段" },
+      description: { en: "Input audio unit price", zh: "输入音频单价" },
+    },
     video_resolution: {
       enum: ["480p", "720p", "1080p", "4k"],
       description: { en: "Output video resolution", zh: "输出视频分辨率" },
     },
   },
   usageExamples: [
-    { label: "480p · 5s", facts: { count: 1, seconds: 5, video_resolution: "480p" } },
-    { label: "720p · 5s", facts: { count: 1, seconds: 5, video_resolution: "720p" } },
-    { label: "1080p · 5s", facts: { count: 1, seconds: 5, video_resolution: "1080p" } },
-    { label: "4k · 5s", facts: { count: 1, seconds: 5, video_resolution: "4k" } },
+    { label: "480p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "480p" } },
+    { label: "720p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "720p" } },
+    { label: "1080p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "1080p" } },
+    { label: "4k · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "4k" } },
+    { label: "720p · 5s · 参考素材", facts: { count: 1, seconds: 5, input_images: 1, input_videos: 1, input_audios: 1, video_resolution: "720p" } },
   ],
 };
 
@@ -60,6 +79,8 @@ const MIN_SECONDS = 1;
 const DEFAULT_SECONDS = 5;
 const RESOLUTIONS = ["480p", "720p", "1080p", "4k"];
 const ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
+/** 参考素材按件计费，宿主对 count 用量事实的上限为 128。 */
+const MAX_INPUT_MEDIA = 128;
 
 const REQUEST_FIELDS = new Set([
   "model",
@@ -824,7 +845,13 @@ export function extractUsage(ctx) {
   } catch (error) {
     return {};
   }
-  const facts = { count: 1 };
+  const facts = {
+    count: 1,
+    // 只统计参考素材；首帧、尾帧是生成条件，不计费。
+    input_images: Math.min(parsed.images.length, MAX_INPUT_MEDIA),
+    input_videos: Math.min(parsed.videos.length, MAX_INPUT_MEDIA),
+    input_audios: Math.min(parsed.audios.length, MAX_INPUT_MEDIA),
+  };
   if (parsed.seconds) facts.seconds = parsed.seconds;
   if (parsed.resolution && RESOLUTIONS.indexOf(parsed.resolution) >= 0) facts.video_resolution = parsed.resolution;
   return facts;

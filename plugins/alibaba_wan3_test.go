@@ -73,7 +73,7 @@ func TestAlibabaWan3(t *testing.T) {
 
 		value, callErr = plugin.Engine.Call(t.Context(), "extractUsage", usageCtx("facts", body))
 		require.NoError(t, callErr)
-		assert.Equal(t, map[string]any{"seconds": float64(30), "resolution": "1080P"}, roundTrip(t, value))
+		assert.Equal(t, map[string]any{"seconds": float64(30), "resolution": "1080P", "input_video_seconds": float64(0)}, roundTrip(t, value))
 
 		value, callErr = plugin.Engine.Call(t.Context(), "extractUsage", usageCtx("billing_ratios", body))
 		require.NoError(t, callErr)
@@ -145,5 +145,14 @@ func TestAlibabaWan3(t *testing.T) {
 		})
 		require.NoError(t, callErr)
 		assert.Equal(t, map[string]any{"seconds": float64(5), "resolution": "1080P"}, roundTrip(t, value))
+
+		// The reference video duration is billed as input_video_seconds, so the
+		// output duration stays in seconds instead of being folded into it.
+		value, callErr = plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{}, map[string]any{}, map[string]any{
+			"output": map[string]any{"task_status": "SUCCEEDED"},
+			"usage":  map[string]any{"input_video_duration": 3, "output_video_duration": 6, "SR": 720},
+		})
+		require.NoError(t, callErr)
+		assert.Equal(t, map[string]any{"seconds": float64(6), "input_video_seconds": float64(3), "resolution": "720P"}, roundTrip(t, value))
 	})
 }

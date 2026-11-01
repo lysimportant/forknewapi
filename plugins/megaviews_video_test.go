@@ -65,6 +65,12 @@ func TestMegaViewsVideoPluginContract(t *testing.T) {
 	assert.Equal(t, "条", plugin.Meta.UsageSchema["count"].UnitLabel["zh"])
 	assert.Equal(t, []string{"480p", "720p", "768p", "1080p", "4k"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
 	assert.Equal(t, "输出视频分辨率", plugin.Meta.UsageSchema["video_resolution"].Description["zh"])
+	assert.Equal(t, "Input image unit price", plugin.Meta.UsageSchema["input_images"].Description["en"])
+	assert.Equal(t, "张", plugin.Meta.UsageSchema["input_images"].UnitLabel["zh"])
+	assert.Equal(t, "count", plugin.Meta.UsageSchema["input_videos"].Unit)
+	assert.Equal(t, "输入视频单价", plugin.Meta.UsageSchema["input_videos"].Description["zh"])
+	assert.Equal(t, "second", plugin.Meta.UsageSchema["input_video_seconds"].Unit)
+	assert.Equal(t, "输入音频单价", plugin.Meta.UsageSchema["input_audios"].Description["zh"])
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
 	for _, example := range plugin.Meta.UsageExamples {
 		assert.Len(t, example.Facts, len(plugin.Meta.UsageSchema))
@@ -328,16 +334,33 @@ func TestMegaViewsVideoUsage(t *testing.T) {
 	plugin := loadMegaViewsVideoPlugin(t)
 
 	withSeconds := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x", "duration": 6}))
-	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6)}, withSeconds)
+	assert.JSONEq(t, `{"count":1,"seconds":6,"input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, withSeconds))
 	withAlias := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x", "seconds": "5"}))
-	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(5)}, withAlias)
+	assert.JSONEq(t, `{"count":1,"seconds":5,"input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, withAlias))
 	withResolution := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("minimax-h3-f", map[string]any{"prompt": "x", "duration": 6, "resolution": "768P"}))
-	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "768p"}, withResolution)
+	assert.JSONEq(t, `{"count":1,"seconds":6,"video_resolution":"768p","input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, withResolution))
 	withSizeOnly := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x", "size": "1920x1080"}))
-	assert.Equal(t, map[string]any{"count": float64(1), "video_resolution": "1080p"}, withSizeOnly)
+	assert.JSONEq(t, `{"count":1,"video_resolution":"1080p","input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, withSizeOnly))
 	unknownResolution := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x", "resolution": "999p"}))
-	assert.Equal(t, map[string]any{"count": float64(1)}, unknownResolution)
-	assert.Equal(t, map[string]any{"count": float64(1)}, megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x"})))
+	assert.JSONEq(t, `{"count":1,"input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, unknownResolution))
+	assert.JSONEq(t, `{"count":1,"input_images":0,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x"}))))
+
+	references := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("minimax-h3-f", map[string]any{
+		"prompt": "x",
+		"images": []any{"https://cdn.example/a.png", "https://cdn.example/b.png"},
+		"audios": []any{"https://cdn.example/a.mp3"},
+		"videos": []any{
+			map[string]any{"url": "https://cdn.example/a.mp4", "duration_seconds": 4},
+			map[string]any{"url": "https://cdn.example/b.mp4", "duration_seconds": 6},
+		},
+	}))
+	assert.JSONEq(t, `{"count":1,"input_images":2,"input_videos":2,"input_audios":1,"input_video_seconds":10}`, mustJSON(t, references))
+
+	firstFrameOnly := megaViewsCallObject(t, plugin, "extractUsage", megaViewsSubmitContext("seedance-2.5-m3", map[string]any{
+		"prompt": "x", "image": "https://cdn.example/first.png", "images": []any{"https://cdn.example/ref.png"},
+	}))
+	assert.JSONEq(t, `{"count":1,"input_images":1,"input_videos":0,"input_audios":0,"input_video_seconds":0}`, mustJSON(t, firstFrameOnly))
+
 	ratioContext := megaViewsSubmitContext("seedance-2.5-m3", map[string]any{"prompt": "x", "duration": 6})
 	ratioContext["usagePurpose"] = "billing_ratios"
 	assert.Empty(t, megaViewsCallObject(t, plugin, "extractUsage", ratioContext))
@@ -349,16 +372,18 @@ func TestMegaViewsVideoUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		data map[string]any
-		want map[string]any
+		want string
 	}{
-		{"billing seconds include references", map[string]any{"status": "completed", "billing_seconds": 9, "generated_seconds": 6, "reference_video_seconds": 3}, map[string]any{"count": float64(1), "seconds": float64(9)}},
-		{"generated seconds fallback", map[string]any{"status": "completed", "generated_seconds": 6}, map[string]any{"count": float64(1), "seconds": float64(6)}},
-		{"numeric string seconds", map[string]any{"status": "completed", "billing_seconds": "8"}, map[string]any{"count": float64(1), "seconds": float64(8)}},
-		{"wrapped data", map[string]any{"data": map[string]any{"status": "completed", "billing_seconds": 5}}, map[string]any{"count": float64(1), "seconds": float64(5)}},
+		{"billing seconds split into generated and reference", map[string]any{"status": "completed", "billing_seconds": 9, "generated_seconds": 6, "reference_video_seconds": 3}, `{"count":1,"seconds":6,"input_video_seconds":3}`},
+		{"derives reference seconds from the billing difference", map[string]any{"status": "completed", "billing_seconds": 10, "generated_seconds": 6}, `{"count":1,"seconds":6,"input_video_seconds":4}`},
+		{"generated seconds without references", map[string]any{"status": "completed", "generated_seconds": 6}, `{"count":1,"seconds":6,"input_video_seconds":0}`},
+		{"invalid reference seconds ignored", map[string]any{"status": "completed", "generated_seconds": 6, "reference_video_seconds": 4.5}, `{"count":1,"seconds":6,"input_video_seconds":0}`},
+		{"billing seconds fallback", map[string]any{"status": "completed", "billing_seconds": "8"}, `{"count":1,"seconds":8,"input_video_seconds":0}`},
+		{"wrapped data", map[string]any{"data": map[string]any{"status": "completed", "billing_seconds": 5}}, `{"count":1,"seconds":5,"input_video_seconds":0}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			facts := megaViewsCallObject(t, plugin, "extractUsageOnComplete", map[string]any{}, map[string]any{"status": "SUCCESS"}, tc.data)
-			assert.Equal(t, tc.want, facts)
+			assert.JSONEq(t, tc.want, mustJSON(t, facts))
 		})
 	}
 }

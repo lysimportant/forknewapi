@@ -43,7 +43,7 @@ func TestHailuoResponsesProtocol(t *testing.T) {
 			"size":     "1920x1080",
 			"metadata": map[string]any{"first_frame_image": "https://cdn.example/frame.png"},
 		},
-		wantUsageKeys:  []string{"input_images", "input_video_seconds", "resolution", "seconds"},
+		wantUsageKeys:  []string{"input_audios", "input_images", "input_video_seconds", "input_videos", "resolution", "seconds"},
 		wantVendorName: "hailuo",
 	})
 }
@@ -60,7 +60,7 @@ func TestHailuoUsageProfilesPerModel(t *testing.T) {
 	}{
 		{
 			models:      []string{"MiniMax-H3", "h3"},
-			fields:      []string{"input_images", "input_video_seconds", "resolution", "seconds"},
+			fields:      []string{"input_audios", "input_images", "input_video_seconds", "input_videos", "resolution", "seconds"},
 			resolutions: []string{"768P", "2K"},
 		},
 		{
@@ -108,7 +108,7 @@ func TestHailuoUsageProfilesPerModel(t *testing.T) {
 		facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]any{
-			"seconds": float64(10), "resolution": "768P", "input_images": float64(0), "input_video_seconds": float64(0),
+			"seconds": float64(10), "resolution": "768P", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 		}, facts)
 	})
 }
@@ -484,21 +484,27 @@ func TestHailuoExtractUsageFacts(t *testing.T) {
 		want    map[string]any
 	}{
 		{"H3 defaults", "MiniMax-H3", map[string]any{"prompt": "p"}, map[string]any{
-			"seconds": float64(5), "resolution": "768P", "input_images": float64(0), "input_video_seconds": float64(0),
+			"seconds": float64(5), "resolution": "768P", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 		}},
 		{"H3 2K", "MiniMax-H3", map[string]any{"prompt": "p", "duration": 12, "size": "2K"}, map[string]any{
-			"seconds": float64(12), "resolution": "2K", "input_images": float64(0), "input_video_seconds": float64(0),
+			"seconds": float64(12), "resolution": "2K", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 		}},
 		{"H3 reference images", "MiniMax-H3", map[string]any{"prompt": "p", "metadata": map[string]any{"content": nineReferenceImages}}, map[string]any{
-			"seconds": float64(5), "resolution": "768P", "input_images": float64(9), "input_video_seconds": float64(0),
+			"seconds": float64(5), "resolution": "768P", "input_images": float64(9), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 		}},
 		{"H3 reference video reserves total duration limit", "MiniMax-H3", map[string]any{"prompt": "p", "metadata": map[string]any{
 			"reference_video": []any{"one.mp4", "two.mp4", "three.mp4"},
 		}}, map[string]any{
-			"seconds": float64(5), "resolution": "768P", "input_images": float64(0), "input_video_seconds": float64(15),
+			"seconds": float64(5), "resolution": "768P", "input_images": float64(0), "input_videos": float64(3), "input_audios": float64(0), "input_video_seconds": float64(15),
+		}},
+		{"H3 reference videos and audios", "MiniMax-H3", map[string]any{"prompt": "p", "metadata": map[string]any{
+			"reference_video": []any{"one.mp4", "two.mp4"},
+			"reference_audio": []any{"a.mp3"},
+		}}, map[string]any{
+			"seconds": float64(5), "resolution": "768P", "input_images": float64(0), "input_videos": float64(2), "input_audios": float64(1), "input_video_seconds": float64(15),
 		}},
 		{"legacy model", "MiniMax-Hailuo-2.3", map[string]any{"prompt": "p", "duration": 10}, map[string]any{
-			"seconds": float64(10), "resolution": "768P", "input_images": float64(0), "input_video_seconds": float64(0),
+			"seconds": float64(10), "resolution": "768P", "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 		}},
 	}
 	for _, testCase := range testCases {
@@ -688,7 +694,7 @@ func TestHailuoH3MappedUpstream(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"model":"h3","content":[{"type":"text","text":"A still landscape"},{"type":"image_url","role":"first_frame","image_url":{"url":"https://cdn.example/frame.png"}}],"resolution":"2K","duration":12,"ratio":"adaptive"}`, string(body))
 	assert.Equal(t, map[string]any{
-		"seconds": float64(12), "resolution": "2K", "input_images": float64(1), "input_video_seconds": float64(0),
+		"seconds": float64(12), "resolution": "2K", "input_images": float64(1), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0),
 	}, callHailuoHook(t, plugin, "extractUsage", ctx))
 
 	parsed := callHailuoHook(t, plugin, "parseSubmitResponse", ctx, map[string]any{

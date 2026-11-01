@@ -474,7 +474,7 @@ func TestMoonAdditionalModelsContracts(t *testing.T) {
 			want  map[string]any
 		}{
 			{"seedance-2-0-mini-official", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"tokens": float64(108000), "resolution": "720p", "video_input": "none", "image_input_count": float64(0), "video_input_count": float64(0)}},
-			{"wan3.0-video", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"seconds": float64(5), "resolution": "720P", "image_input_count": float64(0), "video_input_count": float64(0)}},
+			{"wan3.0-video", map[string]any{"prompt": "ocean", "duration": 5}, map[string]any{"seconds": float64(5), "input_video_seconds": float64(0), "resolution": "720P", "image_input_count": float64(0), "video_input_count": float64(0)}},
 			{"grok-v1.5-video", map[string]any{"prompt": "ocean", "seconds": 6}, map[string]any{"seconds": float64(6), "resolution": "720p", "image_input_count": float64(0), "video_input_count": float64(0)}},
 			{"minimax-h3", map[string]any{"prompt": "ocean", "workflow_id": "text-to-video", "seconds": 5, "size": "1376x768"}, map[string]any{"seconds": float64(5), "resolution": "768p", "image_input_count": float64(0), "video_input_count": float64(0)}},
 		} {

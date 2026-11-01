@@ -70,14 +70,14 @@ func TestMoonVideoContracts(t *testing.T) {
 		want string
 	}{
 		{name: "版本地址与显式零值保留", hook: "buildSubmitRequest", args: []any{map[string]any{"baseUrl": "https://moon.example/proxy/v1/", "apiKey": "fixture", "publicTaskId": "task_unique", "upstreamModel": tokenModel, "requestBody": map[string]any{"prompt": "ocean", "seconds": 5, "generate_audio": false, "watermark": false, "seed": 0}}}, want: `{"url":"https://moon.example/proxy/v1/videos","method":"POST","headers":{"Authorization":"Bearer fixture","Content-Type":"application/json","Idempotency-Key":"task_unique"},"body":{"model":"doubao-seedance-2-0-mini-260615","prompt":"ocean","duration":5,"resolution":"720p","ratio":"16:9","generate_audio":false,"watermark":false,"seed":0},"noRetry":true,"action":"text_to_video"}`},
-		{name: "Wan按秒事实兼容百炼价格", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": wanModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 2, "resolution": "480p"}}}, want: `{"seconds":2,"resolution":"480P","image_input_count":0,"video_input_count":0}`},
+		{name: "Wan按秒事实兼容百炼价格", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": wanModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 2, "resolution": "480p"}}}, want: `{"seconds":2,"input_video_seconds":0,"resolution":"480P","image_input_count":0,"video_input_count":0}`},
 		{name: "新模型预留估算", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": tokenModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 5}}}, want: `{"tokens":108000,"resolution":"720p","video_input":"none","image_input_count":0,"video_input_count":0}`},
 		{name: "自动时长与参考视频有界预留", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": tokenModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": -1, "videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "role": "reference_video"}}}}}, want: `{"tokens":648000,"resolution":"720p","video_input":"video","image_input_count":0,"video_input_count":1}`},
 		{name: "轮询ID编码且不重复v1", hook: "buildQueryRequest", args: []any{map[string]any{"baseUrl": "https://moon.example/v1", "apiKey": "fixture", "taskId": "task/a?b"}}, want: `{"url":"https://moon.example/v1/videos/task%2Fa%3Fb","method":"GET","headers":{"Authorization":"Bearer fixture"}}`},
 		{name: "实际零Token不回退预估", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": tokenModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"total_tokens": 0}}}, want: `{"tokens":0}`},
 		{name: "实际Token覆盖估算", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": tokenModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"total_tokens": 100000}}}, want: `{"tokens":100000}`},
 		{name: "Wan不套用其他供应商用量字段", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": wanModel}, map[string]any{"status": "SUCCESS"}, map[string]any{"usage": map[string]any{"input_video_duration": 20, "output_video_duration": 5}}}, want: `null`},
-		{name: "Wan输出及参考视频共同计秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": wanModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 5, "resolution": "720p", "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3.5}}}}}, want: `{"seconds":8.5,"resolution":"720P","image_input_count":0,"video_input_count":1}`},
+		{name: "Wan输出与参考视频分别计秒", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": wanModel, "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "duration": 5, "resolution": "720p", "reference_videos": []any{map[string]any{"url": "https://cdn.example/ref.mp4", "duration": 3.5}}}}}, want: `{"seconds":5,"input_video_seconds":3.5,"resolution":"720P","image_input_count":0,"video_input_count":1}`},
 		{name: "H3正方形按照公布尺寸计费", hook: "extractUsage", args: []any{map[string]any{"upstreamModel": "minimax-h3", "usagePurpose": "facts", "requestBody": map[string]any{"prompt": "ocean", "seconds": 5, "workflow_id": "text-to-video", "size": "1024x1024"}}}, want: `{"seconds":5,"resolution":"768p","image_input_count":0,"video_input_count":0}`},
 		{name: "H3实际秒数与分辨率结算", hook: "extractUsageOnComplete", args: []any{map[string]any{"upstreamModel": "minimax-h3"}, map[string]any{"status": "SUCCESS"}, map[string]any{"billing": map[string]any{"seconds": 6, "resolution": "768p", "charged_credits": 1.08}}}, want: `{"seconds":6,"resolution":"768p"}`},
 		{name: "CDN下载不带渠道密钥", hook: "buildContentRequest", args: []any{map[string]any{"artifactKey": "video", "baseUrl": "https://moon.example/v1", "apiKey": "fixture", "upstreamTaskId": "private", "clientRequest": map[string]any{"method": "HEAD"}, "data": map[string]any{"status": "completed", "data": []any{map[string]any{"url": "https://cdn.example/video.mp4"}}}}}, want: `{"url":"https://cdn.example/video.mp4","method":"HEAD","credentialless":true}`},
@@ -789,7 +789,7 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 				body: map[string]any{"prompt": "ocean", "duration": 5, "input": map[string]any{"media": []any{map[string]any{"type": "file", "url": "https://cdn.example/story.pdf"}}},
 					"reference_images": []any{map[string]any{"url": "https://cdn.example/ref.jpg"}}},
 				want:  `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","input":{"media":[{"type":"file","url":"https://cdn.example/story.pdf"}]},"reference_images":[{"url":"https://cdn.example/ref.jpg"}]}`,
-				usage: `{"seconds":5,"resolution":"720P","image_input_count":1,"video_input_count":0}`,
+				usage: `{"seconds":5,"input_video_seconds":0,"resolution":"720P","image_input_count":1,"video_input_count":0}`,
 			},
 			{
 				name: "Wan网页参考", model: "wan3.0-video-prime",
@@ -810,7 +810,7 @@ func TestMoonLatestVideoContracts(t *testing.T) {
 						map[string]any{"type": "reference_video", "url": "https://cdn.example/ref.mp4"},
 					}}}},
 				want:  `{"model":"wan3.0-video","prompt":"ocean","duration":5,"resolution":"720p","aspect_ratio":"16:9","input":{"media":[{"type":"link","url":"https://example.com/story"}]},"reference_images":[{"url":"https://cdn.example/ref.jpg"}],"reference_videos":[{"url":"https://cdn.example/ref.mp4","duration":3}]}`,
-				usage: `{"seconds":8,"resolution":"720P","image_input_count":1,"video_input_count":1}`,
+				usage: `{"seconds":5,"input_video_seconds":3,"resolution":"720P","image_input_count":1,"video_input_count":1}`,
 			},
 			{
 				name: "H3量化允许480p", model: "minimax-h3",
