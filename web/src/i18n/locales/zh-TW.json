@@ -7124,6 +7124,8 @@
     "Usage prices": "用量價格",
     "Usage surcharge": "用量加價",
     "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}": "用量加價：當 {{field}} {{operator}} {{threshold}} 時 ×{{multiplier}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}": "用量加價：當用量大於{{threshold}}{{unit}}時 ×{{multiplier}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}": "用量加價：當用量大於等於{{threshold}}{{unit}}時 ×{{multiplier}}",
     "Usage-based": "基於使用量",
     "Usage-based billing": "按用量計費",
     "Usage-based billing · price not configured": "按用量計費 · 尚未設定價格",

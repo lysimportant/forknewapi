@@ -7124,6 +7124,8 @@
     "Usage prices": "Цены за использование",
     "Usage surcharge": "Надбавка за использование",
     "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}": "Надбавка за использование: ×{{multiplier}}, когда {{field}} {{operator}} {{threshold}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}": "Надбавка за использование: ×{{multiplier}}, когда использование превышает {{threshold}} {{unit}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}": "Надбавка за использование: ×{{multiplier}}, когда использование не меньше {{threshold}} {{unit}}",
     "Usage-based": "На основе использования",
     "Usage-based billing": "Оплата по объёму",
     "Usage-based billing · price not configured": "Оплата по объёму · цена не настроена",

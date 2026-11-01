@@ -844,9 +844,7 @@ describe('model cards', () => {
     ).not.toBeInTheDocument()
     expect(screen.getByText(/^\$0\.4$/)).toBeVisible()
     expect(
-      screen.getByText(
-        /Usage surcharge: ×2 when Video generation unit price .*15/
-      )
+      screen.getByText(/Usage surcharge: ×2 when usage is greater than 15 s/)
     ).toBeVisible()
   })
 

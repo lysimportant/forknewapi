@@ -22,7 +22,8 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { taskPriceLabel } from '../lib/task-price-display'
+import { getTaskUsageQuantityUnitLabelKey } from '../lib/dynamic-price'
+import { taskUsageUnitLabel } from '../lib/task-price-display'
 import type { TaskSurcharge } from '../lib/task-surcharge'
 import type { BillingUsageSchema } from '../types'
 
@@ -36,15 +37,15 @@ export function TaskSurchargeNote(props: TaskSurchargeNoteProps) {
   const { t, i18n } = useTranslation()
   const locales = toIntlLocale(i18n.language)
   const definition = props.usageSchema?.[props.surcharge.field]
-  const fieldLabel = taskPriceLabel(
-    definition?.description,
-    props.surcharge.field,
-    i18n.language
+  const unitLabel = taskUsageUnitLabel(
+    definition,
+    i18n.language,
+    t(getTaskUsageQuantityUnitLabelKey(definition?.unit))
   )
-  const operator =
+  const noteKey =
     props.surcharge.operator === '>='
-      ? t('Greater than or equal to')
-      : t('Greater than')
+      ? 'Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}'
+      : 'Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}'
 
   return (
     <p
@@ -53,15 +54,11 @@ export function TaskSurchargeNote(props: TaskSurchargeNoteProps) {
         props.className
       )}
     >
-      {t(
-        'Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}',
-        {
-          multiplier: formatNumber(props.surcharge.multiplier, locales),
-          field: fieldLabel,
-          operator,
-          threshold: formatNumber(props.surcharge.threshold, locales),
-        }
-      )}
+      {t(noteKey, {
+        multiplier: formatNumber(props.surcharge.multiplier, locales),
+        threshold: formatNumber(props.surcharge.threshold, locales),
+        unit: unitLabel,
+      })}
     </p>
   )
 }

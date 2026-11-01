@@ -7124,6 +7124,8 @@
     "Usage prices": "Giá sử dụng",
     "Usage surcharge": "Phụ phí sử dụng",
     "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}": "Phụ phí sử dụng: ×{{multiplier}} khi {{field}} {{operator}} {{threshold}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}": "Phụ phí sử dụng: ×{{multiplier}} khi mức sử dụng vượt quá {{threshold}} {{unit}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}": "Phụ phí sử dụng: ×{{multiplier}} khi mức sử dụng đạt {{threshold}} {{unit}}",
     "Usage-based": "Dựa trên sử dụng",
     "Usage-based billing": "Tính phí theo mức sử dụng",
     "Usage-based billing · price not configured": "Tính phí theo mức sử dụng · chưa cấu hình giá",

@@ -180,13 +180,18 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
     formulaParts.length > 0
       ? formulaParts.join(' + ')
       : formatPricingAmount(0, props.currency)
-  const surchargeFieldLabel = props.surcharge
-    ? taskPriceLabel(
-        props.usageSchema[props.surcharge.field]?.description,
-        props.surcharge.field,
-        i18n.language
-      )
-    : ''
+  const surchargeDefinition = props.surcharge
+    ? props.usageSchema[props.surcharge.field]
+    : undefined
+  const surchargeUnitLabel = taskUsageUnitLabel(
+    surchargeDefinition,
+    i18n.language,
+    t(getTaskUsageQuantityUnitLabelKey(surchargeDefinition?.unit))
+  )
+  const surchargeNoteKey =
+    props.surcharge?.operator === '>='
+      ? 'Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}'
+      : 'Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}'
   const formula = `${formulaLeft}${
     surchargeApplied
       ? ` × ${formatPricingNumber(props.surcharge?.multiplier ?? 1)}`
@@ -339,15 +344,11 @@ function TaskBillingPreview(props: TaskBillingPreviewProps) {
           <code className='font-mono text-xs break-words'>{formula}</code>
           {props.surcharge ? (
             <p className='text-muted-foreground text-xs'>
-              {t(
-                'Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}',
-                {
-                  multiplier: formatPricingNumber(props.surcharge.multiplier),
-                  field: surchargeFieldLabel,
-                  operator: props.surcharge.operator,
-                  threshold: formatPricingNumber(props.surcharge.threshold),
-                }
-              )}
+              {t(surchargeNoteKey, {
+                multiplier: formatPricingNumber(props.surcharge.multiplier),
+                threshold: formatPricingNumber(props.surcharge.threshold),
+                unit: surchargeUnitLabel,
+              })}
             </p>
           ) : null}
         </div>

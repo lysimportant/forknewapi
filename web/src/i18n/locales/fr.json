@@ -7124,6 +7124,8 @@
     "Usage prices": "Tarifs d'utilisation",
     "Usage surcharge": "Majoration d'usage",
     "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}": "Majoration d'usage : ×{{multiplier}} lorsque {{field}} {{operator}} {{threshold}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}": "Majoration d'usage : ×{{multiplier}} lorsque l'usage dépasse {{threshold}} {{unit}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}": "Majoration d'usage : ×{{multiplier}} lorsque l'usage est supérieur ou égal à {{threshold}} {{unit}}",
     "Usage-based": "Basé sur l'utilisation",
     "Usage-based billing": "Facturation à l’usage",
     "Usage-based billing · price not configured": "Facturation à l’usage · prix non configuré",

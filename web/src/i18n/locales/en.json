@@ -7124,6 +7124,8 @@
     "Usage prices": "Usage prices",
     "Usage surcharge": "Usage surcharge",
     "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}": "Usage surcharge: ×{{multiplier}} when {{field}} {{operator}} {{threshold}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}": "Usage surcharge: ×{{multiplier}} when usage is greater than {{threshold}} {{unit}}",
+    "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}": "Usage surcharge: ×{{multiplier}} when usage is greater than or equal to {{threshold}} {{unit}}",
     "Usage-based": "Usage-based",
     "Usage-based billing": "Usage-based billing",
     "Usage-based billing · price not configured": "Usage-based billing · price not configured",

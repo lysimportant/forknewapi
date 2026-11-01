@@ -186,7 +186,7 @@ it('keeps a surcharged task price table and reports the surcharge rule', () => {
   expect(screen.getAllByText('$0.22').length).toBeGreaterThan(0)
   expect(
     screen.getAllByText(
-      /Usage surcharge: ×2 when Song generation unit price .*15/
+      /Usage surcharge: ×2 when usage is greater than 15 unit/
     ).length
   ).toBeGreaterThan(0)
 })
