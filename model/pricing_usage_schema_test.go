@@ -67,6 +67,60 @@ func TestPricingCarriesTaskUsageSchemaAndRefreshesWithPluginGeneration(t *testin
 	assert.Equal(t, "count", refreshedPricing["pricing-usage-model"].BillingUsageSchema["clips"].Unit)
 }
 
+func TestPricingChannelModelContainsProfileUsesMappedUpstreamID(t *testing.T) {
+	resetPricingEndpointTestTables(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	const key = "pricing-contains-probe"
+	const source = `
+export const meta = {
+ apiVersion:1,key:"pricing-contains-probe",name:"Pricing Contains Probe",version:"1.0.0",author:{name:"Test"},
+ models:[],modelRouting:"channel",fetchMode:"per_task",protocols:["openai_video"],
+ usageSchema:{resolution:{enum:["720p"]}},
+ usageProfiles:[{modelContains:["h3"],schema:{resolution:{enum:["768p","2k"]}},examples:[{label:"H3 2k",facts:{resolution:"2k"}}]}]
+};
+export const protocols = {openai_video:{
+ decodeRequest(ctx){return {kind:"submit",model:ctx.model,requestBody:ctx.body.value};},
+ render(ctx,task){return task;}
+}};
+export function buildSubmitRequest(){return {};}
+export function parseSubmitResponse(){return {};}
+export function buildQueryRequest(){return {};}
+export function parseTaskResult(){return {};}
+export function listArtifacts(){return [];}
+export function buildContentRequest(){return {};}
+`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(key) })
+
+	settings := `{"task_plugin_key":"pricing-contains-probe"}`
+	mapping := `{"public-video":"vendor-MiniMax-H3"}`
+	require.NoError(t, DB.Create(&Channel{
+		Id: 912, Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled,
+		Name: "profile-channel", Models: "public-video,other-video", Setting: &settings, ModelMapping: &mapping,
+	}).Error)
+	insertPricingEndpointAbility(t, 912, "public-video")
+	insertPricingEndpointAbility(t, 912, "other-video")
+	InitChannelCache()
+	InvalidatePricingCache()
+
+	prices := pricingByModel(GetPricing())
+	require.Contains(t, prices, "public-video")
+	require.Contains(t, prices, "other-video")
+	assert.Equal(t, []string{"768p", "2k"}, prices["public-video"].BillingUsageSchema["resolution"].Enum)
+	assert.Equal(t, []string{"720p"}, prices["other-video"].BillingUsageSchema["resolution"].Enum)
+
+	snapshot, err := GetModelPricingSnapshot([]string{"public-video", "other-video"})
+	require.NoError(t, err)
+	for _, entry := range snapshot.Entries {
+		if entry.ModelName == "public-video" {
+			assert.Equal(t, []string{"768p", "2k"}, entry.UsageSchema["resolution"].Enum)
+			continue
+		}
+		assert.Equal(t, []string{"720p"}, entry.UsageSchema["resolution"].Enum)
+	}
+}
+
 func TestPricingAliasCarriesPluginUsageSchemaAndTailExpr(t *testing.T) {
 	resetPricingEndpointTestTables(t)
 	const pluginKey = "pricing-usage-probe"

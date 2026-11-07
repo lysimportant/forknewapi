@@ -57,10 +57,11 @@ export type UsageFieldSchema =
   | {type: "boolean"; unitLabel?: never; description?: LocalizedText}
   | {enum: readonly string[]; unitLabel?: never; description?: LocalizedText; enumLabels?: Readonly<Record<string, LocalizedText>>};
 export type UsageExample = {label: string; facts: Readonly<Record<string, string | number | boolean>>};
-/** 完整替换默认计量；models/modelTypes 至少含一项，已声明型号优先。modelTypes 仅限 channel 路由，每种类型只能出现一次。 */
+/** 完整替换默认计量；models/modelContains/modelTypes 至少含一项。精确型号优先，modelContains 与 modelTypes 仅限 channel 路由。 */
 export type UsageProfile = {schema: Readonly<Record<string, UsageFieldSchema>>; examples?: readonly UsageExample[]} & (
-  | {models: readonly string[]; modelTypes?: readonly ("image" | "video")[]}
-  | {models?: readonly string[]; modelTypes: readonly ("image" | "video")[]}
+  | {models: readonly string[]; modelContains?: readonly string[]; modelTypes?: readonly ("image" | "video")[]}
+  | {models?: readonly string[]; modelContains: readonly string[]; modelTypes?: readonly ("image" | "video")[]}
+  | {models?: readonly string[]; modelContains?: readonly string[]; modelTypes: readonly ("image" | "video")[]}
 );
 /** 管理页的只读模型目录；path 不含主机、查询参数或凭据，分页由宿主处理。 */
 export interface ModelDiscovery {

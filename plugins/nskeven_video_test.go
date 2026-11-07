@@ -64,6 +64,17 @@ func TestNSKevenVideoPluginContract(t *testing.T) {
 	assert.Equal(t, "段", plugin.Meta.UsageSchema["input_videos"].UnitLabel["zh"])
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["input_audios"].Unit)
 	assert.Equal(t, []string{"480p", "720p", "1080p", "4k"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
+	require.Len(t, plugin.Meta.UsageProfiles, 1)
+	assert.Equal(t, []string{"h3"}, plugin.Meta.UsageProfiles[0].ModelContains)
+	h3Schema, h3Examples := plugin.Meta.UsageForModel("MiniMax,H3")
+	assert.Equal(t, []string{"480p", "720p", "768p", "1080p", "2k", "4k"}, h3Schema["video_resolution"].Enum)
+	assert.Len(t, h3Schema, len(plugin.Meta.UsageSchema))
+	assert.Len(t, h3Examples, len(plugin.Meta.UsageExamples)+2)
+	genericSchema, _ := plugin.Meta.UsageForModel("sd-2-E5")
+	assert.Equal(t, []string{"480p", "720p", "1080p", "4k"}, genericSchema["video_resolution"].Enum)
+	for _, example := range h3Examples {
+		assert.Len(t, example.Facts, len(h3Schema))
+	}
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
 	for _, example := range plugin.Meta.UsageExamples {
 		assert.Len(t, example.Facts, len(plugin.Meta.UsageSchema))
@@ -117,6 +128,26 @@ func TestNSKevenVideoBuildRequests(t *testing.T) {
 	}))
 	assert.Equal(t, "use @图1 and @视频1", aSeries["body"].(map[string]any)["prompt"])
 	assert.Equal(t, "480p", aSeries["body"].(map[string]any)["resolution"])
+	for _, tc := range []struct {
+		name       string
+		model      string
+		resolution string
+		body       map[string]any
+	}{
+		{"H3 768p", "MiniMax,H3", "768p", map[string]any{"prompt": "x", "resolution": "768P"}},
+		{"H3 2k", "minimax.h3", "2k", map[string]any{"prompt": "x", "metadata": map[string]any{"resolution": "2K"}}},
+		{"H3 768p size", "MiniMax,H3", "768p", map[string]any{"prompt": "x", "size": "1366x768"}},
+		{"H3 2k size", "MiniMax,H3", "2k", map[string]any{"prompt": "x", "size": "2560x1440"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := nskevenCallObject(t, plugin, "buildSubmitRequest", nskevenSubmitContext(tc.model, tc.body))
+			upstream := request["body"].(map[string]any)
+			assert.Equal(t, tc.model, upstream["model"])
+			assert.Equal(t, tc.resolution, upstream["resolution"])
+		})
+	}
+	withoutResolution := nskevenCallObject(t, plugin, "buildSubmitRequest", nskevenSubmitContext("MiniMax,H3", map[string]any{"prompt": "x"}))
+	assert.NotContains(t, withoutResolution["body"].(map[string]any), "resolution")
 
 	withBase := nskevenSubmitContext("sd-2-E5", map[string]any{"prompt": "x"})
 	withBase["baseUrl"] = "https://newapi.nskeven.uk/v1/"
@@ -141,6 +172,7 @@ func TestNSKevenVideoBuildRequests(t *testing.T) {
 		{"n larger than one", "sd-2-E5", map[string]any{"prompt": "x", "n": 2}, "n only supports 1"},
 		{"fixed resolution", "video-ultra-720p", map[string]any{"prompt": "x", "resolution": "1080p"}, "only supports resolution 720p"},
 		{"flat resolution whitelist", "sd-2-E5", map[string]any{"prompt": "x", "resolution": "2k"}, "resolution must be one of"},
+		{"non-H3 768p", "sd-2-E5", map[string]any{"prompt": "x", "resolution": "768p"}, "resolution must be one of"},
 		{"watermark only doubao", "sd-2-E5", map[string]any{"prompt": "x", "watermark": true}, "watermark is supported only"},
 		{"asset only doubao", "sd-2-E5", map[string]any{"prompt": "x", "images": []any{"asset://ast-123"}}, "asset:// media URLs"},
 		{"private media URL", "sd-2-E5", map[string]any{"prompt": "x", "images": []any{"http://localhost/a.png"}}, "public HTTP(S) URL"},
@@ -291,6 +323,12 @@ func TestNSKevenVideoUsage(t *testing.T) {
 		"audios": []any{"https://cdn.example/a.mp3"},
 	}))
 	assert.Equal(t, map[string]any{"count": float64(1), "seconds": float64(6), "video_resolution": "720p", "input_images": float64(2), "input_videos": float64(1), "input_audios": float64(1)}, references)
+	for _, resolution := range []string{"768p", "2k"} {
+		facts := nskevenCallObject(t, plugin, "extractUsage", nskevenSubmitContext("MiniMax,H3", map[string]any{"prompt": "x", "seconds": 5, "resolution": resolution}))
+		assert.Equal(t, resolution, facts["video_resolution"])
+	}
+	noResolution := nskevenCallObject(t, plugin, "extractUsage", nskevenSubmitContext("MiniMax,H3", map[string]any{"prompt": "x"}))
+	assert.NotContains(t, noResolution, "video_resolution")
 	ratioContext := nskevenSubmitContext("doubao-seedance-2-0-260128", map[string]any{"prompt": "x"})
 	ratioContext["usagePurpose"] = "billing_ratios"
 	assert.Empty(t, nskevenCallObject(t, plugin, "extractUsage", ratioContext))

@@ -30,7 +30,7 @@ export const meta = {
     en: "Lingdong unified video generation API",
     zh: "灵动统一视频生成接口",
   },
-  version: "1.0.0",
+  version: "1.0.1",
   author: { name: "lysimportant/forknewapi" },
   website: "https://www.lingdongapi.com/docs/api/",
   baseUrl: "https://www.lingdongapi.com",
@@ -121,13 +121,38 @@ export const meta = {
   ],
 };
 
+const H3_RESOLUTIONS = ["480p", "720p", "768p", "1080p", "2k", "4k"];
+meta.usageProfiles = [
+  {
+    modelContains: ["h3"],
+    schema: Object.assign({}, meta.usageSchema, {
+      video_resolution: {
+        enum: H3_RESOLUTIONS,
+        description: meta.usageSchema.video_resolution.description,
+      },
+    }),
+    examples: meta.usageExamples.concat(
+      ["768p", "2k", "4k"].map(function (resolution) {
+        return {
+          label: "H3 " + resolution + " · 5s",
+          facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0, video_resolution: resolution },
+        };
+      })
+    ),
+  },
+];
+
 /** 与宿主 MaxTaskDurationSeconds 保持一致的安全上限，不代表模型支持的时长。 */
 const MIN_SECONDS = 1;
 const MAX_SECONDS = 3600;
 /** 参考素材数量的安全上限，避免异常请求把计费事实放大到无意义的量级。 */
 const MAX_INPUT_MEDIA = 128;
-/** 计费用量事实只使用站点模型目录公开的三档清晰度；其余写法不写用量事实。 */
+/** 通用计费用量仍使用原有三档；H3 的新增档位只在 H3 profile 中生效。 */
 const RESOLUTIONS = ["480p", "720p", "1080p"];
+
+function isH3Model(model) {
+  return trimmed(model).toLowerCase().includes("h3");
+}
 
 /** 仅接收已确认的入口字段及平台别名，未知字段直接报错而不是静默丢弃。 */
 const REQUEST_FIELDS = new Set([
@@ -372,17 +397,21 @@ function sizeRatio(size) {
 }
 
 /** OpenAIVideo 的 size 没有档位概念，只能按短边归一到平台目录里的清晰度档。 */
-function sizeResolution(size) {
+function sizeResolution(size, model) {
   const shortEdge = Math.min(size.width, size.height);
+  if (isH3Model(model) && shortEdge >= 2160) return "4k";
+  if (isH3Model(model) && shortEdge >= 1440) return "2k";
   if (shortEdge >= 1000) return "1080p";
+  if (isH3Model(model) && shortEdge >= 768) return "768p";
   if (shortEdge >= 640) return "720p";
   if (shortEdge >= 400) return "480p";
   return "";
 }
 
 /** 把上游清晰度写法归一到计费枚举；无法识别时返回空串（不写用量事实）。 */
-function resolutionFact(value) {
+function resolutionFact(value, model) {
   const text = trimmed(value).toLowerCase();
+  if (isH3Model(model) && H3_RESOLUTIONS.indexOf(text) >= 0) return text;
   if (RESOLUTIONS.indexOf(text) >= 0) return text;
   if (text === "1080" || text === "fhd") return "1080p";
   if (text === "720" || text === "hd") return "720p";
@@ -448,7 +477,7 @@ function collectContent(metadata, prompt, target) {
  * usage 汇总可计费的参考素材数量与输入视频秒数（首帧不计入参考素材）。
  * 不补默认时长、清晰度或素材数量：具体模型支持范围由上游按模型校验。
  */
-function normalizeRequest(request) {
+function normalizeRequest(request, model) {
   if (!isObject(request)) fail("video request body must be a JSON object");
   const fields = Object.keys(request);
   for (let index = 0; index < fields.length; index += 1) {
@@ -515,9 +544,9 @@ function normalizeRequest(request) {
     const derivedRatio = sizeRatio(size);
     if (ratio !== undefined && ratio !== derivedRatio) fail("ratio conflicts with size");
     ratio = derivedRatio;
-    const derivedResolution = sizeResolution(size);
+    const derivedResolution = sizeResolution(size, model);
     if (derivedResolution) {
-      const fact = resolutionFact(resolution);
+      const fact = resolutionFact(resolution, model);
       if (fact && fact !== derivedResolution) fail("resolution conflicts with size");
       if (resolution === undefined) resolution = derivedResolution;
     }
@@ -669,7 +698,7 @@ export function buildSubmitRequest(ctx) {
   const apiKey = trimmed(ctx && ctx.apiKey);
   if (!apiKey) fail("channel API key is required");
   if (!ctx || typeof ctx.publicTaskId !== "string" || !ctx.publicTaskId.trim()) fail("public task id is required");
-  const parsed = normalizeRequest(ctx.requestBody);
+  const parsed = normalizeRequest(ctx.requestBody, model);
   return {
     url: apiBase(ctx) + "/video/generations",
     method: "POST",
@@ -738,9 +767,10 @@ export function buildQueryRequest(ctx) {
 
 export function extractUsage(ctx) {
   if (!ctx || ctx.usagePurpose === "billing_ratios") return {};
+  const model = trimmed(ctx.upstreamModel) || trimmed(ctx.model);
   let parsed;
   try {
-    parsed = normalizeRequest(ctx.requestBody);
+    parsed = normalizeRequest(ctx.requestBody, model);
   } catch (error) {
     return {};
   }
@@ -753,7 +783,7 @@ export function extractUsage(ctx) {
     input_video_seconds: parsed.usage.input_video_seconds,
   };
   if (parsed.body.duration !== undefined) facts.seconds = parsed.body.duration;
-  const resolution = parsed.body.resolution !== undefined ? resolutionFact(parsed.body.resolution) : "";
+  const resolution = parsed.body.resolution !== undefined ? resolutionFact(parsed.body.resolution, model) : "";
   if (resolution) facts.video_resolution = resolution;
   return facts;
 }
@@ -801,7 +831,7 @@ export const protocols = {
       const request = decodedBody(ctx && ctx.body);
       const model = trimmed(ctx && ctx.model) || trimmed(request && request.model);
       if (!model) fail("model is required");
-      const parsed = normalizeRequest(request);
+      const parsed = normalizeRequest(request, model);
       const action =
         parsed.body.videos.length > 0 || parsed.body.audios.length > 0 || parsed.body.images.length > 1
           ? "reference_to_video"

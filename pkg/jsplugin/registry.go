@@ -169,13 +169,14 @@ func (m Meta) JSONTextMember(member string) string {
 	return member
 }
 
-// UsageProfile replaces the plugin's default usage metadata for its models or
-// explicitly identified channel model types.
+// UsageProfile replaces the plugin's default usage metadata for declared models,
+// channel model-name patterns, or explicitly identified channel model types.
 type UsageProfile struct {
-	Models     []string                    `json:"models,omitempty"`
-	ModelTypes []string                    `json:"modelTypes,omitempty"`
-	Schema     map[string]UsageFieldSchema `json:"schema"`
-	Examples   []UsageExample              `json:"examples,omitempty"`
+	Models        []string                    `json:"models,omitempty"`
+	ModelContains []string                    `json:"modelContains,omitempty"`
+	ModelTypes    []string                    `json:"modelTypes,omitempty"`
+	Schema        map[string]UsageFieldSchema `json:"schema"`
+	Examples      []UsageExample              `json:"examples,omitempty"`
 }
 
 // UsageForModel returns read-only usage metadata for a declared model. Aliases
@@ -185,16 +186,15 @@ func (m Meta) UsageForModel(model string) (map[string]UsageFieldSchema, []UsageE
 	return m.UsageForModels(model)
 }
 
-// UsageForModelType first selects a declared model profile, then a channel model
-// type profile when the host supplies an unambiguous image or video type.
+// UsageForModelType selects a declared model, then an unambiguous channel
+// model-name pattern, then an explicitly supplied image or video type.
 func (m Meta) UsageForModelType(model, modelType string) (map[string]UsageFieldSchema, []UsageExample) {
 	return m.UsageForModelsType(modelType, model)
 }
 
-// UsageForModels returns the usage metadata of the first candidate that a
-// profile declares. Runtime callers pass the final upstream model before the
-// client-facing model, so mappings to vendor endpoint IDs retain the declared
-// model's profile. When no candidate is profiled, the defaults apply.
+// UsageForModels selects exact declared models first, then unambiguous channel
+// model-name patterns. Runtime callers pass the final upstream model before the
+// client-facing model. When no candidate is profiled, the defaults apply.
 func (m Meta) UsageForModels(models ...string) (map[string]UsageFieldSchema, []UsageExample) {
 	return m.UsageForModelsType("", models...)
 }
@@ -212,6 +212,27 @@ func (m Meta) UsageForModelsType(modelType string, models ...string) (map[string
 			}
 		}
 	}
+	if m.ModelRouting == "channel" {
+		matched := -1
+		for _, model := range models {
+			name := normalizedUsageModelName(model)
+			for index, profile := range m.UsageProfiles {
+				for _, pattern := range profile.ModelContains {
+					if pattern == "" || !strings.Contains(name, normalizedUsageModelName(pattern)) {
+						continue
+					}
+					if matched >= 0 && matched != index {
+						return m.UsageSchema, m.UsageExamples
+					}
+					matched = index
+				}
+			}
+		}
+		if matched >= 0 {
+			profile := m.UsageProfiles[matched]
+			return profile.Schema, profile.Examples
+		}
+	}
 	if m.ModelRouting == "channel" && (modelType == "image" || modelType == "video") {
 		for _, profile := range m.UsageProfiles {
 			if slices.Contains(profile.ModelTypes, modelType) {
@@ -220,6 +241,10 @@ func (m Meta) UsageForModelsType(modelType string, models ...string) (map[string
 		}
 	}
 	return m.UsageSchema, m.UsageExamples
+}
+
+func normalizedUsageModelName(name string) string {
+	return asciiFold(strings.ReplaceAll(name, ",", "."))
 }
 
 // ProtocolSupports reports whether the named protocol claim includes mode.
@@ -954,6 +979,7 @@ func cloneMeta(meta Meta) Meta {
 	for index := range meta.UsageProfiles {
 		profile := &meta.UsageProfiles[index]
 		profile.Models = append([]string(nil), profile.Models...)
+		profile.ModelContains = slices.Clone(profile.ModelContains)
 		profile.ModelTypes = slices.Clone(profile.ModelTypes)
 		profile.Schema = CloneUsageSchema(profile.Schema)
 		profile.Examples = CloneUsageExamples(profile.Examples)
@@ -1745,10 +1771,17 @@ func normalizeV1Meta(meta *Meta) error {
 		return err
 	}
 	profileModels := make(map[string]struct{})
+	profilePatterns := make(map[string]struct{})
 	profileTypes := make(map[string]struct{})
 	for index, profile := range meta.UsageProfiles {
-		if len(profile.Models) == 0 && len(profile.ModelTypes) == 0 {
-			return fmt.Errorf("plugin meta usageProfiles[%d] models or modelTypes must contain at least one model or model type", index)
+		if len(profile.Models) == 0 && len(profile.ModelContains) == 0 && len(profile.ModelTypes) == 0 {
+			return fmt.Errorf("plugin meta usageProfiles[%d] must contain at least one model or model type (or modelContains pattern)", index)
+		}
+		if profile.ModelContains != nil && len(profile.ModelContains) == 0 {
+			return fmt.Errorf("plugin meta usageProfiles[%d] modelContains must contain at least one pattern", index)
+		}
+		if profile.ModelContains != nil && meta.ModelRouting != "channel" {
+			return fmt.Errorf("plugin meta usageProfiles[%d] modelContains requires modelRouting channel", index)
 		}
 		if profile.ModelTypes != nil && meta.ModelRouting != "channel" {
 			return fmt.Errorf("plugin meta usageProfiles[%d] modelTypes require modelRouting channel", index)
@@ -1764,6 +1797,26 @@ func normalizeV1Meta(meta *Meta) error {
 				return fmt.Errorf("plugin meta usageProfiles model %q belongs to multiple profiles", model)
 			}
 			profileModels[model] = struct{}{}
+		}
+		for _, pattern := range profile.ModelContains {
+			if pattern == "" || len(pattern) > 200 || strings.TrimSpace(pattern) != pattern {
+				return fmt.Errorf("plugin meta usageProfiles[%d] modelContains patterns must be non-empty canonical names of at most 200 bytes", index)
+			}
+			hasNameCharacter := false
+			for _, character := range pattern {
+				if unicode.IsSpace(character) || unicode.IsControl(character) {
+					return fmt.Errorf("plugin meta usageProfiles[%d] modelContains patterns must not contain whitespace or control characters", index)
+				}
+				hasNameCharacter = hasNameCharacter || unicode.IsLetter(character) || unicode.IsDigit(character)
+			}
+			if !hasNameCharacter {
+				return fmt.Errorf("plugin meta usageProfiles[%d] modelContains patterns must contain a letter or digit", index)
+			}
+			normalized := normalizedUsageModelName(pattern)
+			if _, duplicate := profilePatterns[normalized]; duplicate {
+				return fmt.Errorf("plugin meta usageProfiles modelContains pattern %q is duplicated", pattern)
+			}
+			profilePatterns[normalized] = struct{}{}
 		}
 		for _, modelType := range profile.ModelTypes {
 			if modelType != "image" && modelType != "video" {
@@ -1811,13 +1864,20 @@ func decodeUsageProfiles(value any) ([]UsageProfile, error) {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d] must be an object", index)
 		}
 		for key := range object {
-			if key != "models" && key != "modelTypes" && key != "schema" && key != "examples" {
+			if key != "models" && key != "modelContains" && key != "modelTypes" && key != "schema" && key != "examples" {
 				return nil, fmt.Errorf("plugin meta usageProfiles[%d] has unknown field %q", index, key)
 			}
 		}
 		models, err := strictStringSlice(object, "models")
 		if err != nil {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
+		}
+		var modelContains []string
+		if _, exists := object["modelContains"]; exists {
+			modelContains, err = strictStringSlice(object, "modelContains")
+			if err != nil {
+				return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
+			}
 		}
 		var modelTypes []string
 		if _, exists := object["modelTypes"]; exists {
@@ -1830,7 +1890,7 @@ func decodeUsageProfiles(value any) ([]UsageProfile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("plugin meta usageProfiles[%d]: %w", index, err)
 		}
-		profile := UsageProfile{Models: models, ModelTypes: modelTypes, Schema: schema}
+		profile := UsageProfile{Models: models, ModelContains: modelContains, ModelTypes: modelTypes, Schema: schema}
 		if examples, exists := object["examples"]; exists {
 			profile.Examples, err = decodeUsageExamples(examples)
 			if err != nil {

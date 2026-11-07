@@ -73,6 +73,12 @@ func TestLingdongVideoPluginContract(t *testing.T) {
 	assert.Equal(t, "Input video unit price", plugin.Meta.UsageSchema["input_video_seconds"].Description["en"])
 	assert.Equal(t, []string{"480p", "720p", "1080p"}, plugin.Meta.UsageSchema["video_resolution"].Enum)
 	assert.Equal(t, "输出视频分辨率", plugin.Meta.UsageSchema["video_resolution"].Description["zh"])
+	h3Schema, h3Examples := plugin.Meta.UsageForModel("vendor-MiniMax-H3-fast")
+	assert.Equal(t, []string{"480p", "720p", "768p", "1080p", "2k", "4k"}, h3Schema["video_resolution"].Enum)
+	assert.Equal(t, []string{"h3"}, plugin.Meta.UsageProfiles[0].ModelContains)
+	assert.Len(t, h3Examples, 6)
+	otherSchema, _ := plugin.Meta.UsageForModel("cvk-2.5-720")
+	assert.Equal(t, []string{"480p", "720p", "1080p"}, otherSchema["video_resolution"].Enum)
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
 	for _, example := range plugin.Meta.UsageExamples {
 		assert.Len(t, example.Facts, len(plugin.Meta.UsageSchema))
@@ -124,6 +130,23 @@ func TestLingdongVideoBuildSubmitRequest(t *testing.T) {
 		"reference_audios": []any{"https://cdn.example/a.mp3"},
 	}))
 	assert.JSONEq(t, `{"model":"minimax-h3-1","prompt":"pan across","images":["https://cdn.example/a.png"],"videos":["https://cdn.example/v.mp4"],"audios":["https://cdn.example/a.mp3"],"duration":8,"ratio":"9:16"}`, mustJSON(t, aliases["body"]))
+
+	for _, resolution := range []string{"768p", "2k", "4k"} {
+		t.Run("H3 "+resolution, func(t *testing.T) {
+			request := lingdongCallObject(t, plugin, "buildSubmitRequest", lingdongSubmitContext("gateway-minimax-h3", map[string]any{
+				"prompt": "x", "resolution": resolution,
+			}))
+			assert.JSONEq(t, `{"model":"gateway-minimax-h3","prompt":"x","resolution":"`+resolution+`"}`, mustJSON(t, request["body"]))
+		})
+	}
+	h3Size := lingdongCallObject(t, plugin, "buildSubmitRequest", lingdongSubmitContext("gateway-h3", map[string]any{
+		"prompt": "x", "size": "2560x1440",
+	}))
+	assert.JSONEq(t, `{"model":"gateway-h3","prompt":"x","ratio":"16:9","resolution":"2k"}`, mustJSON(t, h3Size["body"]))
+	h3Size4k := lingdongCallObject(t, plugin, "buildSubmitRequest", lingdongSubmitContext("gateway-h3", map[string]any{
+		"prompt": "x", "size": "3840x2160",
+	}))
+	assert.JSONEq(t, `{"model":"gateway-h3","prompt":"x","ratio":"16:9","resolution":"4k"}`, mustJSON(t, h3Size4k["body"]))
 
 	withSize := lingdongCallObject(t, plugin, "buildSubmitRequest", lingdongSubmitContext("cvk", map[string]any{
 		"prompt": "x", "size": "1920x1080", "watermark": "true",
@@ -358,6 +381,20 @@ func TestLingdongVideoUsage(t *testing.T) {
 		"prompt": "x", "resolution": "999p",
 	}))
 	assert.Equal(t, map[string]any{"count": float64(1), "input_images": float64(0), "input_videos": float64(0), "input_audios": float64(0), "input_video_seconds": float64(0)}, unknownResolution)
+
+	for _, resolution := range []string{"768p", "2k", "4k"} {
+		t.Run("H3 usage "+resolution, func(t *testing.T) {
+			facts := lingdongCallObject(t, plugin, "extractUsage", lingdongSubmitContext("gateway-h3", map[string]any{
+				"prompt": "x", "duration": 6, "resolution": resolution,
+			}))
+			assert.Equal(t, resolution, facts["video_resolution"])
+			assert.Equal(t, float64(6), facts["seconds"])
+		})
+	}
+	otherResolution := lingdongCallObject(t, plugin, "extractUsage", lingdongSubmitContext("cvk", map[string]any{
+		"prompt": "x", "resolution": "2k",
+	}))
+	assert.NotContains(t, otherResolution, "video_resolution")
 
 	references := lingdongCallObject(t, plugin, "extractUsage", lingdongSubmitContext("cvk-2.5-720", map[string]any{
 		"prompt": "x", "duration": 6, "image": "https://cdn.example/start.png",

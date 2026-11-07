@@ -1567,6 +1567,81 @@ usageProfiles: [
 	assert.Equal(t, "张", schema["images"].UnitLabel["zh"])
 }
 
+func TestRegistryUsageProfilesByModelContains(t *testing.T) {
+	source := routingTestPluginSource("usage-contains", 0, `["SD2.5-H3"]`, `
+modelRouting: "channel", protocols: ["openai_video"],
+usageSchema: {requests: {type: "number", unit: "count"}},
+usageExamples: [{label: "default", facts: {requests: 1}}],
+usageProfiles: [
+  {modelContains: ["minimax-h3", "h3"], schema: {h3_units: {type: "number", unit: "count"}}},
+  {modelContains: ["sd2.5"], schema: {sd_units: {type: "number", unit: "second"}}},
+  {models: ["SD2.5-H3"], schema: {exact_units: {type: "number", unit: "count"}}},
+  {modelTypes: ["video"], schema: {video_units: {type: "number", unit: "second"}}}
+],`, routingProtocolExport("openai_video"))
+	registry := NewRegistry()
+	plugin, err := registry.Register(source, Options{})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, model, modelType, field string
+	}{
+		{"H3 matches both patterns in one profile", "MiniMax-H3", "", "h3_units"},
+		{"punctuation-equivalent model", "even--sd2,5-pro", "", "sd_units"},
+		{"exact model wins over ambiguous patterns", "sd2.5-h3", "video", "exact_units"},
+		{"distinct pattern profiles are ambiguous", "sd2,5-h3-pro", "video", "requests"},
+		{"type fallback follows patterns", "future-video", "video", "video_units"},
+		{"unknown model uses defaults", "future-video", "", "requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema, _ := plugin.Meta.UsageForModelType(tc.model, tc.modelType)
+			require.Len(t, schema, 1)
+			assert.Contains(t, schema, tc.field)
+		})
+	}
+
+	schema, _ := plugin.Meta.UsageForModels("upstream-h3", "client-sd2.5")
+	assert.Equal(t, plugin.Meta.UsageSchema, schema, "conflicting candidates must use defaults")
+	schema, _ = plugin.Meta.UsageForModels("upstream-h3", "client-h3")
+	assert.Contains(t, schema, "h3_units", "multiple hits on one profile remain unambiguous")
+	schema, _ = plugin.Meta.UsageForModels("upstream-h3", "SD2.5-H3")
+	assert.Contains(t, schema, "exact_units", "exact client model takes precedence over pattern upstream model")
+
+	snapshot := registry.Snapshot()
+	require.Len(t, snapshot.Override, 1)
+	snapshot.Override[0].UsageProfiles[0].ModelContains[0] = "changed"
+	snapshot.Override[0].UsageProfiles[0].ModelContains[1] = "changed-too"
+	schema, _ = registry.Snapshot().Override[0].UsageForModel("MiniMax-H3")
+	assert.Contains(t, schema, "h3_units", "snapshot pattern mutations must not change the registry")
+}
+
+func TestRegistryRejectsInvalidUsageProfileModelContains(t *testing.T) {
+	for _, tc := range []struct {
+		name, routing, profiles, errorText string
+	}{
+		{"nonchannel", "", `[{models:["known"], modelContains:["h3"], schema:{}}]`, "requires modelRouting channel"},
+		{"nonchannel empty pattern list", "", `[{models:["known"], modelContains:[], schema:{}}]`, "modelContains must contain at least one pattern"},
+		{"channel empty pattern list with model", "channel", `[{models:["known"], modelContains:[], schema:{}}]`, "modelContains must contain at least one pattern"},
+		{"null pattern list", "channel", `[{modelContains:null, schema:{}}]`, "modelContains must be an array of strings"},
+		{"nonarray pattern list", "channel", `[{modelContains:"h3", schema:{}}]`, "modelContains must be an array of strings"},
+		{"nonstring pattern", "channel", `[{modelContains:[1], schema:{}}]`, "modelContains must be an array of strings"},
+		{"empty selectors", "channel", `[{models:[], modelContains:[], modelTypes:[], schema:{}}]`, "at least one model"},
+		{"empty pattern", "channel", `[{modelContains:[""], schema:{}}]`, "non-empty canonical"},
+		{"outer whitespace", "channel", `[{modelContains:[" h3"], schema:{}}]`, "non-empty canonical"},
+		{"inner whitespace", "channel", `[{modelContains:["h 3"], schema:{}}]`, "whitespace or control"},
+		{"pure punctuation", "channel", `[{modelContains:[".,-_"], schema:{}}]`, "letter or digit"},
+		{"duplicate normalized patterns", "channel", `[{modelContains:["SD2.5","sd2,5"], schema:{}}]`, "duplicated"},
+		{"duplicate across profiles", "channel", `[{modelContains:["sd2.5"], schema:{}}, {modelContains:["SD2,5"], schema:{}}]`, "duplicated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := `protocols:["openai_video"], usageProfiles:` + tc.profiles + `,`
+			if tc.routing != "" {
+				fields = `modelRouting:"` + tc.routing + `",` + fields
+			}
+			_, err := CompilePlugin(routingTestPluginSource("invalid-contains", 0, `["known"]`, fields, routingProtocolExport("openai_video")), Options{})
+			require.ErrorContains(t, err, tc.errorText)
+		})
+	}
+}
+
 func TestRegistryRejectsInvalidUsageProfileModelTypes(t *testing.T) {
 	for _, tc := range []struct {
 		name, routing, profiles, errorText string

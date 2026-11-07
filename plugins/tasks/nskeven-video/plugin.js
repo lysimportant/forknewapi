@@ -11,6 +11,51 @@
  * （豆包 metadata 格式、快线 4.3 格式、其余扁平格式）。
  */
 
+const VIDEO_USAGE_SCHEMA = {
+  count: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "video", zh: "个" },
+    description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  seconds: {
+    type: "number",
+    unit: "second",
+    description: { en: "Video generation unit price", zh: "视频生成单价" },
+  },
+  input_images: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "image", zh: "张" },
+    description: { en: "Input image unit price", zh: "输入图片单价" },
+  },
+  input_videos: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "video", zh: "段" },
+    description: { en: "Input video unit price", zh: "输入视频单价" },
+  },
+  input_audios: {
+    type: "number",
+    unit: "count",
+    unitLabel: { en: "audio", zh: "段" },
+    description: { en: "Input audio unit price", zh: "输入音频单价" },
+  },
+  video_resolution: {
+    enum: ["480p", "720p", "1080p", "4k"],
+    description: { en: "Output video resolution", zh: "输出视频分辨率" },
+  },
+};
+
+const H3_RESOLUTIONS = ["480p", "720p", "768p", "1080p", "2k", "4k"];
+const VIDEO_USAGE_EXAMPLES = [
+  { label: "480p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "480p" } },
+  { label: "720p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "720p" } },
+  { label: "1080p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "1080p" } },
+  { label: "4k · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "4k" } },
+  { label: "720p · 5s · 参考素材", facts: { count: 1, seconds: 5, input_images: 1, input_videos: 1, input_audios: 1, video_resolution: "720p" } },
+];
+
 export const meta = {
   apiVersion: 1,
   key: "nskeven-video",
@@ -19,7 +64,7 @@ export const meta = {
     en: "NSKeven unified video generation gateway",
     zh: "NSKeven 统一视频生成网关",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   author: { name: "lysimportant/forknewapi" },
   website: "https://docs.nskeven.uk/",
   baseUrl: "https://newapi.nskeven.uk",
@@ -30,47 +75,22 @@ export const meta = {
   fetchMode: "per_task",
   requiredCapabilities: ["task-submit-no-retry@1"],
   protocols: ["openai_video"],
-  usageSchema: {
-    count: {
-      type: "number",
-      unit: "count",
-      unitLabel: { en: "video", zh: "个" },
-      description: { en: "Video generation unit price", zh: "视频生成单价" },
+  usageSchema: VIDEO_USAGE_SCHEMA,
+  usageExamples: VIDEO_USAGE_EXAMPLES,
+  usageProfiles: [
+    {
+      modelContains: ["h3"],
+      schema: Object.assign({}, VIDEO_USAGE_SCHEMA, {
+        video_resolution: {
+          enum: H3_RESOLUTIONS,
+          description: { en: "Output video resolution", zh: "输出视频分辨率" },
+        },
+      }),
+      examples: VIDEO_USAGE_EXAMPLES.concat([
+        { label: "H3 768p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "768p" } },
+        { label: "H3 2k · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "2k" } },
+      ]),
     },
-    seconds: {
-      type: "number",
-      unit: "second",
-      description: { en: "Video generation unit price", zh: "视频生成单价" },
-    },
-    input_images: {
-      type: "number",
-      unit: "count",
-      unitLabel: { en: "image", zh: "张" },
-      description: { en: "Input image unit price", zh: "输入图片单价" },
-    },
-    input_videos: {
-      type: "number",
-      unit: "count",
-      unitLabel: { en: "video", zh: "段" },
-      description: { en: "Input video unit price", zh: "输入视频单价" },
-    },
-    input_audios: {
-      type: "number",
-      unit: "count",
-      unitLabel: { en: "audio", zh: "段" },
-      description: { en: "Input audio unit price", zh: "输入音频单价" },
-    },
-    video_resolution: {
-      enum: ["480p", "720p", "1080p", "4k"],
-      description: { en: "Output video resolution", zh: "输出视频分辨率" },
-    },
-  },
-  usageExamples: [
-    { label: "480p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "480p" } },
-    { label: "720p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "720p" } },
-    { label: "1080p · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "1080p" } },
-    { label: "4k · 5s", facts: { count: 1, seconds: 5, input_images: 0, input_videos: 0, input_audios: 0, video_resolution: "4k" } },
-    { label: "720p · 5s · 参考素材", facts: { count: 1, seconds: 5, input_images: 1, input_videos: 1, input_audios: 1, video_resolution: "720p" } },
   ],
 };
 
@@ -283,13 +303,19 @@ function parseDuration(value) {
   return seconds;
 }
 
-function resolutionFromSize(value) {
+function isH3(model) {
+  return trimmed(model).toLowerCase().replace(/,/g, ".").indexOf("h3") >= 0;
+}
+
+function resolutionFromSize(value, model) {
   const text = trimmed(value).toLowerCase();
   const match = /^([0-9]{3,4})[x*]([0-9]{3,4})$/.exec(text);
   if (!match) return "";
   const height = Math.min(Number(match[1]), Number(match[2]));
   if (height >= 2160) return "4k";
+  if (isH3(model) && height >= 1440) return "2k";
   if (height >= 1080) return "1080p";
+  if (isH3(model) && height >= 768) return "768p";
   if (height >= 720) return "720p";
   if (height >= 480) return "480p";
   return "";
@@ -512,7 +538,8 @@ function normalizeRequest(request, model) {
   if (rawResolution !== undefined && rawResolution !== null) {
     if (typeof rawResolution !== "string") fail("resolution must be a string");
     resolution = rawResolution.trim().toLowerCase();
-    if (RESOLUTIONS.indexOf(resolution) < 0) fail("resolution must be one of " + RESOLUTIONS.join(", "));
+    const allowed = isH3(upstreamModel) ? H3_RESOLUTIONS : RESOLUTIONS;
+    if (allowed.indexOf(resolution) < 0) fail("resolution must be one of " + allowed.join(", "));
     const metadataResolution = metadata.resolution;
     if (
       metadataResolution !== undefined &&
@@ -521,7 +548,7 @@ function normalizeRequest(request, model) {
     )
       fail("metadata.resolution conflicts with resolution");
   } else if (request.size !== undefined) {
-    resolution = resolutionFromSize(request.size);
+    resolution = resolutionFromSize(request.size, upstreamModel);
   }
   resolution = resolutionFor(upstreamModel, resolution);
 
@@ -853,7 +880,8 @@ export function extractUsage(ctx) {
     input_audios: Math.min(parsed.audios.length, MAX_INPUT_MEDIA),
   };
   if (parsed.seconds) facts.seconds = parsed.seconds;
-  if (parsed.resolution && RESOLUTIONS.indexOf(parsed.resolution) >= 0) facts.video_resolution = parsed.resolution;
+  const allowed = isH3(model) ? H3_RESOLUTIONS : RESOLUTIONS;
+  if (parsed.resolution && allowed.indexOf(parsed.resolution) >= 0) facts.video_resolution = parsed.resolution;
   return facts;
 }
 
