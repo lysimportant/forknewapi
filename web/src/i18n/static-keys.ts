@@ -57,6 +57,8 @@ export const STATIC_I18N_KEYS = [
   'The canvas is an external visual workspace for arranging creative steps, references, and generated media into a connected workflow.',
   'Model mismatch',
   'Transferred invitation rewards to site balance {{quota}}',
+  'The adjusted price is outside the supported range.',
+  'This expression cannot be adjusted automatically. Keep the source price or edit it manually.',
   'Task usage metadata is unavailable. Pricing details cannot be displayed.',
   'This expression cannot be expanded into a price table. View the original expression below.',
   'This operation is only supported for vLLM or SGLang channels',

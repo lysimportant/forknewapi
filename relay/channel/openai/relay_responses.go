@@ -16,9 +16,9 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // OaiResponsesHandler 原样转发非流式 Responses，并将输入、输出、缓存及推理 token 映射到既有结算用量。
@@ -264,7 +264,6 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			"type": "error", "code": "upstream_stream_error", "message": streamErr.Error(),
 		})
 		if err == nil {
-			helper.ExtendWriteDeadline(c)
 			err = writeNativeResponsesEvent(c, "error", string(failure))
 		}
 		if err != nil {
@@ -292,10 +291,10 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 	if info.GetChannelType() != constant.ChannelTypeSGLang {
 		return payload
 	}
-	if !gjson.GetBytes(payload, path).Exists() {
+	if !ojson.GetBytes(payload, path).Exists() {
 		return payload
 	}
-	patched, err := sjson.SetBytes(payload, path, int(createdAt))
+	patched, err := ojson.SetBytes(payload, path, int(createdAt))
 	if err != nil {
 		return payload
 	}
