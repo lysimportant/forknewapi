@@ -854,6 +854,28 @@ func TestFetchTaskPluginModelsCreatePreviewFiltersCatalogAndJoinsBasePath(t *tes
 	}
 }
 
+func TestFetchTaskPluginImage2ProModelsUsesUpstreamCatalog(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer synthetic-image2pro-key", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[{"id":"Seedance2.0"},{"id":"Nano-banana-2"},{"id":"无限制-MAX-Video"},{"id":"Seedance2.0-fast"}]}`))
+	}))
+	defer server.Close()
+
+	response := previewTaskPluginModels(t, map[string]any{
+		"type": constant.ChannelTypeTaskPlugin, "task_plugin_key": "image2pro-video",
+		"base_url": server.URL + "/v1", "key": "synthetic-image2pro-key",
+	})
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, "upstream", response.Source)
+	assert.Equal(t, []string{"Seedance2.0", "无限制-MAX-Video"}, response.Data)
+	assert.Equal(t, []string{"Nano-banana-2", "Seedance2.0-fast"}, response.UnsupportedModels)
+	assert.Equal(t, int32(1), requests.Load())
+}
+
 // TestFetchChannelRoutedTaskPluginModelsPreviewsExactCatalog 验证新建、已保存及编辑入口均只读取目录。
 func TestFetchChannelRoutedTaskPluginModelsPreviewsExactCatalog(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
