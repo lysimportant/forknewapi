@@ -182,6 +182,10 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 				}
 				for _, model := range plugin.Meta.Models {
 					binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
+					if plugin.Meta.ModelRouting == "channel" {
+						assert.False(t, claimed, model)
+						continue
+					}
 					require.True(t, claimed, model)
 					assert.Same(t, plugin, binding.Plugin)
 				}

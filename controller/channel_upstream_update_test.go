@@ -861,7 +861,16 @@ func TestFetchTaskPluginImage2ProModelsUsesUpstreamCatalog(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/v1/models", r.URL.Path)
 		assert.Equal(t, "Bearer synthetic-image2pro-key", r.Header.Get("Authorization"))
-		_, _ = w.Write([]byte(`{"data":[{"id":"Seedance2.0"},{"id":"Nano-banana-2"},{"id":"无限制-MAX-Video"},{"id":"Seedance2.0-fast"}]}`))
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"Seedance2.0","metadata":{"type":"video"}},
+			{"id":"Nano-banana-2","metadata":{"type":"image"}},
+			{"id":"无限制-MAX-Video","metadata":{"type":"video"}},
+			{"id":"Veo-3.1-lite-1080P","metadata":{"type":"video"}},
+			{"id":"Omni-1.2-flash","metadata":{"type":"video"}},
+			{"id":"Opaque-Video-X","metadata":{"type":"video"}},
+			{"id":"opaque-video-x","metadata":{"type":"video"}},
+			{"id":"Grok-4.5","metadata":{"type":"text"}}
+		]}`))
 	}))
 	defer server.Close()
 
@@ -871,8 +880,16 @@ func TestFetchTaskPluginImage2ProModelsUsesUpstreamCatalog(t *testing.T) {
 	})
 	require.True(t, response.Success, response.Message)
 	assert.Equal(t, "upstream", response.Source)
-	assert.Equal(t, []string{"Seedance2.0", "无限制-MAX-Video"}, response.Data)
-	assert.Equal(t, []string{"Nano-banana-2", "Seedance2.0-fast"}, response.UnsupportedModels)
+	assert.Equal(t, []string{
+		"Seedance2.0", "Nano-banana-2", "无限制-MAX-Video", "Veo-3.1-lite-1080P",
+		"Omni-1.2-flash", "Opaque-Video-X", "opaque-video-x", "Grok-4.5",
+	}, response.Data)
+	assert.Empty(t, response.UnsupportedModels)
+	assert.Equal(t, map[string]string{
+		"Seedance2.0": "video", "Nano-banana-2": "image", "无限制-MAX-Video": "video",
+		"Veo-3.1-lite-1080P": "video", "Omni-1.2-flash": "video",
+		"Opaque-Video-X": "video", "opaque-video-x": "video",
+	}, response.ModelTypes)
 	assert.Equal(t, int32(1), requests.Load())
 }
 

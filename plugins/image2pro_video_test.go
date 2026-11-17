@@ -49,12 +49,15 @@ func image2ProSubmitContext(model string, body map[string]any) map[string]any {
 func TestImage2ProVideoPluginContract(t *testing.T) {
 	plugin := loadImage2ProVideoPlugin(t)
 	assert.Equal(t, []string{"Seedance2.0", "无限制-MAX-Video"}, plugin.Meta.Models)
+	assert.Equal(t, "channel", plugin.Meta.ModelRouting)
 	assert.Equal(t, []jsplugin.ProtocolClaim{{Name: "openai_video"}}, plugin.Meta.Protocols)
+	require.NotNil(t, plugin.Meta.ModelDiscovery)
+	assert.Empty(t, plugin.Meta.ModelDiscovery.ModelTypes)
 	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["count"].Description["en"])
-	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageSchema["seconds"].Description["en"])
+	assert.NotContains(t, plugin.Meta.UsageSchema, "seconds")
 	assert.Equal(t, "Input image unit price", plugin.Meta.UsageSchema["input_images"].Description["en"])
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["input_audios"].Unit)
-	assert.Empty(t, plugin.Meta.UsageProfiles[0].Schema["seconds"].Description["en"] == "")
+	assert.Equal(t, "Video generation unit price", plugin.Meta.UsageProfiles[0].Schema["seconds"].Description["en"])
 	assert.Contains(t, plugin.Meta.UsageProfiles[0].Schema, "input_images")
 	assert.Contains(t, plugin.Meta.UsageProfiles[1].Schema, "input_audios")
 	require.NotEmpty(t, plugin.Meta.UsageExamples)
@@ -67,16 +70,15 @@ func TestImage2ProVideoPluginContract(t *testing.T) {
 	require.NoError(t, err)
 	registered, err := registry.RegisterFactory(source, jsplugin.Options{Key: "image2pro-video"})
 	require.NoError(t, err)
+	assert.NotNil(t, registered)
+	binding, found := registry.Generation().LookupPluginEndpoint("POST", "/v1/videos", "image2pro-video")
+	require.True(t, found)
+	assert.NotNil(t, binding)
 	for _, model := range plugin.Meta.Models {
-		binding, found := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
-		if !found {
-			binding, found = jsplugin.DefaultRegistry.Generation().LookupEndpoint("POST", "/v1/videos", model)
-		}
-		require.True(t, found, model)
-		assert.NotNil(t, binding)
-		assert.NotNil(t, registered)
+		_, globallyBound := registry.Generation().LookupEndpoint("POST", "/v1/videos", model)
+		assert.False(t, globallyBound, model)
 	}
-	_, found := registry.Generation().LookupEndpoint("POST", "/v1/responses", "Seedance2.0")
+	_, found = registry.Generation().LookupPluginEndpoint("POST", "/v1/responses", "image2pro-video")
 	assert.False(t, found)
 }
 
@@ -122,7 +124,7 @@ func TestImage2ProVideoProtocolAndTaskResults(t *testing.T) {
 	assert.Equal(t, "submit", decoded["kind"])
 	assert.Equal(t, "text_to_video", decoded["action"])
 
-	for _, status := range []string{"processing", "completed", "failed"} {
+	for _, status := range []string{"queued", "in_progress", "processing", "completed", "failed"} {
 		body := map[string]any{"id": "abcdef0123456789", "status": status}
 		if status == "completed" {
 			body["url"] = "https://cdn.example/video.mp4"
@@ -131,7 +133,7 @@ func TestImage2ProVideoProtocolAndTaskResults(t *testing.T) {
 			body["error"] = map[string]any{"message": "Bearer sk-secret-value"}
 		}
 		result := image2ProCallObject(t, plugin, "parseTaskResult", map[string]any{"apiKey": "sk-secret-value"}, body)
-		want := map[string]string{"processing": "IN_PROGRESS", "completed": "SUCCESS", "failed": "FAILURE"}[status]
+		want := map[string]string{"queued": "QUEUED", "in_progress": "IN_PROGRESS", "processing": "IN_PROGRESS", "completed": "SUCCESS", "failed": "FAILURE"}[status]
 		assert.Equal(t, want, result["status"])
 		if reason, ok := result["reason"].(string); ok {
 			assert.NotContains(t, reason, "sk-secret-value")
@@ -152,6 +154,120 @@ func TestImage2ProVideoProtocolAndTaskResults(t *testing.T) {
 	for _, url := range []string{"http://cdn.example/video.mp4", "https://", "https://user:password@cdn.example/video.mp4", "https://cdn.example/video.mp4 bad"} {
 		result := image2ProCallObject(t, plugin, "parseTaskResult", map[string]any{}, map[string]any{"status": "completed", "url": url})
 		assert.Equal(t, "UNKNOWN", result["status"])
+	}
+	for _, body := range []map[string]any{
+		{"status": "completed", "output": []any{map[string]any{"url": "https://cdn.example/output.mp4"}}},
+		{"status": "completed", "metadata": map[string]any{"url": "https://cdn.example/output.mp4"}},
+	} {
+		result := image2ProCallObject(t, plugin, "parseTaskResult", map[string]any{}, body)
+		assert.Equal(t, "SUCCESS", result["status"])
+		assert.Equal(t, "https://cdn.example/output.mp4", result["url"])
+		content := image2ProCallObject(t, plugin, "buildContentRequest", map[string]any{"artifactKey": "video", "data": body, "clientRequest": map[string]any{"method": "GET"}})
+		assert.Equal(t, "https://cdn.example/output.mp4", content["url"])
+		assert.Equal(t, true, content["credentialless"])
+	}
+}
+
+func TestImage2ProChannelVideoRequests(t *testing.T) {
+	plugin := loadImage2ProVideoPlugin(t)
+	for _, tc := range []struct {
+		name, model, body, want string
+	}{
+		{"opaque model without defaults", "catalog-video-2027", `{"prompt":"animate"}`, `{"model":"catalog-video-2027","prompt":"animate","client_request_id":"abcdef0123456789"}`},
+		{"Veo native frame roles", "Veo-3.1-Quality", `{"prompt":"animate","duration":"8s","aspect_ratio":"16:9","resolution":"1080p","seed":0,"reference_images":[{"url":"https://cdn.example/first.png","role":"first_frame"},{"url":"https://cdn.example/last.png","role":"last_frame"}]}`, `{"model":"Veo-3.1-Quality","prompt":"animate","duration":8,"aspect_ratio":"16:9","resolution":"1080p","seed":0,"reference_images":[{"url":"https://cdn.example/first.png","role":"first_frame"},{"url":"https://cdn.example/last.png","role":"last_frame"}],"client_request_id":"abcdef0123456789"}`},
+		{"Omni native size", "Omni-1.2-flash", `{"prompt":"animate","seconds":"8","ratio":"16:9","size":"1280x720","images":["https://cdn.example/image.png"]}`, `{"model":"Omni-1.2-flash","prompt":"animate","duration":8,"ratio":"16:9","size":"1280x720","images":["https://cdn.example/image.png"],"client_request_id":"abcdef0123456789"}`},
+		{"native video object", "无限制-MiniMax-H3-特惠", `{"prompt":"animate","videos":[{"url":"https://cdn.example/reference.mp4","start_seconds":0,"require_audio":false}]}`, `{"model":"无限制-MiniMax-H3-特惠","prompt":"animate","videos":[{"url":"https://cdn.example/reference.mp4","start_seconds":0,"require_audio":false}],"client_request_id":"abcdef0123456789"}`},
+		{"Veo native extension", "Veo-3.1-Fast", `{"prompt":"animate","duration":8,"resolution":"720p","reference_videos":["extend://fixture-media-id"]}`, `{"model":"Veo-3.1-Fast","prompt":"animate","duration":8,"resolution":"720p","reference_videos":["extend://fixture-media-id"],"client_request_id":"abcdef0123456789"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &body))
+			decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": "local-video-alias", "upstreamModel": tc.model,
+				"body": map[string]any{"kind": "json", "value": body},
+			})
+			require.NoError(t, err)
+			var intent map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(mustJSON(t, decoded), &intent))
+			assert.Equal(t, "local-video-alias", intent["model"])
+			ctx := image2ProSubmitContext(tc.model, intent["requestBody"].(map[string]any))
+			ctx["model"] = "local-video-alias"
+			request := image2ProCallObject(t, plugin, "buildSubmitRequest", ctx)
+			assert.JSONEq(t, tc.want, mustJSON(t, request["body"]))
+		})
+	}
+	decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+		"model": "catalog-video-2027", "body": map[string]any{
+			"kind": "form", "fields": map[string]any{
+				"prompt": []string{"animate"}, "reference_videos": []string{`["extend://fixture-media-id"]`},
+			},
+		},
+	})
+	require.NoError(t, err)
+	var intent map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(mustJSON(t, decoded), &intent))
+	request := image2ProCallObject(t, plugin, "buildSubmitRequest", image2ProSubmitContext("catalog-video-2027", intent["requestBody"].(map[string]any)))
+	assert.JSONEq(t, `{"model":"catalog-video-2027","prompt":"animate","reference_videos":["extend://fixture-media-id"],"client_request_id":"abcdef0123456789"}`, mustJSON(t, request["body"]))
+}
+
+func TestImage2ProChannelVideoValidation(t *testing.T) {
+	plugin := loadImage2ProVideoPlugin(t)
+	for _, body := range []map[string]any{
+		{"duration": 0}, {"duration": -1}, {"duration": 3601}, {"duration": 8.5}, {"duration": "8x"}, {"duration": true},
+		{"duration": 8, "seconds": 9}, {"metadata": map[string]any{"duration": 3601}},
+		{"n": 0}, {"n": 2}, {"n": 1.5}, {"n": true}, {"unrecognized_field": "value"},
+	} {
+		t.Run(mustJSON(t, body), func(t *testing.T) {
+			body["prompt"] = "animate"
+			_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", image2ProSubmitContext("catalog-video-2027", body))
+			require.Error(t, err)
+		})
+	}
+	images := make([]any, 129)
+	for i := range images {
+		images[i] = "https://cdn.example/reference.png"
+	}
+	_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", image2ProSubmitContext("catalog-video-2027", map[string]any{"prompt": "animate", "images": images}))
+	require.Error(t, err)
+	request := image2ProCallObject(t, plugin, "buildSubmitRequest", image2ProSubmitContext("catalog-video-2027", map[string]any{"prompt": "animate", "duration": 3600, "n": 1, "seed": 0, "images": images[:128]}))
+	assert.Equal(t, float64(3600), request["body"].(map[string]any)["duration"])
+	assert.Equal(t, float64(0), request["body"].(map[string]any)["seed"])
+}
+
+func TestImage2ProChannelVideoUsage(t *testing.T) {
+	plugin := loadImage2ProVideoPlugin(t)
+	for _, tc := range []struct {
+		name, body             string
+		images, videos, audios float64
+	}{
+		{"without duration", `{"prompt":"animate"}`, 0, 0, 0},
+		{"requested duration is not output usage", `{"prompt":"animate","duration":8}`, 0, 0, 0},
+		{"frame roles are not references", `{"prompt":"animate","reference_images":[{"url":"https://cdn.example/first.png","role":"first_frame"},{"url":"https://cdn.example/last.png","role":"last_frame"}]}`, 0, 0, 0},
+		{"submitted reference counts", `{"prompt":"animate","reference_images":["https://cdn.example/reference.png"],"audios":["https://cdn.example/reference.mp3"],"videos":[{"url":"https://cdn.example/reference.mp4","start_seconds":0,"require_audio":false}]}`, 1, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &body))
+			usage := image2ProCallObject(t, plugin, "extractUsage", image2ProSubmitContext("catalog-video-2027", body))
+			assert.Equal(t, map[string]any{
+				"count": float64(1), "input_images": tc.images, "input_videos": tc.videos, "input_audios": tc.audios, "input_video_seconds": float64(0),
+			}, usage)
+		})
+	}
+	assert.Nil(t, image2ProCall(t, plugin, "extractUsageOnComplete", map[string]any{"state": map[string]any{"model": "Omni-1.2-flash"}}, map[string]any{"status": "SUCCESS"}, map[string]any{"duration": 15}))
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"bounded reference usage", `{"duration":15,"usage":{"reference_image_count":2,"reference_video_count":1,"reference_audio_count":0,"reference_video_seconds":"8.5","input_seconds":99}}`, `{"input_images":2,"input_videos":1,"input_audios":0,"input_video_seconds":8.5}`},
+		{"invalid values retain submitted facts", `{"usage":{"reference_image_count":129,"reference_video_count":1.5,"reference_audio_count":false,"reference_video_seconds":3601,"input_seconds":-1}}`, `null`},
+		{"valid duration fallback", `{"usage":{"reference_video_seconds":"invalid","input_seconds":"9.5","input_images":10}}`, `{"input_video_seconds":9.5}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(tc.body, &body))
+			usage := image2ProCall(t, plugin, "extractUsageOnComplete", map[string]any{"state": map[string]any{"model": "catalog-video-2027"}}, map[string]any{"status": "SUCCESS"}, body)
+			assert.JSONEq(t, tc.want, mustJSON(t, usage))
+		})
 	}
 }
 
@@ -254,9 +370,7 @@ func TestImage2ProGatewayUpstreamLifecycle(t *testing.T) {
 	ctx["upstreamTaskId"] = "../escape"
 	_, err := plugin.Engine.Call(t.Context(), "buildContentRequest", ctx)
 	require.Error(t, err)
-	for _, status := range []string{"queued", "in_progress", "unrecognized"} {
-		assert.Equal(t, "UNKNOWN", image2ProCallObject(t, plugin, "parseTaskResult", map[string]any{}, map[string]any{"status": status})["status"])
-	}
+	assert.Equal(t, "UNKNOWN", image2ProCallObject(t, plugin, "parseTaskResult", map[string]any{}, map[string]any{"status": "unrecognized"})["status"])
 }
 
 func mustJSON(t *testing.T, value any) string {

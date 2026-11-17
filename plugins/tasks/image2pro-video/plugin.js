@@ -6,12 +6,14 @@ export const meta = {
     en: "Image2Pro video generation through the OpenAI video API",
     zh: "通过 OpenAI 视频接口接入 Image2Pro 视频生成",
   },
-  version: "1.1.1",
+  version: "1.2.0",
   author: { name: "lysimportant/forknewapi" },
   website: "https://image2pro.top/api-docs",
   baseUrl: "https://api.image2pro.top/v1",
   allowedHosts: ["api.image2pro.top:443"],
   models: ["Seedance2.0", "无限制-MAX-Video"],
+  modelRouting: "channel",
+  modelMediaTypes: { "Seedance2.0": "video", "无限制-MAX-Video": "video" },
   modelDiscovery: { protocol: "openai", path: "/v1/models" },
   fetchMode: "per_task",
   requiredCapabilities: ["task-submit-no-retry@1"],
@@ -22,11 +24,6 @@ export const meta = {
       type: "number",
       unit: "count",
       unitLabel: { en: "video", zh: "个" },
-      description: { en: "Video generation unit price", zh: "视频生成单价" },
-    },
-    seconds: {
-      type: "number",
-      unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
     input_images: {
@@ -41,10 +38,21 @@ export const meta = {
       unitLabel: { en: "audio", zh: "段" },
       description: { en: "Input audio unit price", zh: "输入音频单价" },
     },
+    input_videos: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "video", zh: "段" },
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
+    input_video_seconds: {
+      type: "number",
+      unit: "second",
+      description: { en: "Input video unit price", zh: "输入视频单价" },
+    },
   },
   usageExamples: [
-    { label: "text · 8s", facts: { count: 1, seconds: 8, input_images: 0, input_audios: 0 } },
-    { label: "reference · 8s", facts: { count: 1, seconds: 8, input_images: 2, input_audios: 1 } },
+    { label: "text", facts: { count: 1, input_images: 0, input_audios: 0, input_videos: 0, input_video_seconds: 0 } },
+    { label: "reference", facts: { count: 1, input_images: 2, input_audios: 1, input_videos: 1, input_video_seconds: 0 } },
   ],
   usageProfiles: [
     {
@@ -208,7 +216,7 @@ function decodeBody(body) {
     const values = body.fields[key];
     if (!Array.isArray(values) || values.length !== 1) throw new Error(key + " must be provided once");
     let value = values[0];
-    if (["content", "metadata", "images", "audios", "reference_images", "reference_audios"].includes(key)) {
+    if (["content", "metadata", "images", "audios", "videos", "reference_images", "reference_audios", "reference_videos"].includes(key)) {
       try {
         value = JSON.parse(value);
       } catch {
@@ -263,9 +271,179 @@ function contentInputs(request, metadata) {
   return result;
 }
 
+// The host authorizes exact channel models. Keep the two legacy wire formats,
+// while catalog models use the provider's native video fields without an ID list.
+function normalizeCatalogRequest(request, model, publicTaskId) {
+  if (typeof model !== "string" || !model.trim() || model !== model.trim() || model.includes(",") || /\p{Cc}/u.test(model))
+    throw new Error("model must be a canonical non-empty string");
+  let metadata = request.metadata;
+  if (typeof metadata === "string") {
+    try {
+      metadata = JSON.parse(metadata);
+    } catch {
+      throw new Error("metadata must be a JSON object");
+    }
+  }
+  if (metadata === undefined || metadata === null) metadata = {};
+  if (typeof metadata !== "object" || Array.isArray(metadata)) throw new Error("metadata must be a JSON object");
+  const allowed = new Set([...MAX_FIELDS, "videos", "reference_videos"]);
+  for (const key of Object.keys(request)) if (!allowed.has(key)) throw new Error("unsupported video request field: " + key);
+  for (const key of Object.keys(metadata)) {
+    if (!allowed.has(key) || ["model", "metadata", "client_request_id"].includes(key)) throw new Error("unsupported metadata field: " + key);
+  }
+  const source = {};
+  for (const key of allowed) {
+    if (!["model", "metadata", "client_request_id"].includes(key)) source[key] = metadataValue(request, metadata, key);
+  }
+  const content = contentInputs(request, metadata);
+  if (source.prompt !== undefined && typeof source.prompt !== "string") throw new Error("prompt must be a string");
+  if (source.input !== undefined && typeof source.input !== "string") throw new Error("input must be a string");
+  if (source.prompt && source.input && source.prompt.trim() !== source.input.trim()) throw new Error("prompt conflicts with input");
+  const prompt = trimmed(source.prompt || source.input || content.texts.filter((value) => trimmed(value)).join("\n"));
+  if (!prompt) throw new Error("prompt is required");
+  const body = { model, prompt };
+  // Native contracts differ in defaults (Omni 1.2 always generates 15 seconds).
+  // Bound forwarded durations, but never turn these hints into billed seconds.
+  const durations = [source.duration, source.seconds, source.durationSeconds].filter((value) => value !== undefined);
+  if (durations.length) {
+    const numbers = durations.map((value) => {
+      if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") throw new Error("duration must be a number");
+      return Number(typeof value === "string" ? value.trim().replace(/s$/i, "") : value);
+    });
+    if (numbers.some((value) => !Number.isSafeInteger(value) || value < 1 || value > 3600 || value !== numbers[0]))
+      throw new Error("duration aliases conflict or duration is outside 1-3600 seconds");
+    body.duration = numbers[0];
+  }
+  const ratios = [source.ratio, source.aspect_ratio, source.aspectRatio].filter((value) => value !== undefined);
+  if (ratios.some((value) => typeof value !== "string" || !/^\d+:\d+$/.test(value) || value !== ratios[0]))
+    throw new Error("ratio aliases conflict or are invalid");
+  if (source.ratio !== undefined) body.ratio = source.ratio;
+  if (source.aspect_ratio !== undefined || source.aspectRatio !== undefined)
+    body.aspect_ratio = source.aspect_ratio === undefined ? source.aspectRatio : source.aspect_ratio;
+  for (const field of ["size", "resolution", "mode"]) {
+    const value = source[field];
+    if (value !== undefined) {
+      if (typeof value !== "string" || !value.trim() || value.length > 128 || /\p{Cc}/u.test(value)) throw new Error(field + " must be a non-empty string");
+      body[field] = value;
+    }
+  }
+  if (source.seed !== undefined) {
+    if (
+      (typeof source.seed !== "number" && typeof source.seed !== "string") ||
+      String(source.seed).trim() === "" ||
+      !Number.isSafeInteger(Number(source.seed)) ||
+      Number(source.seed) < 0 ||
+      Number(source.seed) > 2147483647
+    )
+      throw new Error("seed must be an integer between 0 and 2147483647");
+    body.seed = Number(source.seed);
+  }
+  if (source.n !== undefined) {
+    if ((typeof source.n !== "number" && typeof source.n !== "string") || Number(source.n) !== 1) throw new Error("n only supports integer 1");
+    body.n = 1;
+  }
+  const facts = { model, count: 1, input_images: 0, input_videos: 0, input_audios: 0, input_video_seconds: 0 };
+  let first;
+  let last;
+  for (const field of ["first_frame", "last_frame"]) {
+    if (source[field] !== undefined) body[field] = mediaURL(source[field], field);
+  }
+  first = body.first_frame;
+  last = body.last_frame;
+  for (const field of ["images", "input_image", "reference_images"]) {
+    let supplied = source[field];
+    if (supplied === undefined || supplied === null || supplied === "") continue;
+    if (typeof supplied === "string" && supplied.trim().startsWith("[")) {
+      try {
+        supplied = JSON.parse(supplied);
+      } catch {
+        throw new Error(field + " must be a JSON array");
+      }
+    }
+    const values = Array.isArray(supplied) ? supplied : [supplied];
+    if (values.length > 128) throw new Error("at most 128 reference images are supported");
+    const images = values.map((item) => {
+      if (item && typeof item === "object" && !Array.isArray(item) && Object.keys(item).some((key) => !["url", "role"].includes(key)))
+        throw new Error("unsupported image reference field");
+      const url = mediaURL(item, field);
+      if (item && typeof item === "object" && !Array.isArray(item) && item.role !== undefined) {
+        if (field !== "reference_images" || !["first_frame", "last_frame"].includes(item.role)) throw new Error("unsupported image content role");
+        if (item.role === "first_frame") {
+          if (first) throw new Error("first_frame must be provided once");
+          first = url;
+        } else {
+          if (last) throw new Error("last_frame must be provided once");
+          last = url;
+        }
+        return { url, role: item.role };
+      }
+      facts.input_images += 1;
+      return typeof item === "string" ? url : { url };
+    });
+    body[field] = field === "input_image" && !Array.isArray(supplied) ? images[0] : images;
+  }
+  const frameAliases = [source.image, source.input_reference, content.first].filter((value) => value !== undefined);
+  for (const supplied of frameAliases) {
+    const url = mediaURL(supplied, "input_reference");
+    if (first && first !== url) throw new Error("first_frame conflicts with input_reference");
+    if (!first) {
+      body.reference_images = [].concat(body.reference_images || [], { url, role: "first_frame" });
+      first = url;
+    }
+  }
+  if (content.last) {
+    if (last && last !== content.last) throw new Error("last_frame conflicts with content");
+    if (!last) body.reference_images = [].concat(body.reference_images || [], { url: content.last, role: "last_frame" });
+    last = content.last;
+  }
+  if (content.images.length) body.reference_images = [].concat(body.reference_images || [], content.images);
+  facts.input_images += content.images.length;
+  const audios = content.audios.slice();
+  for (const field of ["audios", "audio", "reference_audios"]) {
+    const values = mediaList(source[field], field);
+    if (audios.length + values.length > 128) throw new Error("at most 128 reference audios are supported");
+    audios.push(...values);
+  }
+  if (audios.length) body.audios = audios;
+  facts.input_audios = audios.length;
+  for (const field of ["videos", "reference_videos"]) {
+    const supplied = source[field];
+    if (supplied === undefined || supplied === null) continue;
+    if (!Array.isArray(supplied) || supplied.length > 128) throw new Error(field + " must be an array of at most 128 videos");
+    body[field] = supplied.map((item) => {
+      const rawURL = item && typeof item === "object" && !Array.isArray(item) ? item.url : item;
+      const url =
+        field === "reference_videos" && typeof rawURL === "string" && /^extend:\/\/[A-Za-z0-9_.-]{1,200}$/.test(rawURL) ? rawURL : publicURL(rawURL, field);
+      if (typeof item === "string") return url;
+      if (Object.keys(item).some((key) => !["url", "start_seconds", "require_audio"].includes(key))) throw new Error("unsupported video reference field");
+      const video = { url };
+      if (item.start_seconds !== undefined) {
+        if (typeof item.start_seconds !== "number" || !Number.isFinite(item.start_seconds) || item.start_seconds < 0 || item.start_seconds > 3600)
+          throw new Error("start_seconds must be between 0 and 3600");
+        video.start_seconds = item.start_seconds;
+      }
+      if (item.require_audio !== undefined) {
+        if (typeof item.require_audio !== "boolean") throw new Error("require_audio must be a boolean");
+        video.require_audio = item.require_audio;
+      }
+      return video;
+    });
+    facts.input_videos += supplied.length;
+  }
+  if (facts.input_images > 128 || facts.input_audios > 128 || facts.input_videos > 128) throw new Error("reference media count exceeds 128");
+  if (last && !first) throw new Error("last_frame requires first_frame");
+  if ((first || last) && (facts.input_images || facts.input_audios || facts.input_videos)) throw new Error("keyframes cannot be mixed with reference media");
+  if (publicTaskId !== undefined) {
+    if (request.client_request_id !== undefined && request.client_request_id !== publicTaskId)
+      throw new Error("client_request_id is reserved for the public task id");
+    body.client_request_id = publicTaskId;
+  }
+  return { body, facts };
+}
+
 function normalizeRequest(request, model, publicTaskId) {
   if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("video request must be a JSON object");
-  if (!MODELS.has(model)) throw new Error("unsupported Image2Pro video model");
+  if (!MODELS.has(model)) return normalizeCatalogRequest(request, model, publicTaskId);
   for (const key of Object.keys(request)) if (!MAX_FIELDS.has(key)) throw new Error("unsupported video request field: " + key);
   let metadata = request.metadata;
   if (metadata === undefined || metadata === null) metadata = {};
@@ -402,11 +580,16 @@ function taskId(value, ctx) {
 }
 
 function resultURL(body) {
-  try {
-    return body && typeof body === "object" && !Array.isArray(body) ? publicURL(body.url, "video URL") : "";
-  } catch {
-    return "";
+  if (!body || typeof body !== "object" || Array.isArray(body)) return "";
+  const candidates = [body.url, Array.isArray(body.output) && body.output[0] && body.output[0].url, body.metadata && body.metadata.url];
+  for (const value of candidates) {
+    try {
+      return publicURL(value, "video URL");
+    } catch {
+      // Another documented result location may carry the usable URL.
+    }
   }
+  return "";
 }
 
 export function buildSubmitRequest(ctx) {
@@ -437,9 +620,9 @@ export function parseSubmitResponse(ctx, response) {
 
 export function parseTaskResult(ctx, body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { status: "UNKNOWN", reason: "invalid upstream video task response" };
+  if (body.status === "queued") return { status: "QUEUED" };
+  if (body.status === "in_progress") return { status: "IN_PROGRESS" };
   if (ctx && ctx.upstream && ctx.upstream.kind === "new_api") {
-    if (body.status === "queued") return { status: "QUEUED" };
-    if (body.status === "in_progress") return { status: "IN_PROGRESS" };
     if (body.status === "completed") return { status: "SUCCESS", progress: "100%" };
   }
   if (body.status === "processing") return { status: "IN_PROGRESS" };
@@ -460,21 +643,52 @@ export function buildQueryRequest(ctx) {
 export function extractUsage(ctx) {
   const built = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model);
   if (ctx.usagePurpose === "billing_ratios") return {};
+  // Catalog contracts are priced per generation. A requested duration is not
+  // necessarily generated duration, so it must not create a per-second charge.
+  if (!MODELS.has(built.facts.model)) {
+    return { count: 1, input_images: built.facts.input_images, input_videos: built.facts.input_videos, input_audios: built.facts.input_audios, input_video_seconds: 0 };
+  }
   // 只统计参考素材；首帧、尾帧是生成条件，不计费。
   const counts = { input_images: built.facts.input_images, input_audios: built.facts.input_audios };
   return built.facts.model === MAX_MODEL ? (built.facts.seconds === undefined ? counts : Object.assign({ seconds: built.facts.seconds }, counts)) : Object.assign({ count: 1 }, counts);
 }
 
-function completedDuration(body) {
+function completedDuration(body, model) {
   const value = body && body.duration;
   if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") return undefined;
   const seconds = Number(value);
-  return Number.isSafeInteger(seconds) && seconds >= 4 && seconds <= 12 ? seconds : undefined;
+  const catalogModel = typeof model === "string" && model !== "" && !MODELS.has(model);
+  return Number.isSafeInteger(seconds) && seconds >= (catalogModel ? 1 : 4) && seconds <= (catalogModel ? 3600 : 12) ? seconds : undefined;
 }
 
 export function extractUsageOnComplete(task, result, body) {
   if (!result || result.status !== "SUCCESS") return null;
   const model = task && task.state && task.state.model;
+  if (model && !MODELS.has(model)) {
+    const usage = body && body.usage;
+    if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+    const facts = {};
+    // Only explicitly identified reference usage can replace submitted counts;
+    // output duration and keyframe counts must not become input charges.
+    const fields = {
+      input_images: ["reference_image_count"],
+      input_videos: ["reference_video_count"],
+      input_audios: ["reference_audio_count"],
+      input_video_seconds: ["reference_video_seconds", "input_seconds"],
+    };
+    for (const key of Object.keys(fields)) {
+      for (const field of fields[key]) {
+        const value = usage[field];
+        if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") continue;
+        const quantity = Number(value);
+        const seconds = key === "input_video_seconds";
+        if (!Number.isFinite(quantity) || quantity < 0 || quantity > (seconds ? 3600 : 128) || (!seconds && !Number.isSafeInteger(quantity))) continue;
+        facts[key] = quantity;
+        break;
+      }
+    }
+    return Object.keys(facts).length ? facts : null;
+  }
   const seconds = completedDuration(body);
   if (model === MAX_MODEL && seconds !== undefined) return { seconds };
   return model === MAX_MODEL ? null : { count: 1 };
@@ -500,13 +714,23 @@ export const protocols = {
       const request = decodeBody(ctx.body);
       const model = ctx.upstreamModel || ctx.model;
       const built = normalizeRequest(request, model);
-      const action = built.body.first_frame || (built.body.images || []).length || (built.body.audios || []).length ? "image_to_video" : "text_to_video";
+      const hasMedia =
+        built.body.first_frame ||
+        (built.body.images || []).length ||
+        built.body.input_image ||
+        (built.body.reference_images || []).length ||
+        (built.body.audios || []).length ||
+        (built.body.videos || []).length ||
+        (built.body.reference_videos || []).length;
+      const action = hasMedia ? "image_to_video" : "text_to_video";
       return { kind: "submit", model: ctx.model, action, requestBody: Object.assign({}, request, { model: ctx.model }) };
     },
     render: function (_ctx, task) {
       const statuses = { NOT_START: "queued", SUBMITTED: "queued", QUEUED: "queued", IN_PROGRESS: "in_progress", SUCCESS: "completed", FAILURE: "failed" };
       const output = { id: task.task_id, object: "video", model: (task.properties || {}).origin_model_name, status: statuses[task.status] || "unknown" };
-      const duration = completedDuration(task.data);
+      const properties = task.properties || {};
+      const model = properties.upstream_model_name || (task.data && task.data.model) || properties.origin_model_name;
+      const duration = completedDuration(task.data, model);
       if (duration !== undefined) output.duration = duration;
       if (task.status === "FAILURE") output.error = { code: "video_generation_failed", message: "Video generation failed" };
       return output;
