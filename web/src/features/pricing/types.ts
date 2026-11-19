@@ -57,6 +57,7 @@ export type BillingPluginVariant = {
 
 export type PricingModel = {
   billing_plugin_variants?: BillingPluginVariant[]
+  video_plugins?: Record<string, { key: string; name: string }[]>
   id: number
   model_name: string
   description?: string

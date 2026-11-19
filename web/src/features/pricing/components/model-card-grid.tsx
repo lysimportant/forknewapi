@@ -18,12 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { memo, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useInfiniteModels } from '../hooks/use-infinite-models'
+import { getVideoPluginSections } from '../lib/video-plugin-sections'
 import type {
   PricingModel,
   TokenUnit,
@@ -42,6 +44,7 @@ export interface ModelCardGridProps {
   tokenUnit?: TokenUnit
   showRechargePrice?: boolean
   selectedGroup?: string
+  groupByVideoPlugin?: boolean
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
   seedanceAvailability?: SeedanceAvailabilityMap
@@ -51,10 +54,20 @@ export interface ModelCardGridProps {
 export const ModelCardGrid = memo(function ModelCardGrid(
   props: ModelCardGridProps
 ) {
+  const { t } = useTranslation()
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const modelList = useInfiniteModels(props.models)
+  const sections = useMemo(
+    () =>
+      props.groupByVideoPlugin
+        ? getVideoPluginSections(modelList.visibleModels, props.selectedGroup)
+        : null,
+    [modelList.visibleModels, props.groupByVideoPlugin, props.selectedGroup]
+  )
 
-  const recentModels = modelList.visibleModels.map((model) => model.model_name || '')
+  const recentModels = modelList.visibleModels.map(
+    (model) => model.model_name || ''
+  )
   const perfQuery = useQuery({
     queryKey: ['perf-metrics-summary', 24, recentModels],
     queryFn: async () =>
@@ -91,31 +104,47 @@ export const ModelCardGrid = memo(function ModelCardGrid(
     return null
   }
 
+  const renderCards = (models: PricingModel[]) => (
+    <div className='grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3'>
+      {models.map((model) => (
+        <ModelCard
+          key={model.id ?? model.model_name}
+          model={model}
+          tokenUnit={tokenUnit}
+          priceRate={props.priceRate}
+          usdExchangeRate={props.usdExchangeRate}
+          showRechargePrice={props.showRechargePrice}
+          selectedGroup={props.selectedGroup}
+          yuanliuAvailability={props.yuanliuAvailability}
+          seedanceAvailability={props.seedanceAvailability}
+          isSeedanceAvailabilityUnavailable={
+            props.isSeedanceAvailabilityUnavailable
+          }
+          isYuanliuAvailabilityUnavailable={
+            props.isYuanliuAvailabilityUnavailable
+          }
+          perf={perfMap.get(model.model_name || '')}
+          onClick={props.onModelClick}
+        />
+      ))}
+    </div>
+  )
+
   return (
     <div className='flex flex-col gap-4 sm:gap-5'>
-      <div className='grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3'>
-        {modelList.visibleModels.map((model) => (
-          <ModelCard
-            key={model.id ?? model.model_name}
-            model={model}
-            tokenUnit={tokenUnit}
-            priceRate={props.priceRate}
-            usdExchangeRate={props.usdExchangeRate}
-            showRechargePrice={props.showRechargePrice}
-            selectedGroup={props.selectedGroup}
-            yuanliuAvailability={props.yuanliuAvailability}
-            seedanceAvailability={props.seedanceAvailability}
-            isSeedanceAvailabilityUnavailable={
-              props.isSeedanceAvailabilityUnavailable
-            }
-            isYuanliuAvailabilityUnavailable={
-              props.isYuanliuAvailabilityUnavailable
-            }
-            perf={perfMap.get(model.model_name || '')}
-            onClick={props.onModelClick}
-          />
-        ))}
-      </div>
+      {sections
+        ? sections.map(({ plugin, models }) => (
+            <section key={plugin?.key ?? ''} className='space-y-3'>
+              <h2
+                className='border-b pb-2 text-sm font-semibold'
+                aria-label={plugin?.name}
+              >
+                {plugin?.title ?? t('Other')}
+              </h2>
+              {renderCards(models)}
+            </section>
+          ))
+        : renderCards(modelList.visibleModels)}
 
       <ModelListFooter
         count={modelList.visibleCount}

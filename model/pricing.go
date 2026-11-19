@@ -1,6 +1,8 @@
 package model
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,8 +27,14 @@ type PricingPluginVariant struct {
 	BillingUsageExamples []jsplugin.UsageExample              `json:"billing_usage_examples,omitempty"`
 }
 
+type PricingVideoPlugin struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
 type Pricing struct {
 	BillingPluginVariants  []PricingPluginVariant               `json:"billing_plugin_variants,omitempty"`
+	VideoPlugins           map[string][]PricingVideoPlugin      `json:"video_plugins,omitempty"`
 	ModelName              string                               `json:"model_name"`
 	Description            string                               `json:"description,omitempty"`
 	Icon                   string                               `json:"icon,omitempty"`
@@ -197,6 +205,8 @@ func updatePricing() {
 		common.SysLog(common.LogText("GetAllEnableAbilityWithChannels error: %v", err))
 		return
 	}
+	pluginGeneration := jsplugin.DefaultRegistry.Generation()
+	videoPlugins := loadPricingVideoPlugins(enableAbilities, pluginGeneration)
 	// 预加载模型元数据与供应商一次，避免循环查询
 	var allMeta []Model
 	_ = DB.Find(&allMeta).Error
@@ -325,12 +335,12 @@ func updatePricing() {
 	}
 
 	pricingMap = make([]Pricing, 0)
-	pluginGeneration := jsplugin.DefaultRegistry.Generation()
 	for model, groups := range modelGroupsMap {
 		pricing := Pricing{
 			ModelName:              model,
 			EnableGroup:            groups.Items(),
 			SupportedEndpointTypes: modelSupportEndpointTypes[model],
+			VideoPlugins:           videoPlugins[model],
 		}
 
 		// 补充模型元数据（描述、标签、供应商、状态）
@@ -440,6 +450,121 @@ func updatePricing() {
 	modelEnableGroupsLock.Unlock()
 
 	lastGetPricingTime = time.Now()
+}
+
+// Catalog sections use the enabled channel's binding, not its billing variant.
+func loadPricingVideoPlugins(abilities []AbilityWithChannel, generation *jsplugin.RoutingGeneration) map[string]map[string][]PricingVideoPlugin {
+	channelTypes := make([]int, 0)
+	for _, ability := range abilities {
+		channelType := ability.ChannelType
+		if _, registered := generation.GetByChannelType(channelType); !registered &&
+			channelType != constant.ChannelTypeTaskPlugin && channelType != constant.ChannelTypeNewAPI {
+			continue
+		}
+		if !slices.Contains(channelTypes, channelType) {
+			channelTypes = append(channelTypes, channelType)
+		}
+	}
+	if len(channelTypes) == 0 {
+		return nil
+	}
+
+	var channels []Channel
+	if err := DB.Select("id", "type", "setting", "model_mapping").
+		Where("status = ? AND type IN ?", common.ChannelStatusEnabled, channelTypes).
+		Find(&channels).Error; err != nil {
+		return nil
+	}
+	type channelVideoBindings struct {
+		plugins  []*jsplugin.LoadedPlugin
+		settings dto.ChannelSettings
+		mapping  map[string]string
+	}
+	bindings := make(map[int]channelVideoBindings, len(channels))
+	for _, channel := range channels {
+		var binding channelVideoBindings
+		if channel.Setting != nil && *channel.Setting != "" && common.UnmarshalJsonStr(*channel.Setting, &binding.settings) != nil {
+			continue
+		}
+		if mapping := channel.GetModelMapping(); mapping != "" && common.UnmarshalJsonStr(mapping, &binding.mapping) != nil {
+			continue
+		}
+		switch channel.Type {
+		case constant.ChannelTypeTaskPlugin:
+			if plugin, ok := generation.Get(binding.settings.TaskPluginKey); ok {
+				binding.plugins = append(binding.plugins, plugin)
+			}
+		case constant.ChannelTypeNewAPI:
+			for _, key := range binding.settings.TaskPluginBindings() {
+				if plugin, ok := generation.Get(key); ok {
+					binding.plugins = append(binding.plugins, plugin)
+				}
+			}
+		default:
+			if plugin, ok := generation.GetByChannelType(channel.Type); ok {
+				binding.plugins = append(binding.plugins, plugin)
+			}
+		}
+		if len(binding.plugins) > 0 {
+			bindings[channel.Id] = binding
+		}
+	}
+
+	byModel := make(map[string]map[string][]PricingVideoPlugin)
+	for _, ability := range abilities {
+		binding, ok := bindings[ability.ChannelId]
+		if !ok {
+			continue
+		}
+		upstream, cyclic := followChannelModelMapping(binding.mapping, ability.Model)
+		if cyclic {
+			continue
+		}
+		for _, plugin := range binding.plugins {
+			if !isPricingVideoPluginModel(plugin, binding.settings, upstream, ability.ChannelType) {
+				continue
+			}
+			groups := byModel[ability.Model]
+			if groups == nil {
+				groups = make(map[string][]PricingVideoPlugin)
+				byModel[ability.Model] = groups
+			}
+			if !slices.ContainsFunc(groups[ability.Group], func(item PricingVideoPlugin) bool { return item.Key == plugin.Meta.Key }) {
+				groups[ability.Group] = append(groups[ability.Group], PricingVideoPlugin{Key: plugin.Meta.Key, Name: plugin.Meta.Name})
+			}
+		}
+	}
+	for _, groups := range byModel {
+		for _, plugins := range groups {
+			slices.SortFunc(plugins, func(a, b PricingVideoPlugin) int { return cmp.Compare(a.Key, b.Key) })
+		}
+	}
+	return byModel
+}
+
+func isPricingVideoPluginModel(plugin *jsplugin.LoadedPlugin, settings dto.ChannelSettings, upstream string, channelType int) bool {
+	meta := plugin.Meta
+	if !(channelType == constant.ChannelTypeTaskPlugin && meta.ModelRouting == "channel") &&
+		!slices.Contains(meta.Models, upstream) {
+		return false
+	}
+	mediaType := TaskPluginModelType(plugin, settings, upstream)
+	if mediaType == "image" {
+		return false
+	}
+	video := false
+	image := false
+	for _, claim := range meta.Protocols {
+		if len(claim.Models) != 0 && !slices.Contains(claim.Models, upstream) {
+			continue
+		}
+		video = video || claim.Name == "openai_video"
+		image = image || claim.Name == jsplugin.ProtocolOpenAIImage
+	}
+	if !video || mediaType == "video" {
+		return video
+	}
+	return !image && (meta.ModelDiscovery == nil || !slices.Contains(meta.ModelDiscovery.ModelTypes, "image"))
 }
 
 // GetSupportedEndpointMap 返回全局端点到路径的映射

@@ -32,7 +32,7 @@ import {
   ModelCardGrid,
   ModelDetailsDrawer,
 } from './components'
-import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
+import { ENDPOINT_TYPES, EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
 import { useSeedanceAvailability } from './hooks/use-seedance-availability'
@@ -137,6 +137,10 @@ export function Pricing() {
     clearSearch()
   }, [clearFilters, clearSearch])
 
+  const groupByVideoPlugin =
+    endpointTypeFilter === ENDPOINT_TYPES.OPENAI_VIDEO ||
+    ['video', '视频', '視頻'].includes(groupFilter.trim().toLowerCase())
+
   const renderPricingContent = () => {
     if (filteredModels.length === 0) {
       return (
@@ -158,6 +162,7 @@ export function Pricing() {
           tokenUnit={tokenUnit}
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
+          groupByVideoPlugin={groupByVideoPlugin}
           yuanliuAvailability={yuanliuAvailability}
           isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}
           seedanceAvailability={seedanceAvailability}
@@ -174,6 +179,7 @@ export function Pricing() {
         tokenUnit={tokenUnit}
         showRechargePrice={showRechargePrice}
         selectedGroup={groupFilter}
+        groupByVideoPlugin={groupByVideoPlugin}
         onModelClick={handleModelClick}
         yuanliuAvailability={yuanliuAvailability}
         isYuanliuAvailabilityUnavailable={yuanliuQuery.isError}

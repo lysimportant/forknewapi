@@ -106,7 +106,8 @@ afterEach(() => {
 
 async function renderPricing(
   availability: CatalogAvailabilityMap,
-  view = 'card'
+  view = 'card',
+  extraModels: PricingModel[] = []
 ) {
   upstream = availability
   queryClient.setQueryData(['pricing'], {
@@ -121,10 +122,14 @@ async function renderPricing(
         tags: '',
         billing_plugin_variants: undefined,
       },
+      ...extraModels,
     ],
     vendors: [{ id: 1, name: 'Seedance-only vendor' }],
-    group_ratio: { default: 1 },
-    usable_group: { default: { desc: '', ratio: 1 } },
+    group_ratio: { default: 1, video: 1 },
+    usable_group: {
+      default: { desc: '', ratio: 1 },
+      video: { desc: '', ratio: 1 },
+    },
     supported_endpoint: {},
     auto_groups: [],
   })
@@ -164,6 +169,69 @@ async function renderPricing(
   )
   await screen.findByRole('heading', { name: 'Model Square' })
 }
+
+it.each(['card', 'table'])(
+  'groups only the selected video list by plugin in %s view',
+  async (view) => {
+    const videoModel = (id: number, name: string): PricingModel => ({
+      id,
+      model_name: name,
+      quota_type: 1,
+      model_ratio: 0,
+      completion_ratio: 0,
+      model_price: 1,
+      enable_groups: ['video'],
+    })
+    const aurora = { key: 'aurora', name: 'Aurora Studio' }
+    const aural = { key: 'aural', name: 'Aural Video' }
+    const zongheng = { key: 'seedance-video', name: '\u7eb5\u6a2avideo' }
+    await renderPricing(catalog('disabled'), view, [
+      {
+        ...videoModel(3, 'aurora-motion'),
+        video_plugins: { video: [aurora] },
+      },
+      {
+        ...videoModel(4, 'aural-motion'),
+        video_plugins: { video: [aural] },
+      },
+      videoModel(5, 'native-motion'),
+      {
+        ...videoModel(6, 'shared-motion'),
+        video_plugins: { video: [aurora, aural] },
+      },
+      {
+        ...videoModel(7, 'zongheng-motion'),
+        video_plugins: { video: [zongheng] },
+      },
+    ])
+
+    expect(
+      screen.queryByRole('heading', { name: aurora.name })
+    ).not.toBeInTheDocument()
+    const user = userEvent.setup()
+    const filters = within(screen.getByRole('complementary'))
+    await user.click(filters.getByTitle('video'))
+
+    for (const [name, initial] of [
+      [aurora.name, 'A'],
+      [aural.name, 'A'],
+      [zongheng.name, '\u7eb5'],
+    ]) {
+      const heading = await screen.findByRole('heading', { name })
+      expect(heading.textContent).toBe(initial)
+      expect(heading).not.toHaveAttribute('title')
+    }
+    expect(screen.getAllByText('shared-motion')).toHaveLength(1)
+    expect(screen.getByText('native-motion')).toBeVisible()
+    expect(screen.queryByText('normal-model')).not.toBeInTheDocument()
+
+    await user.click(filters.getByTitle('All Groups'))
+    expect(await screen.findByText('normal-model')).toBeVisible()
+    expect(
+      screen.queryByRole('heading', { name: aurora.name })
+    ).not.toBeInTheDocument()
+  }
+)
 
 async function reload(availability: CatalogAvailabilityMap) {
   upstream = availability

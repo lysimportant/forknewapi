@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { Row } from '@tanstack/react-table'
-import { useCallback } from 'react'
+import { Fragment, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -25,9 +25,14 @@ import {
   DataTableView,
   useDataTable,
 } from '@/components/data-table'
+import { TableCell, TableRow } from '@/components/ui/table'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { useInfiniteModels } from '../hooks/use-infinite-models'
+import {
+  getVideoPluginSections,
+  type VideoPluginSection,
+} from '../lib/video-plugin-sections'
 import type {
   PricingModel,
   TokenUnit,
@@ -45,6 +50,7 @@ export interface PricingTableProps {
   tokenUnit?: TokenUnit
   showRechargePrice?: boolean
   selectedGroup?: string
+  groupByVideoPlugin?: boolean
   onModelClick?: (modelName: string) => void
   yuanliuAvailability?: YuanliuAvailabilityMap
   isYuanliuAvailabilityUnavailable?: boolean
@@ -62,6 +68,7 @@ export function PricingTable(props: PricingTableProps) {
     tokenUnit = DEFAULT_TOKEN_UNIT,
     showRechargePrice = false,
     selectedGroup,
+    groupByVideoPlugin,
     yuanliuAvailability,
     isYuanliuAvailabilityUnavailable,
     seedanceAvailability,
@@ -70,6 +77,26 @@ export function PricingTable(props: PricingTableProps) {
   } = props
 
   const modelList = useInfiniteModels(models, !isLoading)
+  const groupedRows = useMemo(() => {
+    if (!groupByVideoPlugin) return null
+
+    const sections = getVideoPluginSections(
+      modelList.visibleModels,
+      selectedGroup
+    )
+    if (!sections) return null
+
+    const sectionStarts = new Map<number, VideoPluginSection>()
+    let rowIndex = 0
+    for (const section of sections) {
+      sectionStarts.set(rowIndex, section)
+      rowIndex += section.models.length
+    }
+    return {
+      models: sections.flatMap((section) => section.models),
+      sectionStarts,
+    }
+  }, [groupByVideoPlugin, modelList.visibleModels, selectedGroup])
 
   const columns = usePricingColumns({
     tokenUnit,
@@ -84,7 +111,7 @@ export function PricingTable(props: PricingTableProps) {
   })
 
   const { table } = useDataTable({
-    data: modelList.visibleModels,
+    data: groupedRows?.models ?? modelList.visibleModels,
     columns,
     manualPagination: false,
     withPaginationRowModel: false,
@@ -112,15 +139,31 @@ export function PricingTable(props: PricingTableProps) {
         getColumnClassName={(_columnId, kind) =>
           kind === 'header' ? 'text-muted-foreground font-medium' : undefined
         }
-        renderRow={(row: Row<PricingModel>) => (
-          <DataTableRow
-            key={row.id}
-            row={row}
-            cellRenderColumns={columns}
-            className='hover:bg-muted/30 cursor-pointer transition-colors'
-            onClick={() => handleRowClick(row.original)}
-          />
-        )}
+        renderRow={(row: Row<PricingModel>) => {
+          const section = groupedRows?.sectionStarts.get(row.index)
+          return (
+            <Fragment key={groupedRows ? row.original.model_name : row.id}>
+              {section && (
+                <TableRow className='bg-muted/40 h-9!'>
+                  <TableCell colSpan={table.getVisibleLeafColumns().length}>
+                    <h2
+                      className='font-semibold'
+                      aria-label={section.plugin?.name}
+                    >
+                      {section.plugin?.title ?? t('Other')}
+                    </h2>
+                  </TableCell>
+                </TableRow>
+              )}
+              <DataTableRow
+                row={row}
+                cellRenderColumns={columns}
+                className='hover:bg-muted/30 cursor-pointer transition-colors'
+                onClick={() => handleRowClick(row.original)}
+              />
+            </Fragment>
+          )
+        }}
       />
 
       {!isLoading && models.length > 0 && (

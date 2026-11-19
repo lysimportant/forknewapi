@@ -27,6 +27,13 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 		item.EnableGroup = slices.DeleteFunc(slices.Clone(item.EnableGroup), func(group string) bool {
 			return !service.IsGroupVisible(group, role)
 		})
+		if len(item.VideoPlugins) > 0 {
+			item.VideoPlugins = maps.Clone(item.VideoPlugins)
+			maps.DeleteFunc(item.VideoPlugins, func(group string, _ []model.PricingVideoPlugin) bool {
+				_, usable := usableGroup[group]
+				return !usable || !slices.Contains(item.EnableGroup, group)
+			})
+		}
 		if common.StringsContains(item.EnableGroup, "all") {
 			filtered = append(filtered, item)
 			continue

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,13 +14,18 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -36,6 +43,94 @@ type groupVisibilityPricingResponse struct {
 	GroupRatio  map[string]float64 `json:"group_ratio"`
 	UsableGroup map[string]string  `json:"usable_group"`
 	AutoGroups  []string           `json:"auto_groups"`
+}
+
+func TestPricingVideoPluginSections(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			versionSQL := "SELECT VERSION()"
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open("file:video-section-fixture?mode=memory&cache=shared")
+				versionSQL = "SELECT sqlite_version()"
+			case "mysql":
+				dsn := os.Getenv("TEST_VIDEO_SECTIONS_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("requires a dedicated empty MySQL fixture database")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_VIDEO_SECTIONS_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("requires a dedicated empty PostgreSQL fixture database")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			require.False(t, db.Migrator().HasTable(&model.Channel{}), "use an empty database for this fixture")
+			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+			var version string
+			require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+			t.Logf("%s version: %s", dialect, version)
+
+			previousDB := model.DB
+			model.DB = db
+			model.InvalidatePricingCache()
+			t.Cleanup(func() {
+				model.DB = previousDB
+				model.InvalidatePricingCache()
+			})
+			const video = "video"
+			const unavailable = "not-usable"
+			const alias = "catalog-video-alias"
+			const ordinary = "ordinary-video-model"
+			const kling = "kling-v3"
+			const still = "catalog-still-alias"
+			mapping := `{"catalog-video-alias":"raw-video-model","catalog-still-alias":"raw-image-model"}`
+			seedanceSettings := dto.ChannelSettings{TaskPluginKey: "seedance-video", TaskPluginModelTypes: map[string]string{"raw-video-model": "video", "raw-image-model": "image"}}
+			for i, fixture := range []struct {
+				channelType int
+				status      int
+				group       string
+				settings    dto.ChannelSettings
+				names       []string
+			}{
+				{constant.ChannelTypeTaskPlugin, common.ChannelStatusEnabled, video, seedanceSettings, []string{alias, still}},
+				{constant.ChannelTypeTaskPlugin, common.ChannelStatusEnabled, video, seedanceSettings, []string{alias}},
+				{constant.ChannelTypeNewAPI, common.ChannelStatusEnabled, video, dto.ChannelSettings{TaskExtendPluginKeys: []string{"kling"}}, []string{kling}},
+				{constant.ChannelTypeTaskPlugin, common.ChannelStatusEnabled, unavailable, dto.ChannelSettings{TaskPluginKey: "yuanliu"}, []string{alias}},
+				{constant.ChannelTypeTaskPlugin, common.ChannelStatusEnabled, groupVisibilitySecretGroup, dto.ChannelSettings{TaskPluginKey: "yuanliu"}, []string{alias}},
+				{constant.ChannelTypeTaskPlugin, common.ChannelStatusManuallyDisabled, video, dto.ChannelSettings{TaskPluginKey: "yuanliu"}, []string{alias}},
+				{constant.ChannelTypeOpenAI, common.ChannelStatusEnabled, video, dto.ChannelSettings{}, []string{ordinary}},
+			} {
+				channel := model.Channel{Type: fixture.channelType, Status: fixture.status, Group: fixture.group, Models: strings.Join(fixture.names, ","), Name: fmt.Sprintf("section-%d", i), Key: "synthetic-fixture"}
+				channel.SetSetting(fixture.settings)
+				if fixture.channelType == constant.ChannelTypeTaskPlugin {
+					channel.ModelMapping = &mapping
+				}
+				require.NoError(t, db.Create(&channel).Error)
+				for _, name := range fixture.names {
+					require.NoError(t, db.Create(&model.Ability{Group: fixture.group, Model: name, ChannelId: channel.Id, Enabled: true}).Error)
+				}
+			}
+
+			cached := model.GetPricing()
+			seedance, ok := jsplugin.DefaultRegistry.Get("seedance-video")
+			require.True(t, ok)
+			visible := pricingByModelName(filterPricingByUsableGroups(cached, map[string]string{video: "Video", groupVisibilitySecretGroup: "Hidden"}, common.RoleCommonUser))
+			require.Contains(t, visible, alias)
+			assert.Equal(t, map[string][]model.PricingVideoPlugin{video: {{Key: "seedance-video", Name: seedance.Meta.Name}}}, visible[alias].VideoPlugins)
+			assert.Equal(t, map[string][]model.PricingVideoPlugin{video: {{Key: "kling", Name: "Kling"}}}, visible[kling].VideoPlugins)
+			assert.Empty(t, visible[still].VideoPlugins)
+			assert.Empty(t, visible[ordinary].VideoPlugins)
+			assert.Contains(t, pricingByModelName(cached)[alias].VideoPlugins, unavailable, "response filtering must not mutate the shared cache")
+		})
+	}
 }
 
 // groupVisibilityUserGroupsResponse 描述用户可选分组接口响应。
