@@ -139,7 +139,9 @@ export function Pricing() {
 
   const groupByVideoPlugin =
     endpointTypeFilter === ENDPOINT_TYPES.OPENAI_VIDEO ||
-    ['video', '视频', '視頻'].includes(groupFilter.trim().toLowerCase())
+    ['video', 'video group', '视频', '视频分组', '視頻', '視頻分組'].includes(
+      groupFilter.trim().toLowerCase()
+    )
 
   const renderPricingContent = () => {
     if (filteredModels.length === 0) {

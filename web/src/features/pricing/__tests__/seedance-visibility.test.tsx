@@ -107,7 +107,8 @@ afterEach(() => {
 async function renderPricing(
   availability: CatalogAvailabilityMap,
   view = 'card',
-  extraModels: PricingModel[] = []
+  extraModels: PricingModel[] = [],
+  videoGroup = 'video'
 ) {
   upstream = availability
   queryClient.setQueryData(['pricing'], {
@@ -125,10 +126,10 @@ async function renderPricing(
       ...extraModels,
     ],
     vendors: [{ id: 1, name: 'Seedance-only vendor' }],
-    group_ratio: { default: 1, video: 1 },
+    group_ratio: { default: 1, [videoGroup]: 1 },
     usable_group: {
       default: { desc: '', ratio: 1 },
-      video: { desc: '', ratio: 1 },
+      [videoGroup]: { desc: '', ratio: 1 },
     },
     supported_endpoint: {},
     auto_groups: [],
@@ -170,9 +171,15 @@ async function renderPricing(
   await screen.findByRole('heading', { name: 'Model Square' })
 }
 
-it.each(['card', 'table'])(
-  'groups only the selected video list by plugin in %s view',
-  async (view) => {
+it.each(
+  ['card', 'table'].flatMap((view) =>
+    ['video', '\u89c6\u9891\u5206\u7ec4', '\u8996\u983b\u5206\u7d44'].map(
+      (group) => ({ view, group })
+    )
+  )
+)(
+  'groups only the selected $group list by plugin in $view view',
+  async ({ view, group }) => {
     const videoModel = (id: number, name: string): PricingModel => ({
       id,
       model_name: name,
@@ -180,37 +187,43 @@ it.each(['card', 'table'])(
       model_ratio: 0,
       completion_ratio: 0,
       model_price: 1,
-      enable_groups: ['video'],
+      enable_groups: [group],
+      supported_endpoint_types: ['openai'],
     })
     const aurora = { key: 'aurora', name: 'Aurora Studio' }
     const aural = { key: 'aural', name: 'Aural Video' }
     const zongheng = { key: 'seedance-video', name: '\u7eb5\u6a2avideo' }
-    await renderPricing(catalog('disabled'), view, [
-      {
-        ...videoModel(3, 'aurora-motion'),
-        video_plugins: { video: [aurora] },
-      },
-      {
-        ...videoModel(4, 'aural-motion'),
-        video_plugins: { video: [aural] },
-      },
-      videoModel(5, 'native-motion'),
-      {
-        ...videoModel(6, 'shared-motion'),
-        video_plugins: { video: [aurora, aural] },
-      },
-      {
-        ...videoModel(7, 'zongheng-motion'),
-        video_plugins: { video: [zongheng] },
-      },
-    ])
+    await renderPricing(
+      catalog('disabled'),
+      view,
+      [
+        {
+          ...videoModel(3, 'aurora-motion'),
+          video_plugins: { [group]: [aurora] },
+        },
+        {
+          ...videoModel(4, 'aural-motion'),
+          video_plugins: { [group]: [aural] },
+        },
+        videoModel(5, 'native-motion'),
+        {
+          ...videoModel(6, 'shared-motion'),
+          video_plugins: { [group]: [aurora, aural] },
+        },
+        {
+          ...videoModel(7, 'zongheng-motion'),
+          video_plugins: { [group]: [zongheng] },
+        },
+      ],
+      group
+    )
 
     expect(
       screen.queryByRole('heading', { name: aurora.name })
     ).not.toBeInTheDocument()
     const user = userEvent.setup()
     const filters = within(screen.getByRole('complementary'))
-    await user.click(filters.getByTitle('video'))
+    await user.click(filters.getByTitle(group))
 
     for (const [name, initial] of [
       [aurora.name, 'A'],
